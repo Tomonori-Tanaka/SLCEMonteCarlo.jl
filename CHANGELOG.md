@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — BREAKING: package renamed SCEMonteCarlo.jl → SLCEMonteCarlo.jl (SLCE family, M0)
+
+- The whole family is renamed to the **spin–lattice cluster expansion (SLCE)**
+  stem per `docs/specs/spin-lattice-ce-design.md` §2 (SLCE.jl /
+  SLCEMonteCarlo.jl / SLCEDynamics.jl / SLCETools.jl). Package + module name
+  changed; **UUID kept** (path-dev Manifests stay resolvable). Old model /
+  checkpoint artifacts are unaffected (persistence schemas carry versions,
+  not package names).
+
 ### Changed
 
 - The GPU sweep API — `GPUTiledHamiltonian`, `GPUChainState`,

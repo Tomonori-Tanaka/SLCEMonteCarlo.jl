@@ -1,13 +1,13 @@
 # API reference
 
 ```@meta
-CurrentModule = SCEMonteCarlo
+CurrentModule = SLCEMonteCarlo
 ```
 
 ## Module
 
 ```@docs
-SCEMonteCarlo
+SLCEMonteCarlo
 ```
 
 ## Hamiltonian
@@ -68,8 +68,8 @@ overrelaxation_sweep!
 ## GPU
 
 The chain-level device sweep (see the [GPU guide](guide/gpu.md)). The gradient
-tier (`SCEMonteCarlo.gpu_energy_gradient!`, `SCEMonteCarlo.GPUGradientScratch`,
-`SCEMonteCarlo.gpu_zlm_rows!`) is public but unexported — the inter-package seam
+tier (`SLCEMonteCarlo.gpu_energy_gradient!`, `SLCEMonteCarlo.GPUGradientScratch`,
+`SLCEMonteCarlo.gpu_zlm_rows!`) is public but unexported — the inter-package seam
 for dependent packages' GPU dynamics.
 
 ```@docs

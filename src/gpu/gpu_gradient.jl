@@ -1,5 +1,5 @@
 # The device all-site SCE gradient (decision record docs/specs/gpu-prototype.md
-# G7) — phase 2 of the GPU path, the entry point SCESpinDynamics' GPU LLG
+# G7) — phase 2 of the GPU path, the entry point SLCEDynamics' GPU LLG
 # consumes. One workgroup per site; lane 1 fills the site's gradient-row table
 # (the `znew` analog — `∇Z(e_s)` depends only on `e_s`, fixed during the pass);
 # all lanes walk the site's adjacency entries with the sweep's exact three-way
@@ -22,7 +22,7 @@
 # the ΔE dot replaced by the ∇Z 3-vector), and the lane-ordered component fold.
 # The bitwise gate in test/unit/test_gpu.jl compares them on the CPU backend;
 # change either side and the other plus the G7 record move with it.
-# `_gradient_lane_ref!` is also the reference SCESpinDynamics' composite GPU-LLG
+# `_gradient_lane_ref!` is also the reference SLCEDynamics' composite GPU-LLG
 # gate calls by qualified name — renaming it is a cross-package break.
 
 """
@@ -248,7 +248,7 @@ end
 # `_grad_zlm_row_device_dyn!` and `_entry_walk_grad` — same strided lane shares,
 # same lane-ordered component fold — so the kernel must match it bitwise on the
 # CPU backend (and, being libm-free, is expected to on CUDA too). Test-only on
-# this side; SCESpinDynamics' composite GPU-LLG gate calls it by qualified name.
+# this side; SLCEDynamics' composite GPU-LLG gate calls it by qualified name.
 # ---------------------------------------------------------------------------
 function _gradient_lane_ref!(G::Vector{SVector{3,Float64}}, H::TiledHamiltonian,
                              config::SpinConfig, zrows::Matrix{Float64},

@@ -1,7 +1,7 @@
 # Theory: the update schemes
 
 ```@meta
-CurrentModule = SCEMonteCarlo
+CurrentModule = SLCEMonteCarlo
 ```
 
 ## The exact single-spin ΔE

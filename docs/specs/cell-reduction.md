@@ -27,7 +27,7 @@ shift `s_i`) then carries the reduced-lattice shift `σᵢ = o_{aᵢ} + M sᵢ`,
 `σᵢ − σ₁` with `shifts[1] = 0` restored, `ls`/`folded` carried through the sort
 permutation — is *invariant under the `nc` coset translations*: translating the
 whole cluster by `t` adds `t` to every `σᵢ` and cancels in the differences, and
-the sort undoes the anchor-role swap the translation induces. (SCEFitting's
+the sort undoes the anchor-role swap the translation induces. (SLCE's
 canonical members carry one term per physical instance, so two translation
 copies are generally anchored at *different* member sites — without the joint
 sort + tensor-axis alignment they would not land on one key.) Consequences:

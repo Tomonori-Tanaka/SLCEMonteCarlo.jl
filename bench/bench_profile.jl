@@ -9,8 +9,8 @@
 # Prints the profile twice: as a call tree (where the time sits structurally) and
 # flat by line count (the top individual lines). Julia-only frames (C = false).
 
-using SCEMonteCarlo
-using SCEFitting
+using SLCEMonteCarlo
+using SLCE
 using Profile
 include(joinpath(@__DIR__, "fixtures.jl"))
 

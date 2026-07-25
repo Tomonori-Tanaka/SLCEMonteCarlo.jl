@@ -1,12 +1,12 @@
-# Documentation build for SCEMonteCarlo.jl.
+# Documentation build for SLCEMonteCarlo.jl.
 #
 #   make build        build the HTML site into build/
 #   make serve        build, then serve it locally with live reload (LiveServer.jl)
 #   make open         open the built site in a browser
 #   make clean        remove the build/ output
 #
-# The first run resolves docs/Project.toml (Documenter + LiveServer + SCEMonteCarlo +
-# SCEFitting, both by path). SCEFitting must sit at ../../SCEFitting.jl.
+# The first run resolves docs/Project.toml (Documenter + LiveServer + SLCEMonteCarlo +
+# SLCE, both by path). SLCE must sit at ../../SLCE.jl.
 
 .PHONY: build serve open clean help
 

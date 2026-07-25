@@ -1,8 +1,8 @@
 """
-    SCEMonteCarlo
+    SLCEMonteCarlo
 
 Classical spin Monte Carlo for fitted SCE (symmetry-adapted cluster expansion) models
-from `SCEFitting.jl`: tile the fitted training-cell Hamiltonian onto an
+from `SLCE.jl`: tile the fitted training-cell Hamiltonian onto an
 `N₁ × N₂ × N₃` supercell ([`TiledHamiltonian`](@ref)) — optionally after a verified
 re-expression in a user-chosen smaller cell ([`reduce_cell`](@ref)) — and sample it
 with single-spin
@@ -16,13 +16,13 @@ numerically with
 [`minimize_energy`](@ref) (deterministic on-sphere gradient descent) and
 [`find_ground_state`](@ref) (multi-start annealing + polish).
 
-The fitted model is read **only** through `SCEFitting`'s public introspection surface
-(`multipole_terms`, `n_atoms`, `intercept`, `SCEFitting.Harmonics`); the per-term
+The fitted model is read **only** through `SLCE`'s public introspection surface
+(`multipole_terms`, `n_atoms`, `intercept`, `SLCE.Harmonics`); the per-term
 `(4π)^(body/2)` scale is applied exactly once, in the [`TiledHamiltonian`](@ref)
 constructor. Temperatures are absolute, under exactly one of two keywords:
 `temperature` [kelvin, converted with [`KB_EV`](@ref)] or `kT` [model energy units].
 """
-module SCEMonteCarlo
+module SLCEMonteCarlo
 
 using Adapt: Adapt
 using JLD2: jldopen
@@ -34,10 +34,10 @@ using Random: Random, AbstractRNG, Xoshiro
 using StaticArrays
 using Statistics: Statistics, mean
 
-using SCEFitting: SCEPredictor, MultipoleTerm, multipole_terms, intercept,
+using SLCE: SLCEModel, MultipoleTerm, multipole_terms, intercept,
                   Lattice, Crystal, cartesian_positions
-import SCEFitting: n_atoms                  # extended for ReducedCell
-import SCEFitting.Harmonics
+import SLCE: n_atoms                  # extended for ReducedCell
+import SLCE.Harmonics
 
 include("units.jl")
 include("hamiltonian.jl")
@@ -81,9 +81,9 @@ public ChainState, SweepScratch, metropolis_sweep!, overrelaxation_sweep!
 public to_matrix, from_matrix
 # GPU sweep API (exported 2026-07-19: A100 GO 30.1x + l02/l044 production
 # validation landed; the gradient tier below stays public-unexported — it is the
-# inter-package seam consumed by SCESpinDynamics, not an end-user surface)
+# inter-package seam consumed by SLCEDynamics, not an end-user surface)
 export GPUTiledHamiltonian, GPUChainState, gpu_metropolis_sweep!, gpu_run_sweeps!,
        to_host!
 public GPUGradientScratch, gpu_energy_gradient!, gpu_zlm_rows!
 
-end # module SCEMonteCarlo
+end # module SLCEMonteCarlo

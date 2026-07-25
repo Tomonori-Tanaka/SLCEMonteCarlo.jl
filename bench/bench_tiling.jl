@@ -7,8 +7,8 @@
 # size; the real l02 model built in 0.01 s / 7.8 MB). Construction should stay
 # integer-bookkeeping cheap; memory is the CSR arrays + one folded tensor per term.
 
-using SCEMonteCarlo
-using SCEFitting
+using SLCEMonteCarlo
+using SLCE
 include(joinpath(@__DIR__, "fixtures.jl"))
 
 n_bcc  = argn(1, 16)

@@ -1,7 +1,7 @@
 # Running chains
 
 ```@meta
-CurrentModule = SCEMonteCarlo
+CurrentModule = SLCEMonteCarlo
 ```
 
 [`run_mc`](@ref) drives one Markov chain: per temperature it **thermalizes**

@@ -82,7 +82,7 @@ every scaled term's payload. This is the identity a checkpoint file carries so a
 resume against a different model, supercell, or coefficient set errors instead of
 silently continuing the wrong physics. Deliberately **not** `Base.hash` (which is
 Julia-version-dependent); the value is part of the checkpoint format. Public for
-dependent packages' checkpoint formats (e.g. `SCESpinDynamics`).
+dependent packages' checkpoint formats (e.g. `SLCEDynamics`).
 """
 model_fingerprint(H::TiledHamiltonian)::UInt64 = _fingerprint(H)
 
@@ -202,7 +202,7 @@ function _write_header(f, ck::_Checkpointer)
     f["schema_version"] = _CKPT_SCHEMA_VERSION
     f["kind"] = ck.kind
     f["julia_version"] = string(VERSION)
-    f["package_version"] = string(pkgversion(SCEMonteCarlo))
+    f["package_version"] = string(pkgversion(SLCEMonteCarlo))
     f["model_fingerprint"] = ck.fingerprint
     f["checkpoint_interval"] = ck.interval
     f["exchange_interval"] = ck.exchange_interval

@@ -1,7 +1,7 @@
 # Ground states
 
 ```@meta
-CurrentModule = SCEMonteCarlo
+CurrentModule = SLCEMonteCarlo
 ```
 
 Two entry points find minimum-energy spin configurations numerically
@@ -34,19 +34,19 @@ hexagonal cell; the six in-plane neighbors are periodic images, so the basis nee
 single coefficient, `> 0` ⇒ antiferromagnetic):
 
 ```@example tri
-using SCEMonteCarlo, SCEFitting
-import Spglib                      # activates SCEFitting's SpglibBackend extension
+using SLCEMonteCarlo, SLCE
+import Spglib                      # activates SLCE's SpglibBackend extension
 using LinearAlgebra, StaticArrays
 
 lat = Lattice([1.0 -0.5 0; 0 sqrt(3)/2 0; 0 0 4.0])   # columns a₁, a₂, a₃
 cell = Crystal(lat, reshape([0.0, 0.0, 0.0], 3, 1), [1], ["Fe"])
 spec = BasisSpec(; nbody = 2, cutoff = 1.1, lmax = [1], isotropy = true)
-basis = SCEBasis(cell, spec; backend = SpglibBackend(), images = AllImages())
-model = SCEPredictor(basis, 0.0, [0.01])               # J > 0 ⇒ frustrated
+basis = SLCEBasis(cell, spec; backend = SpglibBackend(), images = AllImages())
+model = SLCEModel(basis, 0.0, [0.01])               # J > 0 ⇒ frustrated
 
 H = TiledHamiltonian(model; dims = (6, 6, 1))   # 36 sites; 6 is divisible by 3,
                                                 # so the 3-sublattice order fits
-aligned = SCEMonteCarlo.from_matrix(repeat([0.0, 0.0, 1.0], 1, n_sites(H)))
+aligned = SLCEMonteCarlo.from_matrix(repeat([0.0, 0.0, 1.0], 1, n_sites(H)))
 J = total_energy(H, aligned) / (3 * n_sites(H))        # the physical coupling
 gs = find_ground_state(H; nstarts = 8, seed = 11)
 
@@ -105,14 +105,14 @@ The demonstration model for this page is the same deliberately nasty fixture as 
 couplings up to ``l = 2``, whose landscape has several competing basins:
 
 ```@example gs
-using SCEMonteCarlo, SCEFitting
+using SLCEMonteCarlo, SLCE
 using LinearAlgebra, Random
 
 lat = Lattice(Matrix(3.0 * I(3)))
 cell = Crystal(lat, [0.2 -0.2; 0.0 0.0; 0.0 0.0], [1, 1], ["Fe"])
-basis = SCEBasis(cell, BasisSpec(; nbody = 2, cutoff = 1.5, lmax = [2],
+basis = SLCEBasis(cell, BasisSpec(; nbody = 2, cutoff = 1.5, lmax = [2],
                                  isotropy = false))
-model = SCEPredictor(basis, 0.0, 0.05 .* randn(MersenneTwister(0), n_salcs(basis)))
+model = SLCEModel(basis, 0.0, 0.05 .* randn(MersenneTwister(0), n_salcs(basis)))
 H = TiledHamiltonian(model; dims = (2, 1, 1))
 nothing # hide
 ```

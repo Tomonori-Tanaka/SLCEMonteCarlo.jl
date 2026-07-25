@@ -1,15 +1,15 @@
 # Tutorial — the ferromagnetic transition of a cubic Heisenberg model
 
 ```@meta
-CurrentModule = SCEMonteCarlo
+CurrentModule = SLCEMonteCarlo
 ```
 
 This tutorial runs the whole thermodynamics pipeline on a model whose answer is
 known exactly enough to check: the **classical Heisenberg ferromagnet on a simple
 cubic lattice**, whose transition sits at ``k_B T_c / |J| \approx 1.443`` (high-precision
 Monte Carlo literature value). We build a one-coefficient reference model through the
-same fitted-model surface a production run uses (`SCEPredictor` — in real work you
-would `SCEFitting.load` a fitted file instead), sweep it through the transition with
+same fitted-model surface a production run uses (`SLCEModel` — in real work you
+would `SLCE.load` a fitted file instead), sweep it through the transition with
 [`run_mc`](@ref), and read the physics off the figures: the specific-heat peak, the
 growth of ``|m|``, the susceptibility peak, and the Binder-cumulant crossing.
 
@@ -24,15 +24,15 @@ self-image pairs). Cubic symmetry folds all six directed bonds into a single
 isotropic SALC — one coefficient, our ``J``.
 
 ```@example heis3d
-using SCEMonteCarlo, SCEFitting
-import Spglib                      # activates SCEFitting's SpglibBackend extension
+using SLCEMonteCarlo, SLCE
+import Spglib                      # activates SLCE's SpglibBackend extension
 using LinearAlgebra
 
 lat = Lattice(Matrix(1.0 * I(3)))
 cell = Crystal(lat, reshape([0.0, 0.0, 0.0], 3, 1), [1], ["Fe"])
 spec = BasisSpec(; nbody = 2, cutoff = 1.1, lmax = [1], isotropy = true)
-basis = SCEBasis(cell, spec; backend = SpglibBackend(), images = AllImages())
-model = SCEPredictor(basis, 0.0, [-0.01])          # one SALC; < 0 ⇒ ferromagnetic
+basis = SLCEBasis(cell, spec; backend = SpglibBackend(), images = AllImages())
+model = SLCEModel(basis, 0.0, [-0.01])          # one SALC; < 0 ⇒ ferromagnetic
 
 (space_group = basis.spacegroup.symbol, n_salc = n_salcs(basis))
 ```
@@ -43,7 +43,7 @@ the fully aligned configuration — no reliance on internal normalization:
 
 ```@example heis3d
 H0 = TiledHamiltonian(model; dims = (4, 4, 4))
-aligned = SCEMonteCarlo.from_matrix(repeat([0.0, 0.0, 1.0], 1, n_sites(H0)))
+aligned = SLCEMonteCarlo.from_matrix(repeat([0.0, 0.0, 1.0], 1, n_sites(H0)))
 J = total_energy(H0, aligned) / (3 * n_sites(H0))
 kTc = 1.443 * abs(J)               # literature transition, for reference lines
 (J = J, kTc = kTc)
@@ -172,12 +172,12 @@ staggered magnetization ``m_s = \frac{1}{N}\left|\sum_i (-1)^{x_i+y_i+z_i}
 `x` fastest).
 
 ```@example heis3d
-model_afm = SCEPredictor(basis, 0.0, [+0.01])      # > 0 ⇒ antiferromagnetic
+model_afm = SLCEModel(basis, 0.0, [+0.01])      # > 0 ⇒ antiferromagnetic
 L = 6
 H = TiledHamiltonian(model_afm; dims = (L, L, L))
 
 # qualified: Makie exports an unrelated `Observable` (reactive values)
-mstag = SCEMonteCarlo.Observable(:mstag, 1, (cfg, E, H) -> begin
+mstag = SLCEMonteCarlo.Observable(:mstag, 1, (cfg, E, H) -> begin
     acc = zero(first(cfg))
     for i = 1:length(cfg)
         c = i - 1                                   # cell index (one atom per cell)

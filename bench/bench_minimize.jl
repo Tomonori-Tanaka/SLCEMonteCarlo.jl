@@ -8,8 +8,8 @@
 # threaded number. The bench trims the search (nstarts = 4, anneal_sweeps = 50);
 # the interesting per-kernel figures are the `_gradient!` pass and ms/iter.
 
-using SCEMonteCarlo
-using SCEFitting
+using SLCEMonteCarlo
+using SLCE
 include(joinpath(@__DIR__, "fixtures.jl"))
 
 n_bcc   = argn(1, 8)

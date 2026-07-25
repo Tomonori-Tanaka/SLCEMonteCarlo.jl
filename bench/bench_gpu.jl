@@ -11,8 +11,8 @@
 # stop, per the decision record — never compare against another machine's CPU
 # numbers). Every line flushes (batch-job logs survive a walltime kill).
 
-using SCEMonteCarlo
-using SCEFitting
+using SLCEMonteCarlo
+using SLCE
 using KernelAbstractions: KernelAbstractions, CPU
 using LinearAlgebra
 using Printf

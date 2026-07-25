@@ -1,7 +1,7 @@
 # Checkpointing and restart
 
 ```@meta
-CurrentModule = SCEMonteCarlo
+CurrentModule = SLCEMonteCarlo
 ```
 
 Long runs checkpoint to a JLD2 file and restart **bit-identically** — the resumed

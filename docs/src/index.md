@@ -1,7 +1,7 @@
-# SCEMonteCarlo.jl
+# SLCEMonteCarlo.jl
 
 Classical spin Monte Carlo for fitted SCE (symmetry-adapted cluster expansion) models
-from `SCEFitting.jl`: tile the fitted training-cell Hamiltonian
+from `SLCE.jl`: tile the fitted training-cell Hamiltonian
 onto an `N₁ × N₂ × N₃` supercell and sample it with single-spin Metropolis (adaptive
 step) and overrelaxation sweeps — single temperature, annealing sweeps, or replica
 exchange over threads — with composable observables, autocorrelation-aware binning
@@ -11,12 +11,12 @@ errors, and bit-reproducible checkpoint/restart.
 
 | Package | Role |
 |---|---|
-| `SCEFitting.jl` | fits the SCE model (the input here) |
-| `SCETools.jl` | single-training-cell *configuration sampling* (mean-field + light MC) |
-| **`SCEMonteCarlo.jl`** | full supercell MC: observables ``E, C, |m|, χ, U``, annealing, parallel tempering |
+| `SLCE.jl` | fits the SCE model (the input here) |
+| `SLCETools.jl` | single-training-cell *configuration sampling* (mean-field + light MC) |
+| **`SLCEMonteCarlo.jl`** | full supercell MC: observables ``E, C, |m|, χ, U``, annealing, parallel tempering |
 
-The fitted model is read **only** through `SCEFitting`'s public introspection surface
-(`multipole_terms`, `n_atoms`, `intercept`, `SCEFitting.Harmonics`); the per-term
+The fitted model is read **only** through `SLCE`'s public introspection surface
+(`multipole_terms`, `n_atoms`, `intercept`, `SLCE.Harmonics`); the per-term
 ``(4π)^{N/2}`` scale is applied exactly once, in the `TiledHamiltonian` constructor.
 
 ## Temperature convention

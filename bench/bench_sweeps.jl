@@ -8,8 +8,8 @@
 # sweep kernels are designed to be allocation-free). Frozen step, fixed seeds,
 # kT = BENCH_KT (0.025 eV) so accepted-move bookkeeping is realistically mixed in.
 
-using SCEMonteCarlo
-using SCEFitting
+using SLCEMonteCarlo
+using SLCE
 include(joinpath(@__DIR__, "fixtures.jl"))
 
 nsweeps = argn(1, 50)
@@ -40,7 +40,7 @@ function sweep_report(name, H, nsweeps)
     for ntasks in (2, 4, Threads.nthreads())
         ntasks <= Threads.nthreads() || continue
         st, _ = chain_state(H)
-        scs = [SCEMonteCarlo.SweepScratch(H) for _ = 1:ntasks]
+        scs = [SLCEMonteCarlo.SweepScratch(H) for _ = 1:ntasks]
         metropolis_sweep!(st, H, β, scs)              # warm-up / compile
         t = @elapsed for _ = 1:nsweeps
             metropolis_sweep!(st, H, β, scs)

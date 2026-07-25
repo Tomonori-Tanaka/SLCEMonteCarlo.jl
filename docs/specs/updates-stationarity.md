@@ -47,7 +47,7 @@ draws.
 
 ## U2 — Metropolis proposal and the RNG-consumption contract
 
-The proposal is the symmetric two-component mixture proven in SCETools: antipodal
+The proposal is the symmetric two-component mixture proven in SLCETools: antipodal
 flip with probability 0.2 (inter-lobe ergodicity on bimodal single-site potentials)
 + Rodrigues rotation by `step·randn` about a uniform random axis (sign-symmetric
 angle × uniform axis ⇒ symmetric). Acceptance `ΔE ≤ 0 || rand < exp(−βΔE)`, with

@@ -1,26 +1,26 @@
 # Getting started
 
 ```@meta
-CurrentModule = SCEMonteCarlo
+CurrentModule = SLCEMonteCarlo
 ```
 
 ## Install
 
-The package lives alongside its model source `SCEFitting.jl`; during development
+The package lives alongside its model source `SLCE.jl`; during development
 both are path-devs:
 
 ```julia
 using Pkg
-Pkg.develop(path = "path/to/SCEFitting.jl")
-Pkg.develop(path = "path/to/SCEMonteCarlo.jl")
+Pkg.develop(path = "path/to/SLCE.jl")
+Pkg.develop(path = "path/to/SLCEMonteCarlo.jl")
 ```
 
 ## From a fitted model to observables
 
 ```julia
-using SCEMonteCarlo, SCEFitting
+using SLCEMonteCarlo, SLCE
 
-model = SCEFitting.load(SCEPredictor, "model.toml")   # a fitted SCE
+model = SLCE.load(SLCEModel, "model.toml")   # a fitted SCE
 H = TiledHamiltonian(model; dims = (4, 4, 4))         # training cell → 4×4×4 supercell
 
 result = run_mc(H; temperature = 300, seed = 1)       # kelvin (or kT = ... in eV)

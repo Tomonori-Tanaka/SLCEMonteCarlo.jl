@@ -1,6 +1,6 @@
-using SCEMonteCarlo
+using SLCEMonteCarlo
 using JET
 
 @testset "JET" begin
-    JET.test_package(SCEMonteCarlo; target_modules = (SCEMonteCarlo,))
+    JET.test_package(SLCEMonteCarlo; target_modules = (SLCEMonteCarlo,))
 end

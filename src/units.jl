@@ -4,7 +4,7 @@
 # or `kT` in the model's energy units. The two live under distinct names deliberately:
 # a single keyword serving both units would let `temperature = 300` (meant as kelvin)
 # be read as 300 eV — a silent infinite-temperature run. Mirrors the convention of
-# SCETools' `MetropolisSampler`.
+# SLCETools' `MetropolisSampler`.
 
 """
     KB_EV

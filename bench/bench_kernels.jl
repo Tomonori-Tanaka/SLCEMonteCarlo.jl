@@ -11,8 +11,8 @@
 #
 # `n_bcc` / `n_2141` are the cubic tiling sizes (defaults 8 → 1024 sites, 2 → 544).
 
-using SCEMonteCarlo
-using SCEFitting
+using SLCEMonteCarlo
+using SLCE
 include(joinpath(@__DIR__, "fixtures.jl"))
 
 n_bcc  = argn(1, 8)

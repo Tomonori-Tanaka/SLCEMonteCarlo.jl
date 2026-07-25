@@ -107,7 +107,7 @@ end
 # --- public facade ----------------------------------------------------------------
 #
 # The counter-based stream as a stable, public contract for dependent packages
-# (SCESpinDynamics' thermal noise). Thin wrappers over the gated internals — the
+# (SLCEDynamics' thermal noise). Thin wrappers over the gated internals — the
 # Random123 known-answer test in test_gpu.jl pins the block function, so any
 # consumer's stream is anchored to the reference implementation. Counter-layout
 # discipline: this package's GPU sweeps use `ctr[4] == 0`; a dependent package

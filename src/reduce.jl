@@ -57,7 +57,7 @@ _same_frac(r1::SVector{3,Float64}, r2::SVector{3,Float64}, tol::Float64)::Bool =
     all(abs(x - round(x)) <= tol for x in r1 - r2)
 
 """
-    reduce_cell(model::SCEPredictor, crystal::Crystal, sub_lattice;
+    reduce_cell(model::SLCEModel, crystal::Crystal, sub_lattice;
                 pos_tol = 1e-6, coef_rtol = 1e-10) -> ReducedCell
     reduce_cell(crystal::Crystal, terms::Vector{MultipoleTerm}, sub_lattice;
                 pos_tol = 1e-6, coef_rtol = 1e-10) -> ReducedCell
@@ -101,7 +101,7 @@ Sublattice observables (`:sublattice_m`) of the reduced Hamiltonian index the
 *reduced*-cell atoms; `red.parent_atoms` / `red.atom_map` translate back to
 training-cell atom indices.
 """
-function reduce_cell(model::SCEPredictor, crystal::Crystal,
+function reduce_cell(model::SLCEModel, crystal::Crystal,
                      sub_lattice::AbstractMatrix{<:Real};
                      pos_tol::Real = 1e-6, coef_rtol::Real = 1e-10)::ReducedCell
     n_atoms(model) == n_atoms(crystal) || throw(ArgumentError(
@@ -170,7 +170,7 @@ function reduce_cell(crystal::Crystal, mterms::Vector{MultipoleTerm},
     end
 
     # --- terms: canonical anchored reduced form; count each translation orbit ------
-    # Canonical members arrive one per physical instance (SCEFitting's
+    # Canonical members arrive one per physical instance (SLCE's
     # `_canonicalize_members`), so two translation copies of the same instance are
     # generally anchored at different member sites — in reduced coordinates they
     # differ by a joint site permutation (with the `folded` axes permuted the same

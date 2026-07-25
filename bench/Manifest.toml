@@ -371,24 +371,24 @@ git-tree-sha1 = "62389eeff14780bfe55195b7204c0d8738436d64"
 uuid = "ae029012-a4dd-5104-9daa-d747884805df"
 version = "1.3.1"
 
-[[deps.SCEFitting]]
+[[deps.SLCE]]
 deps = ["LegendrePolynomials", "LinearAlgebra", "Random", "StaticArrays", "Statistics", "StatsAPI", "TOML", "Tables"]
-path = "../../SCEFitting.jl"
+path = "../../SLCE.jl"
 uuid = "854eb3e0-bd75-4c3b-927c-573f5c6d8b1d"
 version = "0.1.0"
 
-    [deps.SCEFitting.extensions]
-    SCEFittingGLMNetExt = "GLMNet"
-    SCEFittingSpglibExt = "Spglib"
-    SCEFittingSunnyExt = "Sunny"
+    [deps.SLCE.extensions]
+    SLCEGLMNetExt = "GLMNet"
+    SLCESpglibExt = "Spglib"
+    SLCESunnyExt = "Sunny"
 
-    [deps.SCEFitting.weakdeps]
+    [deps.SLCE.weakdeps]
     GLMNet = "8d5ece8b-de18-5317-b113-243142960cc6"
     Spglib = "f761d5c5-86db-4880-b97f-9680a7cccfb5"
     Sunny = "2b4a2ac8-8f8b-43e8-abf4-3cb0c45e8736"
 
-[[deps.SCEMonteCarlo]]
-deps = ["Adapt", "JLD2", "KernelAbstractions", "LinearAlgebra", "Printf", "Random", "SCEFitting", "StaticArrays", "Statistics"]
+[[deps.SLCEMonteCarlo]]
+deps = ["Adapt", "JLD2", "KernelAbstractions", "LinearAlgebra", "Printf", "Random", "SLCE", "StaticArrays", "Statistics"]
 path = ".."
 uuid = "943eb04c-36cf-4255-b224-b95aac6c4036"
 version = "0.1.0"

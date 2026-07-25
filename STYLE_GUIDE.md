@@ -17,4 +17,4 @@ argument first (Julia convention), the `TiledHamiltonian` second.
 - "site" always means a supercell site index in `1:n_sites(H)`; "atom" always means
   a training-cell atom index in `1:H.n_cell_atoms`. Never mix the two words.
 - Internal helpers carry a leading underscore; the public-but-unexported tier
-  (`SCEMonteCarlo.site_coeffs!`, …) does not.
+  (`SLCEMonteCarlo.site_coeffs!`, …) does not.

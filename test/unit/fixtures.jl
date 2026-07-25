@@ -1,21 +1,21 @@
 # Shared fixtures for the unit suite. `MC` aliases the package so internal (non-exported)
 # names resolve as `MC._name`.
 
-using SCEMonteCarlo
-using SCEFitting
-using Spglib: Spglib          # activates SCEFitting's SpglibBackend extension
+using SLCEMonteCarlo
+using SLCE
+using Spglib: Spglib          # activates SLCE's SpglibBackend extension
 using LinearAlgebra
 using Random
 using StaticArrays
 using Statistics: mean, std
 using Test
 
-const MC = SCEMonteCarlo
+const MC = SLCEMonteCarlo
 
 # Classical Langevin function L(x) = coth(x) − 1/x.
 _langevin(x) = coth(x) - 1 / x
 
-# --- fitted-model fixtures (mirroring SCETools' MC suite) --------------------------
+# --- fitted-model fixtures (mirroring SLCETools' MC suite) --------------------------
 
 # A clean ferromagnetic Heisenberg dimer: 4 atoms in a column, pair cutoff couples
 # only atoms 1–2 (atoms 3–4 free); the single active SALC is the isotropic l=1 pair.
@@ -25,9 +25,9 @@ function _dimer_crystal()
 end
 
 function _dimer_model()
-    b = SCEBasis(_dimer_crystal(), BasisSpec(; nbody = 2, cutoff = 2.6,
+    b = SLCEBasis(_dimer_crystal(), BasisSpec(; nbody = 2, cutoff = 2.6,
                                              lmax = [1], isotropy = true))
-    return SCEPredictor(b, 0.0, vcat([-0.02], zeros(n_salcs(b) - 1)))  # < 0 ⇒ ferro
+    return SLCEModel(b, 0.0, vcat([-0.02], zeros(n_salcs(b) - 1)))  # < 0 ⇒ ferro
 end
 
 # A fitted model that genuinely IS a 2× stack of a 1-atom cell: two atoms along z,
@@ -36,13 +36,13 @@ end
 function _stacked_chain_model()
     lat = Lattice(Matrix(4.0 * I(3)))
     cr = Crystal(lat, [0 0; 0 0; 0.0 0.5], [1, 1], ["Fe"])
-    b = SCEBasis(cr, BasisSpec(; nbody = 2, cutoff = 2.1, lmax = [1],
+    b = SLCEBasis(cr, BasisSpec(; nbody = 2, cutoff = 2.1, lmax = [1],
                                isotropy = true))
-    return SCEPredictor(b, 0.0, fill(-0.02, n_salcs(b))), cr
+    return SLCEModel(b, 0.0, fill(-0.02, n_salcs(b))), cr
 end
 
 # The pair coupling J of the dimer (E = J e₁·e₂), read off the tiled energies of the
-# aligned / anti-aligned configurations — no dependence on SCETools' ExchangeModel.
+# aligned / anti-aligned configurations — no dependence on SLCETools' ExchangeModel.
 function _dimer_J(H::MC.TiledHamiltonian)
     up = SVector(0.0, 0.0, 1.0)
     aligned = MC.SpinConfig([up for _ = 1:H.n_sites])
@@ -55,9 +55,9 @@ end
 function _biquadratic_model(seed)
     lat = Lattice(Matrix(3.0 * I(3)))
     cr = Crystal(lat, [0.2 -0.2; 0.0 0.0; 0.0 0.0], [1, 1], ["Fe"])
-    b = SCEBasis(cr, BasisSpec(; nbody = 2, cutoff = 1.5, lmax = [2],
+    b = SLCEBasis(cr, BasisSpec(; nbody = 2, cutoff = 1.5, lmax = [2],
                                isotropy = false))
-    return SCEPredictor(b, 0.0, 0.05 .* randn(MersenneTwister(seed), n_salcs(b)))
+    return SLCEModel(b, 0.0, 0.05 .* randn(MersenneTwister(seed), n_salcs(b)))
 end
 
 # Anisotropic (l ≤ 2) variants of the same 2× z-stack.
@@ -70,11 +70,11 @@ end
 function _stacked_anisotropic_model(backend; fill_coefs::Bool = false)
     lat = Lattice(Matrix(4.0 * I(3)))
     cr = Crystal(lat, [0 0; 0 0; 0.0 0.5], [1, 1], ["Fe"])
-    b = SCEBasis(cr, BasisSpec(; nbody = 2, cutoff = 2.1, lmax = [2],
+    b = SLCEBasis(cr, BasisSpec(; nbody = 2, cutoff = 2.1, lmax = [2],
                                isotropy = false); backend = backend)
     jphi = fill_coefs ? fill(0.03, n_salcs(b)) :
            0.05 .* randn(MersenneTwister(41), n_salcs(b))
-    return SCEPredictor(b, 0.0, jphi), cr
+    return SLCEModel(b, 0.0, jphi), cr
 end
 
 # A fitted model whose training cell is a NON-diagonal (√2×√2, det M = 2) supercell
@@ -82,9 +82,9 @@ end
 function _checkerboard_model()
     lat = Lattice([1.0 1.0 0; -1.0 1.0 0; 0 0 4.0])
     cr = Crystal(lat, [0 0.5; 0 0.5; 0.0 0.0], [1, 1], ["Fe"])
-    b = SCEBasis(cr, BasisSpec(; nbody = 2, cutoff = 1.1, lmax = [1],
+    b = SLCEBasis(cr, BasisSpec(; nbody = 2, cutoff = 1.1, lmax = [1],
                                isotropy = true))
-    return SCEPredictor(b, 0.0, fill(-0.02, n_salcs(b))), cr
+    return SLCEModel(b, 0.0, fill(-0.02, n_salcs(b))), cr
 end
 
 # A periodic chain of one atom per cell coupled to its ±x neighbor images: the
@@ -92,7 +92,7 @@ end
 # representable on dims with N₁ ≥ 2). Hand-built raw MultipoleTerms: both directed
 # members of the +x bond, E = J e_(0)·e_(+x) summed over cells.
 function _chain_terms(J)
-    n1 = SCEFitting.Harmonics.N1                      # Z_1m = N1 * (y, z, x)[m+2]
+    n1 = SLCE.Harmonics.N1                      # Z_1m = N1 * (y, z, x)[m+2]
     folded = zeros(3, 3)
     folded[1, 1] = folded[2, 2] = folded[3, 3] = 1.0  # Σ_m Z_1m(a) Z_1m(b) ∝ a·b
     raw = J / (2 * n1^2 * (4π))                       # both members + (4π)^(2/2) scale

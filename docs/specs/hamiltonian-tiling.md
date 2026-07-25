@@ -7,7 +7,7 @@ gates in `test/unit/test_hamiltonian.jl`, `test/unit/test_energy.jl`.
 
 `multipole_terms(model)` emits every directed cluster member once, with per-site
 integer **training-cell** lattice translations `shifts` (`shifts[1] = 0` anchored —
-verified in SCEFitting: orbit members retain the anchored candidate-cluster shifts).
+verified in SLCE: orbit members retain the anchored candidate-cluster shifts).
 Tiling onto `dims = (N₁, N₂, N₃)` is pure integer bookkeeping:
 
 ```
@@ -38,7 +38,7 @@ The invariant is checked per term at the **site level under the actual `dims`**:
 cell-independent, so cell 0 covers all instances).
 
 - Minimum-image fitted models (the default) have distinct atoms per cluster outright
-  (SCEFitting drops reused-atom clusters in enumeration) → valid for any `dims`.
+  (SLCE drops reused-atom clusters in enumeration) → valid for any `dims`.
 - `AllImages` (spin-spiral) models may legitimately couple an atom to its own
   periodic image (`atoms = [a, a]`, `shifts = [0, R]`). These tile fine when `dims`
   keeps the images distinct sites, and are **rejected with a clear error** when the
@@ -58,7 +58,7 @@ payloads is what blew that package to multi-GB caches; the index-only layout cos
 Rejected alternative — fully on-the-fly instance reconstruction (no instance list):
 saves the MB but puts mod-arithmetic and shift resolution inside the innermost ΔE
 loop, and is much harder to test in isolation. The CSR adjacency also precomputes
-each site's member slot, replacing the `findfirst` of the SCETools single-cell
+each site's member slot, replacing the `findfirst` of the SLCETools single-cell
 kernel.
 
 ## T4 — the 4-function energy contract

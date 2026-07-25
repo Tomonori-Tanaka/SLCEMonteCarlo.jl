@@ -275,7 +275,7 @@ end
     for _ = 1:2000
         push!(dirs, _rand_spin(rng))
     end
-    H = SCEFitting.Harmonics
+    H = SLCE.Harmonics
     for lmax = 0:6
         nlm = (lmax + 1)^2
         cache = Vector{Float64}(undef, lmax + 2)

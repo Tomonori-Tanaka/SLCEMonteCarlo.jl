@@ -111,7 +111,7 @@
         # V(e) = c0·Z_10(e) = c0·N1·e_z, raw coef c0/(4π)^(1/2) — the ctor applies
         # (4π)^(1/2) exactly once.
         c0 = 0.3
-        n1 = SCEFitting.Harmonics.N1
+        n1 = SLCE.Harmonics.N1
         folded = zeros(3)
         folded[2] = 1.0                       # μ = 0 slot of l = 1
         z = SVector(0, 0, 0)

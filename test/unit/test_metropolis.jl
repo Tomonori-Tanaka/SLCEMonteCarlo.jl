@@ -1,6 +1,6 @@
 # Metropolis + run_mc: exact statistical gates (dimer pair correlation, single-site
 # Langevin), adaptive-step behavior, seed reproducibility, drift, annealing.
-# Statistical tolerances mirror the proven SCETools MC suite (fixed seeds).
+# Statistical tolerances mirror the proven SLCETools MC suite (fixed seeds).
 
 # ⟨e₁·e₂⟩ of the dimer's coupled pair, as a user observable.
 _corr12_obs() = Observable(:corr12, 1, (cfg, E, H) -> dot(cfg[1], cfg[2]))
@@ -33,7 +33,7 @@ _corr12_obs() = Observable(:corr12, 1, (cfg, E, H) -> dot(cfg[1], cfg[2]))
 
     @testset "single-site Langevin limit: ⟨e_z⟩ = −L(βh)" begin
         c0 = 0.3
-        n1 = SCEFitting.Harmonics.N1
+        n1 = SLCE.Harmonics.N1
         h = c0 * n1                        # V(e) = h·e_z
         folded = zeros(3)
         folded[2] = 1.0

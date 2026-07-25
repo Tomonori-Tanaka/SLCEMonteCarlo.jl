@@ -1,8 +1,8 @@
 # Nd2Fe14B — the 68-atom tetragonal cell (P4_2/mnm; Herbst et al., PRB 29, 4176
 # (1984)), with the nine crystallographic sublattices as distinct species
-# (Nd 4f/4g, Fe 16k1/16k2/8j1/8j2/4e/4c, B 4g). Copy of the SCEFitting.jl bench
+# (Nd 4f/4g, Fe 16k1/16k2/8j1/8j2/4e/4c, B 4g). Copy of the SLCE.jl bench
 # asset (converted from the Magesty nd2fe14b run input); the bench fixtures build
-# a synthetic-coefficient SCEPredictor on this structure as the realistic
+# a synthetic-coefficient SLCEModel on this structure as the realistic
 # heavy-kernel MC fixture (cf. the real l02 production model, 68 atoms /
 # 4692 terms). The [interaction] section is the fixture default; bench args
 # override nbody / cutoff.

@@ -1,6 +1,6 @@
-# Shared fixtures and timing helpers for the SCEMonteCarlo benchmark scripts.
+# Shared fixtures and timing helpers for the SLCEMonteCarlo benchmark scripts.
 #
-# `include`d (not `import`ed) by each bench/bench_*.jl. Mirrors the SCEFitting.jl
+# `include`d (not `import`ed) by each bench/bench_*.jl. Mirrors the SLCE.jl
 # bench convention (standalone scripts, own environment, `bench_one` harness).
 #
 # Two fixture models span the kernel-cost regimes:
@@ -17,11 +17,11 @@
 # are meaningless physically but the acceptance rates they produce are realistic at
 # the default kT below.
 
-using SCEMonteCarlo
-using SCEMonteCarlo: ChainState, SweepScratch, SpinConfig, site_coeffs!, delta_energy,
+using SLCEMonteCarlo
+using SLCEMonteCarlo: ChainState, SweepScratch, SpinConfig, site_coeffs!, delta_energy,
                      site_gradient, metropolis_sweep!, overrelaxation_sweep!
-using SCEFitting
-using Spglib: Spglib                    # activates SCEFitting's SpglibBackend extension
+using SLCE
+using Spglib: Spglib                    # activates SLCE's SpglibBackend extension
 using LinearAlgebra: norm, normalize, I
 using StaticArrays: SVector
 using Statistics: median, mean
@@ -29,14 +29,14 @@ using Printf: @printf, @sprintf
 using Random: MersenneTwister, Xoshiro
 using BenchmarkTools: @belapsed, @benchmark
 
-const MC = SCEMonteCarlo
+const MC = SLCEMonteCarlo
 
 # ---------------------------------------------------------------------------
 # Fixture models.
 # ---------------------------------------------------------------------------
 
 """
-    bcc_fe_model(; lmax = 1, cutoff = 2.6, seed = 11) -> SCEPredictor
+    bcc_fe_model(; lmax = 1, cutoff = 2.6, seed = 11) -> SLCEModel
 
 The light-kernel fixture: a 2-atom conventional bcc Fe training cell (a = 2.87 Å),
 isotropic pair basis up to `lmax`, first shell by default (the 8 NN bonds — WS
@@ -47,15 +47,15 @@ function bcc_fe_model(; lmax::Integer = 1, cutoff::Real = 2.6, seed::Integer = 1
     a = 2.87
     lat = Lattice([a 0 0; 0 a 0; 0 0 a])
     cr = Crystal(lat, [0.0 0.5; 0.0 0.5; 0.0 0.5], [1, 1], ["Fe"])
-    b = SCEBasis(cr, BasisSpec(; nbody = 2, cutoff = cutoff, lmax = [lmax],
+    b = SLCEBasis(cr, BasisSpec(; nbody = 2, cutoff = cutoff, lmax = [lmax],
                                isotropy = true); backend = SpglibBackend())
     jphi = 0.02 .* randn(MersenneTwister(seed), n_salcs(b))
-    return SCEPredictor(b, 0.0, jphi)
+    return SLCEModel(b, 0.0, jphi)
 end
 
 """
     nd2fe14b_model(; nbody = 2, cutoff = Inf, lmax_nd = 2, lmax_fe = 2,
-                   isotropy = true, seed = 13) -> SCEPredictor
+                   isotropy = true, seed = 13) -> SLCEModel
 
 The heavy-kernel fixture: the 68-atom Nd₂Fe₁₄B cell (`assets/nd2fe14b.toml`
 structure), anisotropic multi-species basis (`lmax = [lmax_nd ×2, lmax_fe ×6, 0]` —
@@ -69,13 +69,13 @@ function nd2fe14b_model(; nbody::Integer = 2, cutoff::Real = Inf, lmax_nd::Integ
     lmax = vcat(fill(Int(lmax_nd), 2), fill(Int(lmax_fe), 6), [0])
     spec = BasisSpec(; nbody = nbody, cutoff = cutoff, lmax = lmax,
                      isotropy = isotropy)
-    b = SCEBasis(inp.crystal, spec; backend = SpglibBackend(), tol = inp.tol)
+    b = SLCEBasis(inp.crystal, spec; backend = SpglibBackend(), tol = inp.tol)
     jphi = 0.01 .* randn(MersenneTwister(seed), n_salcs(b))
-    return SCEPredictor(b, 0.0, jphi)
+    return SLCEModel(b, 0.0, jphi)
 end
 
 """
-    nd2fe14b3_model(; cutoff = 3.5, seed = 13) -> SCEPredictor
+    nd2fe14b3_model(; cutoff = 3.5, seed = 13) -> SLCEModel
 
 The TRIPLET-heavy fixture: the Nd₂Fe₁₄B cell with `nbody = 3` at a 3.5 Å cutoff
 (pairs *and* triplet cliques — every Fe/Nd site active, ~17k terms, ~98 % of the
@@ -122,7 +122,7 @@ function describe(H::MC.TiledHamiltonian)
 end
 
 # ---------------------------------------------------------------------------
-# Timing harness (same shape as SCEFitting/bench).
+# Timing harness (same shape as SLCE/bench).
 # ---------------------------------------------------------------------------
 
 """

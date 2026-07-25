@@ -1,6 +1,6 @@
-# SCEMonteCarlo.jl — specification
+# SLCEMonteCarlo.jl — specification
 
-Full classical spin Monte Carlo for fitted SCE models from `SCEFitting.jl`.
+Full classical spin Monte Carlo for fitted SCE models from `SLCE.jl`.
 Self-contained core (no Carlo.jl), Threads parallelism, own binning analysis.
 This file tracks the architecture and public API; the decision records live in
 `docs/specs/*.md`. Validated end-to-end on the Nd₂Fe₁₄B l02 refit (68 atoms,
@@ -29,9 +29,9 @@ ferrimagnetic Nd-vs-Fe order at 250 K.
 
 ## Dependency boundary
 
-Reads a fitted model only through `SCEFitting`'s public surface
-(`multipole_terms`, `n_atoms`, `intercept`, `SCEFitting.load`, `Lattice`/`Crystal`,
-`SCEFitting.Harmonics`). The `(4π)^(body/2)` per-term scale is applied exactly once,
+Reads a fitted model only through `SLCE`'s public surface
+(`multipole_terms`, `n_atoms`, `intercept`, `SLCE.load`, `Lattice`/`Crystal`,
+`SLCE.Harmonics`). The `(4π)^(body/2)` per-term scale is applied exactly once,
 in the `TiledHamiltonian` constructor. The MC core is geometry-free (integer site
 topology only); geometry helpers take an explicit `Crystal`.
 
@@ -45,7 +45,7 @@ Exported: `KB_EV`, `TiledHamiltonian`, `n_sites`, `total_energy`, `Observable`,
 l02/l044 production validations) the GPU sweep API: `GPUTiledHamiltonian`,
 `GPUChainState`, `gpu_metropolis_sweep!`, `gpu_run_sweeps!`, `to_host!`.
 
-Public, unexported (`SCEMonteCarlo.<name>`): `resolve_kt`, `ScaledTerm`,
+Public, unexported (`SLCEMonteCarlo.<name>`): `resolve_kt`, `ScaledTerm`,
 `SpinConfig`, `site_index`, `site_atom`, `site_coeffs!`, `delta_energy`,
 `site_gradient`, `energy_gradient`, `energy_gradient!` (all-site exact
 tangent-projected `∂E/∂e_s`, bit-identical for any `ntasks` — the field/torque

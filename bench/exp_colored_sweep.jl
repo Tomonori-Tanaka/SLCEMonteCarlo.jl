@@ -9,7 +9,7 @@
 #
 # Measures ms/sweep of the sequential metropolis_sweep! vs the colored threaded
 # sweep on the two bench fixtures. Run: julia -t 8 --project=bench <this file>
-# from the SCEMonteCarlo.jl directory.
+# from the SLCEMonteCarlo.jl directory.
 
 include(joinpath(@__DIR__, "fixtures.jl"))
 

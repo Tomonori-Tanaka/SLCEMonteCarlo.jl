@@ -96,7 +96,7 @@ infrastructure since GPUArrays v11; CUDA.jl v6.x supports julia 1.12). Apple
 silicon has **no FP64 in Metal at all** (kernel Float64 is an `InvalidIRError`,
 no emulation in Metal.jl), so the M4 dev loop is: same kernels on **KA's CPU
 backend in Float64** for correctness/bit gates locally; compile-and-bench on kugui
-(`F1accs`/`L1accs` queues, A100 ×4 per acc node, one per PBS vnode — the `@sce`
+(`F1accs`/`L1accs` queues, A100 ×4 per acc node, one per PBS vnode — the `@slce`
 env from the deployment is the runtime). Device RNG and warp primitives are the
 two things KA does not abstract — the keyed Philox (F4) sidesteps both.
 

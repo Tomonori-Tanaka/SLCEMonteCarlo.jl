@@ -9,8 +9,8 @@
 # ntasks = 1 (the ladder is bit-identical regardless, so the speedup is pure thread
 # scaling; run with `julia -t N` to give it threads).
 
-using SCEMonteCarlo
-using SCEFitting
+using SLCEMonteCarlo
+using SLCE
 include(joinpath(@__DIR__, "fixtures.jl"))
 
 sweeps = argn(1, 500)

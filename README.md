@@ -1,7 +1,7 @@
-# SCEMonteCarlo.jl
+# SLCEMonteCarlo.jl
 
 Classical spin Monte Carlo for fitted SCE (symmetry-adapted cluster expansion)
-models from [SCEFitting.jl](https://github.com/Tomonori-Tanaka/SCEFitting.jl).
+models from [SLCE.jl](https://github.com/Tomonori-Tanaka/SLCE.jl).
 
 - **Supercell tiling** — replicate the fitted training-cell Hamiltonian onto an
   `N₁ × N₂ × N₃` supercell from the public `multipole_terms` introspection alone.
@@ -35,9 +35,9 @@ Temperatures are absolute, under exactly one of two keywords: `temperature`
 (kelvin) or `kT` (the model's energy units).
 
 ```julia
-using SCEMonteCarlo, SCEFitting
+using SLCEMonteCarlo, SLCE
 
-model = SCEFitting.load(SCEPredictor, "model.toml")
+model = SLCE.load(SLCEModel, "model.toml")
 H = TiledHamiltonian(model; dims = (4, 4, 4))
 
 result = run_mc(H; temperature = [1200, 900, 600, 300],   # annealing ladder

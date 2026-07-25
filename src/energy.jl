@@ -10,7 +10,7 @@
 # recomputation; body-2/3 site programs additionally take fully precomputed
 # pair/triplet fast paths (`site_col`(2)/`pent_row`(2)). The rank-generic
 # *reference kernels* at the bottom of this file are the readable spec — the
-# site-generalized siblings of SCETools' `mc/metropolis.jl`
+# site-generalized siblings of SLCETools' `mc/metropolis.jl`
 # (`_accumulate_site_term!` / `_term_energy`): the same `μ = idx − l − 1` index
 # mapping, rank-specialized function barriers over `folded`, contracted against
 # concrete tesseral rows — here columns of a dense `nlm × n_sites` matrix, with the
@@ -162,7 +162,7 @@ end
 
 On-sphere (tangent-projected) gradient of the total energy with respect to the spin
 direction of site `s`: `∇E = Σ_k c_k ∇Z_k(e_s)` with the leave-one-out coefficients
-of [`site_coeffs!`](@ref) and `SCEFitting.Harmonics.grad_Zlm_unsafe` (so
+of [`site_coeffs!`](@ref) and `SLCE.Harmonics.grad_Zlm_unsafe` (so
 `e_s · ∇E = 0`). Diagnostics/tests — not on the sweep hot path.
 """
 function site_gradient(H::TiledHamiltonian, s::Integer,
@@ -211,11 +211,11 @@ end
 
 All-site, tangent-projected gradient of the total SCE energy: `G[s] = ∂E/∂e_s`
 with `e_s · G[s] == 0` exactly (the radial part is removed by
-`SCEFitting.Harmonics.grad_Zlm_unsafe`), exact at any body order — the
+`SLCE.Harmonics.grad_Zlm_unsafe`), exact at any body order — the
 leave-one-out coefficients of [`site_coeffs!`](@ref) are independent of `e_s`, so
 no linearization is involved. Inactive sites receive exactly zero. Units: model
 energy per unit direction. The physical (Landau–Lifshitz) torque is
-`τ_s = G[s] × e_s` — matching `SCEFitting.predict_torque` on the training cell —
+`τ_s = G[s] × e_s` — matching `SLCE.predict_torque` on the training cell —
 and the effective field is `B_s = −G[s]/(magmom_s·μ_B)`; moment magnitudes are
 the caller's (this package holds unit directions only).
 

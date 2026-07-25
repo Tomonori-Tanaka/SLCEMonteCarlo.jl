@@ -32,7 +32,7 @@ One fitted SCE term template in consumer form: `coef` is the raw fitted `jϕ` ti
 `(4π)^(body/2)` — the scale is applied here, **exactly once** in the package — with
 the member `atoms` (training-cell indices), per-site integer lattice `shifts`
 (`shifts[1] = 0`), per-site angular momenta `ls`, and the rank-`body` real coefficient
-tensor `folded`. Copied out of `SCEFitting.MultipoleTerm` (value semantics — never an
+tensor `folded`. Copied out of `SLCE.MultipoleTerm` (value semantics — never an
 alias of the model's arrays).
 """
 struct ScaledTerm
@@ -175,7 +175,7 @@ function _build_programs(terms::Vector{ScaledTerm}, inst_term::Vector{Int32},
 end
 
 """
-    TiledHamiltonian(model::SCEPredictor; dims = (1, 1, 1))
+    TiledHamiltonian(model::SLCEModel; dims = (1, 1, 1))
     TiledHamiltonian(n_cell_atoms, terms::Vector{MultipoleTerm}; dims = (1, 1, 1))
 
 The fitted SCE Hamiltonian tiled onto an `dims = (N₁, N₂, N₃)` supercell of the
@@ -352,7 +352,7 @@ struct TiledHamiltonian
     end
 end
 
-TiledHamiltonian(model::SCEPredictor; dims::NTuple{3,Integer} = (1, 1, 1)) =
+TiledHamiltonian(model::SLCEModel; dims::NTuple{3,Integer} = (1, 1, 1)) =
     TiledHamiltonian(n_atoms(model), multipole_terms(model); dims = dims)
 
 # Greedy proper coloring of the site-conflict graph, in site order (deterministic —

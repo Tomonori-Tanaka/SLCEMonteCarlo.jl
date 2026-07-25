@@ -1,7 +1,7 @@
 # The all-site public gradient `energy_gradient!` / `energy_gradient`: bitwise
 # consistency with the per-site `site_gradient` and with `minimize.jl`'s internal
 # `_gradient!` (one `_site_grad` kernel behind all three), task-count independence,
-# central finite differences, the SCEFitting torque cross-check (τ = G × e), and the
+# central finite differences, the SLCE torque cross-check (τ = G × e), and the
 # inactive-site convention.
 
 @testset "energy_gradient" begin
@@ -43,7 +43,7 @@
         end
     end
 
-    @testset "τ = G × e ≡ SCEFitting.predict_torque on the training cell" begin
+    @testset "τ = G × e ≡ SLCE.predict_torque on the training cell" begin
         model = _biquadratic_model(3)
         H = TiledHamiltonian(model; dims = (1, 1, 1))
         config = _rand_config(rng, H)

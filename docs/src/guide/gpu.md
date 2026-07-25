@@ -1,7 +1,7 @@
 # The GPU path
 
 ```@meta
-CurrentModule = SCEMonteCarlo
+CurrentModule = SLCEMonteCarlo
 ```
 
 The device path runs the single-spin Metropolis sweep — any body order, the exact
@@ -28,10 +28,10 @@ underneath them, and it is deliberately narrow:
   loop.
 
 ```julia
-using SCEMonteCarlo, CUDA
+using SLCEMonteCarlo, CUDA
 
 H   = TiledHamiltonian(model; dims = (8, 8, 8))
-st  = SCEMonteCarlo.ChainState(H, config0, Xoshiro(1), 0.6)   # host chain, step 0.6
+st  = SLCEMonteCarlo.ChainState(H, config0, Xoshiro(1), 0.6)   # host chain, step 0.6
 gH  = GPUTiledHamiltonian(CUDABackend(), H)          # upload tables ONCE, reuse
 gst = GPUChainState(gH, st; seed = 0x5ce)            # keys the device Philox
 
@@ -60,27 +60,27 @@ A small live run on the KA-CPU backend (the cubic-Heisenberg model of the
 tutorial):
 
 ```@example gpu
-using SCEMonteCarlo, SCEFitting
-import Spglib                      # activates SCEFitting's SpglibBackend extension
+using SLCEMonteCarlo, SLCE
+import Spglib                      # activates SLCE's SpglibBackend extension
 using LinearAlgebra, Random
 
 lat = Lattice(Matrix(1.0 * I(3)))
 cell = Crystal(lat, reshape([0.0, 0.0, 0.0], 3, 1), [1], ["Fe"])
 spec = BasisSpec(; nbody = 2, cutoff = 1.1, lmax = [1], isotropy = true)
-basis = SCEBasis(cell, spec; backend = SpglibBackend(), images = AllImages())
-model = SCEPredictor(basis, 0.0, [-0.01])
+basis = SLCEBasis(cell, spec; backend = SpglibBackend(), images = AllImages())
+model = SLCEModel(basis, 0.0, [-0.01])
 H = TiledHamiltonian(model; dims = (4, 4, 4))
 
-config0 = SCEMonteCarlo.from_matrix(randn(Xoshiro(11), 3, n_sites(H)))
+config0 = SLCEMonteCarlo.from_matrix(randn(Xoshiro(11), 3, n_sites(H)))
 
-backend = SCEMonteCarlo.KernelAbstractions.CPU()
+backend = SLCEMonteCarlo.KernelAbstractions.CPU()
 gH = GPUTiledHamiltonian(backend, H)
 
-st1 = SCEMonteCarlo.ChainState(H, config0, Xoshiro(11), 0.6)
+st1 = SLCEMonteCarlo.ChainState(H, config0, Xoshiro(11), 0.6)
 gst1 = GPUChainState(gH, st1; seed = UInt64(0xc0ffee))
 gpu_run_sweeps!(gst1, gH, st1, 1 / 0.02, 200; renorm_interval = 50)
 
-st2 = SCEMonteCarlo.ChainState(H, config0, Xoshiro(11), 0.6)
+st2 = SLCEMonteCarlo.ChainState(H, config0, Xoshiro(11), 0.6)
 gst2 = GPUChainState(gH, st2; seed = UInt64(0xc0ffee))
 gpu_run_sweeps!(gst2, gH, st2, 1 / 0.02, 200; renorm_interval = 50)
 
@@ -103,8 +103,8 @@ not fit the 40 GB part). No performance claims beyond these measurements.
 
 ## The gradient tier (dependent packages)
 
-The device all-site gradient — `SCEMonteCarlo.gpu_energy_gradient!` with
-`SCEMonteCarlo.GPUGradientScratch` and the row builder
-`SCEMonteCarlo.gpu_zlm_rows!` — is the seam consumed by `SCESpinDynamics.jl`'s
+The device all-site gradient — `SLCEMonteCarlo.gpu_energy_gradient!` with
+`SLCEMonteCarlo.GPUGradientScratch` and the row builder
+`SLCEMonteCarlo.gpu_zlm_rows!` — is the seam consumed by `SLCEDynamics.jl`'s
 GPU dynamics. It stays **public, unexported** (call it qualified): it is an
 inter-package contract, not an end-user surface.

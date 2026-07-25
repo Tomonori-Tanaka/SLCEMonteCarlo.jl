@@ -10,7 +10,7 @@ The `N₁ × N₂ × N₃` supercell of the training-cell `crystal`, with atoms 
 **exactly like the sites of a same-`dims` [`TiledHamiltonian`](@ref)** (atom
 fastest, cells column-major — `site_index`): supercell atom `s` is training atom
 `site_atom(H, s)` in the matching cell. Use it to pair sampled configurations with
-positions for DFT input generation (e.g. `SCETools.VASP`).
+positions for DFT input generation (e.g. `SLCETools.VASP`).
 """
 function supercell_crystal(crystal::Crystal, dims::NTuple{3,Integer})::Crystal
     all(d -> d >= 1, dims) || throw(ArgumentError("dims must be ≥ 1; got $dims"))
@@ -37,8 +37,8 @@ end
     to_matrix(config::SpinConfig) -> Matrix{Float64}
 
 The `3 × n_sites` matrix view (rows x, y, z; columns sites) of a configuration —
-the layout of the sibling packages (`SCEFitting.predict_energy`,
-`SCETools.VASP.write_inputs`).
+the layout of the sibling packages (`SLCE.predict_energy`,
+`SLCETools.VASP.write_inputs`).
 """
 to_matrix(config::SpinConfig)::Matrix{Float64} = _config_matrix(config)
 

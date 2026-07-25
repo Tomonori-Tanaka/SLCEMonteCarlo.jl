@@ -148,7 +148,7 @@ seam).
 ### Production-model validation (2026-07-16, kugui F1accs)
 
 Physics gate on a real fitted model, not a fixture: the Nd₂Fe₁₄B l02 model
-(isotropic bilinear, 179 SALCs) refit from the original EMBSET with SCEFitting
+(isotropic bilinear, 179 SALCs) refit from the original EMBSET with SLCE
 (rmse vs the Magesty fit 3.4 meV), tiled to 8³ (34,816 sites, 38 colors, mean
 adjacency 147). The tuned CPU sampler (4 sweep tasks) and the A100 kernel ran
 as independent chains with identical measurement code (1500 therm + 3000 sweeps,
@@ -170,7 +170,7 @@ temperatures. Real-model speedup: 1.34 vs 19.4 ms/sweep = **14.4× at 8³**
 ### Production-model validation — l044, nbody = 3 (2026-07-17, kugui F1accs)
 
 The heavy production target: the Nd₂Fe₁₄B l044 model (nbody = 3, body-2/3
-`lsum = 4`, 4672 SALCs — refit from the original EMBSET with SCEFitting's
+`lsum = 4`, 4672 SALCs — refit from the original EMBSET with SLCE's
 per-body-lsum BasisSpec, rmse vs the Magesty fit 14.4 meV), 405,312 multipole
 terms and mean adjacency 18,852 (128× l02's). The statistics gate ran at 3³
 (1836 sites — the CPU chains dominate the walltime at ~0.9 s/sweep), CPU-8T
@@ -211,7 +211,7 @@ bench scripts turn into a fail-fast error when CUDA is not functional.
 
 ## G7 — phase 2: device all-site gradient (`src/gpu/grad_device.jl`, `src/gpu/gpu_gradient.jl`)
 
-The entry point SCESpinDynamics' GPU LLG consumes: `gpu_energy_gradient!` —
+The entry point SLCEDynamics' GPU LLG consumes: `gpu_energy_gradient!` —
 all-site, tangent-projected `G[s] = ∂E/∂e_s`, the device twin of the host
 `energy_gradient!` (public tier, unexported, with `GPUGradientScratch` and
 `gpu_zlm_rows!`).

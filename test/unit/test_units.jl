@@ -1,6 +1,6 @@
 @testset "units / temperature control" begin
     @testset "KB_EV" begin
-        @test SCEMonteCarlo.KB_EV == 1.380649e-23 / 1.602176634e-19
+        @test SLCEMonteCarlo.KB_EV == 1.380649e-23 / 1.602176634e-19
         @test isapprox(KB_EV, 8.617333262e-5; rtol = 1e-9)   # exported
     end
 

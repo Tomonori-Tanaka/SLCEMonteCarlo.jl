@@ -1,17 +1,17 @@
-# SCEMonteCarlo.jl benchmarks
+# SLCEMonteCarlo.jl benchmarks
 
 Performance benchmarks for the MC hot paths, built to **localize bottlenecks**, not
 just to time end-to-end runs: the sweep cost is decomposed into its kernels, every
 in-place path reports its allocation count (nonzero = red flag), and a profiler
 script gives line-level attribution. Each script is standalone and runs in the
 `bench/` environment (its own `Project.toml`/`Manifest.toml`, which develops this
-package and `../SCEFitting.jl`).
+package and `../SLCE.jl`).
 
 ## Setup (once)
 
 ```bash
 julia --project=bench -e 'using Pkg; \
-    Pkg.develop([PackageSpec(path="."), PackageSpec(path="../SCEFitting.jl")]); \
+    Pkg.develop([PackageSpec(path="."), PackageSpec(path="../SLCE.jl")]); \
     Pkg.add(["BenchmarkTools", "Spglib", "StaticArrays", "Statistics", "Printf", \
              "Random", "LinearAlgebra", "Profile"]); Pkg.instantiate()'
 ```
@@ -44,14 +44,14 @@ julia --project=bench bench/bench_profile.jl  [target] [fixture] [secs]  # line-
 
 ## Fixtures (`fixtures.jl`)
 
-Two synthetic-coefficient `SCEPredictor` models span the kernel-cost regimes:
+Two synthetic-coefficient `SLCEModel` models span the kernel-cost regimes:
 
 - **`bcc_fe_model()`** — 2-atom bcc Fe training cell, isotropic `l = 1` pair basis
   (nlm = 4, 16 shift-carrying directed pair terms, site adjacency 16): the
   light-kernel / large-lattice regime, where throughput is bookkeeping-bound.
   Tiled 8³ → 1024 sites by default.
 - **`nd2fe14b_model()`** — the 68-atom Nd₂Fe₁₄B cell (`assets/nd2fe14b.toml`,
-  same structure asset as SCEFitting's bench), 9 sublattice species (B
+  same structure asset as SLCE's bench), 9 sublattice species (B
   non-magnetic, `lmax = 0`), `l ≤ 2`, every resolvable pair → ~9400 terms and site
   adjacency ~276 (cf. the real l02 production model, 4692 terms): the heavy-kernel
   regime where `site_coeffs!` dominates. Tiled 2³ → 544 sites by default
@@ -60,7 +60,7 @@ Two synthetic-coefficient `SCEPredictor` models span the kernel-cost regimes:
 Coefficients are seeded random (timing is value-independent); `BENCH_KT = 0.025 eV`
 gives realistically mixed acceptance so the accepted-move bookkeeping is included.
 Helpers: `rand_config`, `chain_state` (frozen step), `describe`, `bench_one` /
-`bench_header` / `argn` / `argf` (as in SCEFitting's bench).
+`bench_header` / `argn` / `argf` (as in SLCE's bench).
 
 ## Recording results
 

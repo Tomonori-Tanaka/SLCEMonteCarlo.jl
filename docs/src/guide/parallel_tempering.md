@@ -1,7 +1,7 @@
 # Parallel tempering
 
 ```@meta
-CurrentModule = SCEMonteCarlo
+CurrentModule = SLCEMonteCarlo
 ```
 
 [`run_pt`](@ref) runs one chain (**lane**) per rung of a strictly monotone
@@ -43,14 +43,14 @@ the same fitted-model surface as production runs), whose low-temperature landsca
 has several competing basins:
 
 ```@example pt
-using SCEMonteCarlo, SCEFitting
+using SLCEMonteCarlo, SLCE
 using LinearAlgebra, Random
 
 lat = Lattice(Matrix(3.0 * I(3)))
 cell = Crystal(lat, [0.2 -0.2; 0.0 0.0; 0.0 0.0], [1, 1], ["Fe"])
-basis = SCEBasis(cell, BasisSpec(; nbody = 2, cutoff = 1.5, lmax = [2],
+basis = SLCEBasis(cell, BasisSpec(; nbody = 2, cutoff = 1.5, lmax = [2],
                                  isotropy = false))
-model = SCEPredictor(basis, 0.0, 0.05 .* randn(MersenneTwister(3), n_salcs(basis)))
+model = SLCEModel(basis, 0.0, 0.05 .* randn(MersenneTwister(3), n_salcs(basis)))
 H = TiledHamiltonian(model; dims = (2, 2, 2))
 nothing # hide
 ```

@@ -1,7 +1,7 @@
 # Theory: error analysis
 
 ```@meta
-CurrentModule = SCEMonteCarlo
+CurrentModule = SLCEMonteCarlo
 ```
 
 ## Log-binning

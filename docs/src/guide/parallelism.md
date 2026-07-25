@@ -1,7 +1,7 @@
 # Parallelism: what runs where
 
 ```@meta
-CurrentModule = SCEMonteCarlo
+CurrentModule = SLCEMonteCarlo
 ```
 
 This page states exactly how the package is parallelized, what it deliberately
@@ -116,10 +116,10 @@ julia -t $SLURM_CPUS_PER_TASK --project driver.jl $SLURM_ARRAY_TASK_ID
 with a `driver.jl` along the lines of
 
 ```julia
-using SCEMonteCarlo, SCEFitting, JLD2
+using SLCEMonteCarlo, SLCE, JLD2
 
 task = parse(Int, ARGS[1])
-model = SCEFitting.load(SCEPredictor, "model.toml")
+model = SLCE.load(SLCEModel, "model.toml")
 
 sizes = [(4, 4, 4), (6, 6, 6), (8, 8, 8), (10, 10, 10)]
 seeds = 1:4

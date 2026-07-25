@@ -1,7 +1,7 @@
 # Observables and evaluables
 
 ```@meta
-CurrentModule = SCEMonteCarlo
+CurrentModule = SLCEMonteCarlo
 ```
 
 Nothing is hard-coded into the sweep: a run measures a vector of
