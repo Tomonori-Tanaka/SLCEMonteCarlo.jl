@@ -184,7 +184,7 @@ function gpu_metropolis_sweep!(gst::GPUChainState, gH::GPUTiledHamiltonian,
     gst.energy += _reduce_dE(H, gst.h_dE)
     nacc = Int(sum(gst.h_acc))
     gst.acc_metro += nacc
-    gst.att_metro += H.n_active
+    gst.att_metro += H.n_spin_active
     gst.sweep_index += 1
     return nacc
 end
@@ -229,6 +229,9 @@ function _metropolis_sweep_keyed_ref!(config::SpinConfig, zrows::Matrix{Float64}
                                       H::TiledHamiltonian, β::Float64,
                                       step::Float64, seed::UInt64, sweep::Int32,
                                       ws::Int)::Int
+    # Test-only reference, but it sizes its buffers from `H.nlm`/`H.lmax` and would
+    # silently drop a displacement channel rather than throw.
+    _require_spin_only(H, "_metropolis_sweep_keyed_ref!")
     tb = _GPUTables(H.site_ptr, H.site_inst, H.inst_ptr, H.inst_sites,
                     H.progs.site_prog, H.progs.sprog_ptr, H.progs.sent_w,
                     H.progs.sent_tgt, H.progs.sfac_ptr, H.progs.sfac_row,

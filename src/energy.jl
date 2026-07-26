@@ -37,14 +37,72 @@ end
 _zlm_row!(z::AbstractVector{Float64}, e::SVector{3,Float64}, lmax::Int) =
     _zlm_row!(z, e, lmax, Vector{Float64}(undef, lmax + 1))
 
-# Fresh `nlm × n_sites` tesseral-row matrix of a configuration (column s = Z_lm(e_s)).
-function _zrows(H::TiledHamiltonian, config::SpinConfig)::Matrix{Float64}
+# Tabulate one site's DISPLACEMENT rows into `rows` (a full `H.nrows` column):
+# `|u|^{2k} R_lm(u)` for every `(k, l)` block of the layout. `rbuf` (length ≥
+# `(disp_lmax + 1)²`) is the solid-harmonic batch workspace — one batch per site serves
+# every block, whereas SLCE's reference filler calls the convenience `Rlm` accessor per
+# `(k, l, m)` and re-batches each time. The values must be identical either way (the
+# recurrences fill bottom-up, so a higher `lmax` cannot change a lower entry); the
+# bitwise gate against `SLCE.site_rows!` in test_joint.jl is what holds that.
+function _disp_rows!(rows::AbstractVector{Float64}, H::TiledHamiltonian,
+                     u::SVector{3,Float64}, rbuf::Vector{Float64})
+    SolidHarmonics.solid_harmonics!(rbuf, H.disp_lmax, u)
+    r2 = dot(u, u)
+    L = H.layout
+    @inbounds for (i, (k, l)) in pairs(L.disp_factors)
+        r2k = r2^k
+        base = L.disp_starts[i]
+        for m = -l:l
+            rows[base + m + l + 1] =
+                r2k * rbuf[SolidHarmonics.solid_harmonic_index(l, m)]
+        end
+    end
+    return rows
+end
+
+# Fresh `nrows × n_sites` basis-row matrix of a state: the SPIN block (rows
+# `1:nlm`, column s = Z_lm(e_s)) and, on a joint Hamiltonian, the displacement blocks.
+# `disps === nothing` is legal only when `H` has no displacement rows — sampling a
+# joint model at an unstated `u` would silently mean `u = 0`.
+function _zrows(H::TiledHamiltonian, config::SpinConfig,
+                disps::Union{Nothing,Vector{SVector{3,Float64}}} = nothing)::Matrix{Float64}
     length(config) == H.n_sites || throw(DimensionMismatch(
         "config has $(length(config)) sites but the Hamiltonian has $(H.n_sites)"))
-    zrows = Matrix{Float64}(undef, H.nlm, H.n_sites)
+    if disps === nothing
+        has_disp(H) && throw(ArgumentError(
+            "this Hamiltonian carries displacement rows $(H.layout.disp_factors); " *
+            "pass the displacements explicitly (a missing `disps` would silently " *
+            "mean u = 0)"))
+    else
+        length(disps) == H.n_sites || throw(DimensionMismatch(
+            "disps has $(length(disps)) sites but the Hamiltonian has $(H.n_sites)"))
+        # The same footgun from the other side: a pure-spin Hamiltonian has nowhere to
+        # put displacements, so accepting nonzero ones would silently evaluate at u = 0.
+        # (All-zero is fine — that IS the state such a model describes, and it lets a
+        # driver pass `disps` uniformly across a joint model and its `restrict`ion.)
+        has_disp(H) || all(iszero, disps) || throw(ArgumentError(
+            "this Hamiltonian has no displacement rows, but `disps` contains nonzero " *
+            "displacements; it describes the clamped-ion (u = 0) energy only, so " *
+            "evaluating it here would silently ignore them"))
+    end
+    zrows = Matrix{Float64}(undef, H.nrows, H.n_sites)
     plm = Vector{Float64}(undef, H.lmax + 1)
+    # Two loops rather than one with a per-site branch: `disps === nothing` narrows the
+    # union away (JET has no other way to know `disps[s]` is reachable only when the
+    # displacements are there), and the pure-spin branch stays the pre-M4 whole-column
+    # fill with no nested view.
+    if disps === nothing
+        for s = 1:H.n_sites
+            _zlm_row!(view(zrows, :, s), config[s], H.lmax, plm)
+        end
+        return zrows
+    end
+    rbuf = Vector{Float64}(undef, max(0, (H.disp_lmax + 1)^2))
+    joint = has_disp(H)
     for s = 1:H.n_sites
-        _zlm_row!(view(zrows, :, s), config[s], H.lmax, plm)
+        col = view(zrows, :, s)
+        _zlm_row!(view(col, 1:H.nlm), config[s], H.lmax, plm)
+        joint && _disp_rows!(col, H, disps[s], rbuf)
     end
     return zrows
 end
@@ -62,10 +120,12 @@ function _total_energy(H::TiledHamiltonian, zrows::Matrix{Float64})::Float64
         for e = Int(pr.eprog_ptr[k]):(Int(pr.eprog_ptr[k + 1]) - 1)
             p = 1.0
             f0 = Int(pr.efac_ptr[e]) - 1
-            # factor position m IS the member slot: energy factors are pushed for
-            # k = 1:body in order, none skipped (`_push_term_programs!`)
+            # one factor per tensor axis, pushed in axis order with none skipped
+            # (`_push_term_programs!`); `efac_site` maps the axis to its member site
+            # position, which for a pure-spin term is the axis index itself
             for m = 1:(Int(pr.efac_ptr[e + 1]) - 1 - f0)
-                p *= zrows[pr.efac_row[f0 + m], H.inst_sites[off + m]]
+                f = f0 + m
+                p *= zrows[pr.efac_row[f], H.inst_sites[off + pr.efac_site[f]]]
             end
             Ei += pr.eent_w[e] * p
         end
@@ -76,26 +136,56 @@ end
 
 """
     total_energy(H::TiledHamiltonian, config::SpinConfig) -> Float64
+    total_energy(H::TiledHamiltonian, config::SpinConfig, disps) -> Float64
 
-The SCE energy of `config` on the tiled supercell, in the model's energy units with
+The SCE energy of a state on the tiled supercell, in the model's energy units with
 the intercept `j0` excluded: the sum of every cluster instance's contraction
-`coef · Σ_μ folded[μ] ∏ᵢ Z_{lᵢμᵢ}(e_{siteᵢ})`. On the training cell
-(`dims = (1,1,1)`) this equals `predict_energy(model, config) − intercept(model)`.
+`coef · Σ_μ folded[μ] ∏ᵢ fᵢ(μᵢ)` over its tensor axes, with `fᵢ` the axis's own site
+factor — `Z_{l,m}(ê_a)` on a spin axis, `|u_a|^{2k} R_{l,m}(u_a)` on a displacement
+one. On the training cell (`dims = (1,1,1)`) this equals
+`predict_energy(model, config[, disps]) − intercept(model)`.
+
+`disps` is a `Vector{SVector{3,Float64}}` of Cartesian displacements, one per site, in
+the model's length units. It is **required** on a Hamiltonian with displacement rows
+([`has_disp`](@ref)) — omitting it there throws rather than silently meaning `u = 0`.
+On a Hamiltonian *without* displacement rows only an all-zero `disps` is accepted (that
+is the clamped-ion state such a model describes); nonzero displacements throw rather
+than being ignored.
 """
 total_energy(H::TiledHamiltonian, config::SpinConfig)::Float64 =
     _total_energy(H, _zrows(H, config))
 
+total_energy(H::TiledHamiltonian, config::SpinConfig,
+            disps::Vector{SVector{3,Float64}})::Float64 =
+    _total_energy(H, _zrows(H, config, disps))
+
 """
     site_coeffs!(c, H::TiledHamiltonian, s::Integer, zrows) -> c
 
-Leave-one-out coefficient vector of site `s`: accumulate into `c` (length `H.nlm`,
-**not** zeroed here) the coefficient of `Z_lm(e_s)` from every instance touching `s`,
-contracting each template's `folded` against the concrete tesseral columns of the
-*other* member sites. Because every cluster's sites are distinct (constructor
-invariant), `c` is independent of `e_s`, so the site energy is exactly `c · Z(e_s)`
-and a single-spin move has the exact energy change
-[`delta_energy`](@ref)`(c, Z(e_s), Z(e_s′))` — any body order, no linearization.
-β never enters; `c` is in the model's energy units.
+Leave-one-out coefficient vector of site `s`: accumulate into `c` (length `H.nrows`,
+**not** zeroed here) the coefficient of each of site `s`'s basis rows, from every
+instance touching `s`, contracting each template's `folded` against the concrete
+columns of the *other* axes. Because every cluster's member sites are distinct
+(constructor invariant), a move at `s` has the exact energy change
+
+    delta_energy(c, rows_old, rows_new)
+
+for any body order, with no linearization. β never enters; `c` is in the model's energy
+units.
+
+**On a joint Hamiltonian that ΔE identity is the whole contract** — in particular
+`c · rows(s)` is *not* the site energy there. A site's spin and displacement axes
+multiply each other, so each two-axis instance contributes to the coefficient of *both*
+of the site's rows and `dot(c, rows(s))` counts it twice (measured: ~0.5–0.75 of the
+true per-site sum on a mixed fixture). The `c · rows(s)` reading is valid only when
+every instance puts exactly one axis on `s`, i.e. on a pure-spin model.
+
+The ΔE identity holds exactly for a move that changes **one channel** of the site: the
+other channel's row is then a constant factor already folded into `c`, and the rows that
+did not move contribute `c_k · 0`. A *simultaneous* spin+displacement move on one site
+misses exactly the cross term `Δzᵀ M Δr` (there is no `Δz·Δz` or `Δr·Δr` remainder — the
+constructor enforces at most one axis per `(site, channel)`). Every update this package
+proposes is single-channel.
 """
 function site_coeffs!(c::Vector{Float64}, H::TiledHamiltonian, s::Integer,
                       zrows::Matrix{Float64})::Vector{Float64}
@@ -167,8 +257,9 @@ of [`site_coeffs!`](@ref) and `SLCE.Harmonics.grad_Zlm_unsafe` (so
 """
 function site_gradient(H::TiledHamiltonian, s::Integer,
                        config::SpinConfig)::SVector{3,Float64}
+    _require_spin_only(H, "site_gradient")
     zrows = _zrows(H, config)
-    c = site_coeffs!(zeros(H.nlm), H, s, zrows)
+    c = site_coeffs!(zeros(H.nrows), H, s, zrows)
     e = config[s]
     g = zero(SVector{3,Float64})
     i = 0
@@ -233,6 +324,7 @@ function energy_gradient!(G::Vector{SVector{3,Float64}}, H::TiledHamiltonian,
     length(G) == H.n_sites || throw(DimensionMismatch(
         "G has $(length(G)) entries but the Hamiltonian has $(H.n_sites) sites"))
     ntasks >= 1 || throw(ArgumentError("ntasks must be ≥ 1; got $ntasks"))
+    _require_spin_only(H, "energy_gradient!")
     zrows = _zrows(H, config)                       # also validates config length
     nt = min(Int(ntasks), H.n_sites)
     if nt <= 1
@@ -261,7 +353,7 @@ function _gradient_chunk!(G::Vector{SVector{3,Float64}}, H::TiledHamiltonian,
     c = zeros(H.nlm)
     plm = Vector{Float64}(undef, H.lmax + 1)
     for s = lo:hi
-        G[s] = H.site_active[s] ? _site_grad(H, s, config[s], zrows, c, plm) :
+        G[s] = H.site_has_spin[s] ? _site_grad(H, s, config[s], zrows, c, plm) :
                zero(SVector{3,Float64})     # spin-independent site: exactly zero
     end
     return nothing
@@ -277,7 +369,7 @@ end
 # One instance's full contraction against the concrete site columns of `zrows`
 # (rank-specialized barrier; `sites` is that instance's slice of `inst_sites`).
 @inline function _instance_energy(coef::Float64, sites::AbstractVector{Int32},
-                                  ls::Vector{Int}, folded::Array{Float64,D},
+                                  slots::Vector{TermSlot}, folded::Array{Float64,D},
                                   zrows::Matrix{Float64})::Float64 where {D}
     E = 0.0
     @inbounds for idx in CartesianIndices(folded)
@@ -285,8 +377,8 @@ end
         w == 0.0 && continue
         p = 1.0
         for k = 1:D
-            μk = idx[k] - ls[k] - 1
-            p *= zrows[Harmonics.lm_index(ls[k], μk), sites[k]]
+            # row of component μ = idx − l − 1 is row0 + μ + l + 1 = row0 + idx
+            p *= zrows[slots[k].row0 + idx[k], sites[slots[k].site]]
         end
         E += w * p
     end
@@ -299,29 +391,33 @@ function _total_energy_ref(H::TiledHamiltonian, zrows::Matrix{Float64})::Float64
     @inbounds for i in eachindex(H.inst_term)
         term = H.terms[H.inst_term[i]]
         sites = view(H.inst_sites, H.inst_ptr[i]:(H.inst_ptr[i + 1] - 1))
-        E += _instance_energy(term.coef, sites, term.ls, term.folded, zrows)
+        E += _instance_energy(term.coef, sites, term.slots, term.folded, zrows)
     end
     return E
 end
 
-# One instance's contribution to the coefficient-of-Z_lm at member position `slot`
-# (rank-specialized barrier; `off` is the instance's offset into `inst_sites`).
-@inline function _accumulate_instance!(c::Vector{Float64}, slot::Int, coef::Float64,
+# One instance's contribution to the row coefficients of member site position `q` —
+# summed over EVERY tensor axis sitting on that site, in ascending axis order (the
+# concatenation order of the merged site program). A pure-spin term has exactly one
+# axis per site, so the `v` loop runs once and this is the pre-M4 kernel verbatim.
+# (Rank-specialized barrier; `off` is the instance's offset into `inst_sites`.)
+@inline function _accumulate_instance!(c::Vector{Float64}, q::Int, coef::Float64,
                                        off::Int, inst_sites::Vector{Int32},
-                                       ls::Vector{Int}, folded::Array{Float64,D},
+                                       slots::Vector{TermSlot}, folded::Array{Float64,D},
                                        zrows::Matrix{Float64}) where {D}
-    @inbounds for idx in CartesianIndices(folded)
-        w = coef * folded[idx]
-        w == 0.0 && continue
-        p = 1.0
-        for k = 1:D
-            k == slot && continue
-            μk = idx[k] - ls[k] - 1
-            p *= zrows[Harmonics.lm_index(ls[k], μk), inst_sites[off + k]]
+    @inbounds for v = 1:D
+        slots[v].site == q || continue
+        for idx in CartesianIndices(folded)
+            w = coef * folded[idx]
+            w == 0.0 && continue
+            p = 1.0
+            for k = 1:D
+                k == v && continue
+                p *= zrows[slots[k].row0 + idx[k], inst_sites[off + slots[k].site]]
+            end
+            p == 0.0 && continue
+            c[slots[v].row0 + idx[v]] += w * p
         end
-        p == 0.0 && continue
-        μi = idx[slot] - ls[slot] - 1
-        c[Harmonics.lm_index(ls[slot], μi)] += w * p
     end
     return c
 end
@@ -333,7 +429,7 @@ function _site_coeffs_ref!(c::Vector{Float64}, H::TiledHamiltonian, s::Integer,
         i = H.site_inst[j]
         term = H.terms[H.inst_term[i]]
         _accumulate_instance!(c, Int(H.site_slot[j]), term.coef,
-                              Int(H.inst_ptr[i]) - 1, H.inst_sites, term.ls,
+                              Int(H.inst_ptr[i]) - 1, H.inst_sites, term.slots,
                               term.folded, zrows)
     end
     return c

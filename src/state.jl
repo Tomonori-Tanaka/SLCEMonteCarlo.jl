@@ -35,6 +35,7 @@ end
 function ChainState(H::TiledHamiltonian, config::SpinConfig, rng::Xoshiro,
                     step::Real)
     step > 0 || throw(ArgumentError("step must be > 0; got $step"))
+    _require_spin_only(H, "ChainState (and hence run_mc / run_pt)")
     zrows = _zrows(H, config)
     # One-word seeding is sound here: Julia ≥ 1.11 expands an integer seed into
     # the five-word Xoshiro state through a SHA-2-based hash, so sequentially
@@ -128,7 +129,7 @@ end
 function _renormalize!(st::ChainState, H::TiledHamiltonian,
                        plm::Vector{Float64})::Float64
     for s = 1:H.n_sites
-        H.site_active[s] || continue
+        H.site_has_spin[s] || continue
         e = normalize(st.config[s])
         st.config[s] = e
         _zlm_row!(view(st.zrows, :, s), e, H.lmax, plm)

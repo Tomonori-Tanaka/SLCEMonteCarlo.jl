@@ -56,7 +56,7 @@ function _gradient!(G::Vector{SVector{3,Float64}}, H::TiledHamiltonian,
                     c::Vector{Float64}, plm::Vector{Float64})::Float64
     gsup = 0.0
     for s = 1:H.n_sites
-        if !H.site_active[s]             # spin-independent site: exactly zero, as
+        if !H.site_has_spin[s]           # spin-independent site: exactly zero, as
             G[s] = zero(SVector{3,Float64})  # site_gradient returns (the == gate)
             continue
         end
@@ -121,7 +121,7 @@ function _minimize!(config::SpinConfig, H::TiledHamiltonian, ms::_MinimizeScratc
             for s = 1:n
                 # Inactive sites stay bitwise frozen (G ≡ 0 there, and normalize of
                 # an already-unit spin could still drift the last bits).
-                ms.trial[s] = H.site_active[s] ?
+                ms.trial[s] = H.site_has_spin[s] ?
                               normalize(config[s] - α * ms.G[s]) : config[s]
             end
             for s = 1:n
@@ -246,6 +246,7 @@ function minimize_energy(H::TiledHamiltonian; init = nothing,
                          gtol::Union{Nothing,Real} = nothing,
                          maxiter::Integer = 1_000,
                          seed::Integer = rand(UInt64))::GroundStateResult
+    _require_spin_only(H, "minimize_energy")
     gt = _resolve_gtol(H, gtol)
     maxiter >= 0 || throw(ArgumentError("maxiter must be ≥ 0; got $maxiter"))
     seed >= 0 || throw(ArgumentError("seed must be ≥ 0; got $seed"))
@@ -364,6 +365,7 @@ function find_ground_state(H::TiledHamiltonian; temperature = nothing,
                            gtol::Union{Nothing,Real} = nothing,
                            maxiter::Integer = 1_000,
                            seed::Integer = rand(UInt64))::GroundStateResult
+    _require_spin_only(H, "find_ground_state")
     kts = temperature === nothing && kT === nothing ? _default_anneal_kts(H) :
           resolve_kt(temperature, kT)
     length(kts) == 1 || all(diff(kts) .< 0) || throw(ArgumentError(

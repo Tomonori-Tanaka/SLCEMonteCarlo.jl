@@ -253,6 +253,11 @@ end
 function _gradient_lane_ref!(G::Vector{SVector{3,Float64}}, H::TiledHamiltonian,
                              config::SpinConfig, zrows::Matrix{Float64},
                              ws::Int)::Vector{SVector{3,Float64}}
+    # Test-only, but `_gradient_lane_ref!` is called by qualified name from
+    # SLCEDynamics' GPU-LLG composite gate, so it is a real cross-package entry
+    # point: it sizes its buffers from `H.nlm`/`H.lmax` and would silently drop a
+    # displacement channel rather than throw.
+    _require_spin_only(H, "_gradient_lane_ref!")
     tb = _GPUTables(H.site_ptr, H.site_inst, H.inst_ptr, H.inst_sites,
                     H.progs.site_prog, H.progs.sprog_ptr, H.progs.sent_w,
                     H.progs.sent_tgt, H.progs.sfac_ptr, H.progs.sfac_row,

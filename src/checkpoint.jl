@@ -54,6 +54,23 @@ function _fingerprint(H::TiledHamiltonian)::UInt64
     for d in H.dims
         h = _fp_mix(h, d)
     end
+    # The row layout, mixed only on a joint Hamiltonian (zero change for every
+    # pure-spin model, so pre-M4 checkpoints still identify theirs). It is NOT
+    # redundant with the slot data below: a `TermSlot` records `row0`, a
+    # layout-relative block start, and `(k, l) -> row0` is not injective ACROSS
+    # layouts — a `disp = (degree = 3:5,)` sector's `(1,1),(2,1)` blocks start where a
+    # `1:3` sector's `(0,1),(1,1)` do, so two models differing only by the radial power
+    # `k` (hence by a factor |u|²) would otherwise collide while having different
+    # energies. Mixing `disp_factors` also separates a pure-spin model from a joint one
+    # whose displacement couplings all fitted to zero.
+    if has_disp(H)
+        h = _fp_mix(h, H.layout.nrows)
+        h = _fp_mix(h, H.layout.spin_lmax)
+        for (k, l) in H.layout.disp_factors
+            h = _fp_mix(h, k)
+            h = _fp_mix(h, l)
+        end
+    end
     for t in H.terms
         h = _fp_mix(h, t.coef)
         for a in t.atoms
@@ -64,8 +81,21 @@ function _fingerprint(H::TiledHamiltonian)::UInt64
             h = _fp_mix(h, s[2])
             h = _fp_mix(h, s[3])
         end
-        for l in t.ls
-            h = _fp_mix(h, l)
+        for sl in t.slots
+            h = _fp_mix(h, sl.l)
+        end
+        # The slot layout beyond the degrees — which site each axis reads, and its
+        # channel — is mixed ONLY when the term is not the pure-spin identity layout
+        # (axis i = the spin factor of site i). There it carries no information the
+        # degrees above do not already have, so every pure-spin model's fingerprint
+        # (and hence every checkpoint written before the displacement channel existed)
+        # is unchanged by M4. See `_is_spin_identity` in hamiltonian.jl.
+        if !_is_spin_identity(t.slots)
+            for sl in t.slots
+                h = _fp_mix(h, sl.site)
+                h = _fp_mix(h, sl.row0)
+                h = _fp_mix(h, sl.spin ? 1 : 0)
+            end
         end
         for v in t.folded
             h = _fp_mix(h, v)

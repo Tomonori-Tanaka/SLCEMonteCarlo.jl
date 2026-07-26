@@ -183,7 +183,7 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
     end
     acc_m = st.att_metro == 0 ? NaN : st.acc_metro / st.att_metro
     acc_o = st.att_or == 0 ? NaN : st.acc_or / st.att_or
-    stats = _finalize_stats(accs, evaluables, kt, H.n_active)
+    stats = _finalize_stats(accs, evaluables, kt, H.n_spin_active)
     return TempResult(kt, kt / KB_EV, stats, acc_m, acc_o, st.step, st.max_drift)
 end
 

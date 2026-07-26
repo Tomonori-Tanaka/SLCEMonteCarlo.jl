@@ -64,6 +64,7 @@ struct GPUTiledHamiltonian{B<:Backend,D<:_GPUTables}
     dev::D
 
     function GPUTiledHamiltonian(backend::Backend, H::TiledHamiltonian)
+        _require_spin_only(H, "the GPU device path")
         H.lmax <= 6 || throw(ArgumentError(
             "lmax = $(H.lmax) unsupported on the device path (gated ≤ 6)"))
         pr = H.progs

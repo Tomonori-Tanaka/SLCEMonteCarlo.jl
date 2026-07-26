@@ -29,9 +29,11 @@ temperature-unit conventions, hard-coded observables, per-instance payload
 duplication, positional hand-rolled serialization) are what this design avoids.
 
 This package reads a fitted model **only** through `SLCE`'s public surface:
-`multipole_terms`, `n_atoms(model)`, `intercept`, `SLCE.load(SLCEModel, …)`,
-`Lattice`/`Crystal`/`cartesian_positions`, and `SLCE.Harmonics` (`Zlm_unsafe`,
-`lm_index`, `num_lm`, `grad_Zlm_unsafe`) — never SALC-basis internals and never
+`decorated_terms` / `multipole_terms`, `row_layout` / `row_index` / `site_rows!`,
+`restrict`, `n_atoms(model)`, `intercept`, `SLCE.load(SLCEModel, …)`,
+`Lattice`/`Crystal`/`cartesian_positions`, `SLCE.Harmonics` (`Zlm_unsafe`,
+`lm_index`, `num_lm`, `grad_Zlm_unsafe`) and `SLCE.SolidHarmonics`
+(`solid_harmonics!`, `solid_harmonic_index`) — never SALC-basis internals and never
 `model.basis.crystal` (not public tier; geometry helpers take an explicit `Crystal`).
 During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")`.
 
@@ -41,12 +43,22 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   Vector{SVector{3,Float64}}` (one entry per supercell site); the 3×n matrix layout
   of the siblings appears only at the I/O boundary (`to_matrix`/`from_matrix`).
 - **Real (tesseral) spherical harmonics `Zₗₘ`** from `SLCE.Harmonics`
-  (`lm_index(l, m) = l² + l + m + 1` ordering). `multipole_terms` returns the **raw**
-  fitted `jϕ`; the `(4π)^(body/2)` scale is applied **exactly once**, in the
-  `TiledHamiltonian` constructor (`ScaledTerm.coef`). Never re-apply downstream.
+  (`lm_index(l, m) = l² + l + m + 1` ordering) on spin axes; 4π-free real solid
+  harmonics `|u|^{2k} Rₗₘ(u)` from `SLCE.SolidHarmonics` on displacement axes.
+  `multipole_terms`/`decorated_terms` return the **raw** fitted `jϕ`; the scale —
+  `(4π)^(n_spin_slots/2)`, one `√(4π)` per **spin slot**, which reduces to
+  `(4π)^(body/2)` only when every site holds exactly one spin factor — is applied
+  **exactly once**, in the `TiledHamiltonian` constructor (`ScaledTerm.coef`), read off
+  `DecoratedTerm.scale` and never re-derived from the cluster shape. Never re-apply
+  downstream.
+- **Displacements** are Cartesian, one `SVector{3,Float64}` per site, in the model's
+  length units, and are a **required** argument on a Hamiltonian with displacement rows
+  (`has_disp(H)`) — an omitted `disps` would silently mean `u = 0`, which is a different
+  physical state, not a default.
 - **Energies** are in the model's energy units (eV for DFT-fitted models), `j0`
   (intercept) excluded everywhere — MC only needs differences; the reconstruction
-  gate is `total_energy(H₁ₓ₁ₓ₁, cfg) == predict_energy(model, cfg) − intercept(model)`.
+  gate is `total_energy(H₁ₓ₁ₓ₁, cfg[, u]) == predict_energy(model, cfg[, u]) −
+  intercept(model)`.
 - **Supercell tiling**: `MultipoleTerm.shifts` are per-site integer training-cell
   lattice translations (`shifts[1] = 0` anchored). One instance per template term and
   supercell cell `t`, member `i` at `site_index(atom_i, mod.(t + shifts[i], dims))`.
@@ -64,9 +76,53 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
 
 - **`hamiltonian.jl` ↔ the core's introspection contract** (`SLCE`'s
   `slce/introspect.jl`): field meanings of `MultipoleTerm` (coef/body/atoms/shifts/
-  ls/folded), the raw-coef scale rule, and the shifts anchoring. Gates:
+  ls/folded) and `DecoratedTerm` (coef/**scale**/body/atoms/shifts/slots/folded), the
+  raw-coef scale rule, and the shifts anchoring. Gates:
   `test_hamiltonian.jl` (dims=(1,1,1) ≡ `predict_energy − intercept`; 2×2×2
-  periodic-replication = 8× cell energy; scale-once).
+  periodic-replication = 8× cell energy; scale-once) and `test_joint.jl` (the same two
+  with displacements).
+- **Channels: `ScaledTerm.slots` ↔ `SLCE.row_layout` ↔ `_disp_rows!` ↔
+  `SLCE.site_rows!` ↔ the merged site programs ↔ `_fingerprint`**
+  (`hamiltonian.jl`, `energy.jl`, `checkpoint.jl`, `docs/specs/hamiltonian-tiling.md`
+  T6). A tensor axis is a **slot**, not a site: one site may carry a spin *and* a
+  displacement axis, so `sfac_slot`/`site_slot` mean member **site position** and
+  `efac_site` maps an energy-program factor to it. Four things move together:
+  (1) the row numbering is `SLCE.row_layout(model)` — never invented here, and the
+  frozen `MultipoleTerm` path deliberately keeps deriving its own
+  (`_spin_row_layout`) so a pure-spin model's rows are the pre-M4 integers, with
+  `H.lmax`/`H.nlm` = the SPIN block alone and `H.nrows` = all rows;
+  (2) the scale is `(4π)^(n_spin_slots/2)` read off `DecoratedTerm.scale`, NOT
+  `(4π)^(body/2)` — they differ exactly on a term with a spin-free site, and a
+  fixture whose sites all carry spin makes the check vacuous;
+  (3) `_disp_rows!` batches the solid harmonics once per site while
+  `SLCE.site_rows!` re-batches per `(k, l, m)` — the gate is **bitwise** equality, and
+  a change to `SolidHarmonics`' recurrences or normalization breaks it together with
+  the upstream force constants and ASR;
+  (4) `_fingerprint` mixes the slot layout only for non-identity layouts, so pre-M4
+  checkpoints still identify their Hamiltonian — pinned against an in-test copy of the
+  old formula — but it must ALSO mix `layout.disp_factors` on a joint model, because
+  `TermSlot.row0` is a layout-relative block start and `(k, l) → row0` is not injective
+  across layouts (a `degree = 3:5` sector's `(1,1),(2,1)` blocks start where a `1:3`
+  sector's `(0,1),(1,1)` do, so two models differing only by a factor `|u|²` would
+  collide);
+  (5) `disp_scale` (a `BasisSpec` field upstream currently refuses unless `== 1.0`) is
+  carried by neither `RowLayout` nor `DecoratedTerm`, so this package cannot see it —
+  the day upstream implements it, `_disp_rows!` must move with `predict_energy`.
+  The ctor enforces **at most one axis per `(site, channel)`** (upstream's `SiteDecor`
+  rule): two axes of the SAME channel on one site would make even a single-channel move
+  drop a cross term, and such a term has a pure-spin layout so `_require_spin_only`
+  would not catch it. `site_coeffs!` is exact for **single-channel** moves only (a
+  simultaneous spin+displacement move on one site misses `Δz·Δr`); the pair/triplet
+  fast paths hoist columns only when every axis of the site yields the same column
+  tuple (`_hoisted_columns` compares them — canonical axis order does NOT guarantee
+  same-site axes are adjacent). Gates: `test_joint.jl` throughout; every spin-only
+  entry point must keep calling `_require_spin_only` until slice 3c lands.
+- **Upstream BREAKING spec keywords ↔ this package's fixtures/benches/docs/assets**:
+  `SLCE`'s `BasisSpec` keywords are consumed in `test/unit/fixtures.jl`,
+  `bench/fixtures.jl`, `bench/assets/*.toml` (`[interaction]`) and every
+  `docs/src/**.md` `@example` block. The `isotropy` → `soc` rename (with its
+  **inverted** sense) broke all four at once and was invisible until the suite was
+  run — a downstream rename is not done when SLCE's own tests are green.
 - **`energy.jl` 4-function contract ↔ `updates.jl` ↔ SLCETools' `mc/metropolis.jl`**:
   `site_coeffs!`/`delta_energy` are the site-generalized siblings of SLCETools'
   `_accumulate_site_term!` kernel (same `μ = idx − l − 1` mapping, rank-specialized
@@ -139,11 +195,18 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   libm-free — keep `muladd`/`@fastmath` out. `_gradient_lane_ref!` is called by
   qualified name from SLCEDynamics' GPU-LLG composite gate — renaming it is
   a cross-package break. Gates: the G7 sections of `test/unit/test_gpu.jl`.
-- **Inactive-site convention** (`site_active`/`n_active` — sites with no adjacent
-  instance): update sweeps **skip**, standard observables **exclude**, per-site
-  normalizations use `n_active`, and sweeps/renormalization/descent keep the spins
-  **bitwise frozen**. These move together — skipping without excluding turns a
-  frozen random direction into a constant observable bias. Touch `updates.jl`,
+- **Inactive-site convention** — TWO predicates since M4 slice 3b, and they differ on a
+  joint model: `site_active`/`n_active` ("touched by any instance, either channel")
+  drives the coloring and the sweep schedule, while `site_has_spin`/`n_spin_active`
+  ("touched by a SPIN axis") is what the spin sweeps, `_renormalize!`, the spin
+  observables and their per-site normalizations read. A displacement-only ligand (boron
+  with `lmax = 0` plus a displacement sector) is the case that separates them —
+  conflating them divides `m = Σ_s e_s / n` by a count including a frozen random
+  direction. They coincide exactly on a pure-spin model, so every switch was a bitwise
+  no-op there. Update sweeps **skip**, standard observables **exclude**, and
+  sweeps/renormalization/descent keep the spins **bitwise frozen** — these move
+  together, since skipping without excluding turns a frozen random direction into a
+  constant observable bias. Touch `updates.jl`,
   `observables.jl`, `state.jl` `_renormalize!`, `minimize.jl` `_gradient!`/
   `_minimize!`, or `energy.jl` `energy_gradient!`/`_gradient_chunk!` (inactive
   sites → exactly zero) and re-check `test/unit/test_inactive.jl` +

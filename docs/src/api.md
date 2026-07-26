@@ -18,6 +18,8 @@ n_sites
 site_index
 site_atom
 ScaledTerm
+TermSlot
+has_disp
 SpinConfig
 ```
 

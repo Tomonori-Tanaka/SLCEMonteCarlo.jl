@@ -160,12 +160,13 @@ function metropolis_sweep!(st::ChainState, H::TiledHamiltonian, β::Float64,
     nacc = 0
     @inbounds for q in eachindex(H.color_sites)
         s = Int(H.color_sites[q])
+        H.site_has_spin[s] || continue     # colored for scheduling, but not magnetic
         nacc += _attempt_metro!(st.config, st.zrows, H, β, st.step, s, sc,
                                 st.site_rngs[s], sc.dE)
     end
     st.energy += _reduce_dE(H, sc.dE)
     st.acc_metro += nacc
-    st.att_metro += H.n_active
+    st.att_metro += H.n_spin_active
     return nacc
 end
 
@@ -187,6 +188,7 @@ function metropolis_sweep!(st::ChainState, H::TiledHamiltonian, β::Float64,
                     q1 = Int(H.color_ptr[c + 1]) - 1
                     for q = (Int(H.color_ptr[c]) + t - 1):ntasks:q1
                         s = Int(H.color_sites[q])
+                        H.site_has_spin[s] || continue
                         a += _attempt_metro!(st.config, st.zrows, H, β, st.step,
                                              s, sc, st.site_rngs[s], dE)
                     end
@@ -201,7 +203,7 @@ function metropolis_sweep!(st::ChainState, H::TiledHamiltonian, β::Float64,
     end
     st.energy += _reduce_dE(H, dE)
     st.acc_metro += nacc[]
-    st.att_metro += H.n_active
+    st.att_metro += H.n_spin_active
     return nacc[]
 end
 

@@ -72,7 +72,7 @@ Base.show(io::IO, s::ObservableStat) =
     standard_observables(H::TiledHamiltonian) -> Vector{Observable}
 
 The standard set: `:energy`, `:energy2` (total, model units), the magnetization
-vector `:m = Σ_s e_s / n_active` (**active sites only** — an inactive, non-magnetic
+vector `:m = Σ_s e_s / n_spin_active` (**spin-active sites only** — a non-magnetic
 site's frozen direction is not a magnetic moment), `:absm = |m|`, its powers `:m2`,
 `:m4`, and the per-sublattice magnetization `:sublattice_m` (training-cell atom `a`'s
 cell-averaged vector, flattened `(x₁,y₁,z₁, x₂,…)`, `3·n_cell_atoms` components;
@@ -93,18 +93,18 @@ function _mean_spin(config::SpinConfig, E, H::TiledHamiltonian)::SVector{3,Float
     # All-active fast path: pairwise `sum` — byte-identical to the pre-inactive-site
     # convention (a sequential loop differs by ULPs on large lattices) and slightly
     # more accurate than sequential accumulation.
-    H.n_active == H.n_sites && return sum(config) / H.n_active
+    H.n_spin_active == H.n_sites && return sum(config) / H.n_spin_active
     m = zero(SVector{3,Float64})
     @inbounds for s in eachindex(config)
-        H.site_active[s] && (m += config[s])
+        H.site_has_spin[s] && (m += config[s])
     end
-    return m / H.n_active
+    return m / H.n_spin_active
 end
 
 function _sublattice_m(config::SpinConfig, E, H::TiledHamiltonian)::Vector{Float64}
     out = zeros(3, H.n_cell_atoms)
     for s in eachindex(config)
-        H.site_active[s] || continue     # inactive sublattices stay exactly zero
+        H.site_has_spin[s] || continue   # non-magnetic sublattices stay exactly zero
         a = mod1(s, H.n_cell_atoms)
         e = config[s]
         out[1, a] += e[1]

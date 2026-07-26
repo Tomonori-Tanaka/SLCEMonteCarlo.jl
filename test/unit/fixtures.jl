@@ -130,6 +130,43 @@ function _fourbody_terms(J)
                           folded)]
 end
 
+# --- joint (spin + displacement) fixture --------------------------------------------
+
+# A genuine joint spin–lattice model on a 2-atom cell: a pure-spin sector, a coupled
+# sector (spin × displacement), and a lattice-only sector. The three together are what
+# make the channel gates non-vacuous:
+#   * the lattice-only sector has sites carrying NO spin factor, which is exactly where
+#     the pure-spin-era `(4π)^(body/2)` shortcut would invent a factor from nothing;
+#   * the coupled sector puts two axes (a spin and a displacement one) on ONE site, the
+#     case that merges two axis-programs into one site program;
+#   * with the disp degree landing on a single site, the coupled rank-3 term has its two
+#     same-site axes separated by a third in canonical order — the column tuples then
+#     disagree and the fast path must decline (asserted where used).
+# Coefficients are random: no fit is involved, and the tiling identity against
+# `predict_energy` holds for any coefficient vector (ASR or not).
+function _joint_model(seed = 5)
+    lat = Lattice(Matrix(3.0 * I(3)))
+    cr = Crystal(lat, [1/6 -1/6; 0.0 0.0; 0.0 0.0], [1, 1], ["Fe"])
+    spec = BasisSpec(cr; lmax = 1, pmax = 2, sectors = [
+        Sector(spin = (nbody = 1:2,), cutoff = 1.1),
+        Sector(spin = [1, 1], disp = (degree = 2,), nbody = 2, cutoff = 1.1),
+        Sector(disp = (degree = 2,), nbody = 1:2, cutoff = 1.1)])
+    b = SLCEBasis(cr, spec)
+    return SLCEModel(b, 0.37, 0.05 .* randn(MersenneTwister(seed), n_salcs(b))), cr
+end
+
+# Random displacements on the sites of `H` (small — the polynomial kernel is exact at
+# any amplitude, but a physical scale keeps the magnitudes comparable to the spin rows).
+_rand_disps(rng, H::MC.TiledHamiltonian; amp = 0.08) =
+    [amp .* SVector{3,Float64}(randn(rng), randn(rng), randn(rng)) for _ = 1:H.n_sites]
+
+# 3×n matrix of a displacement list (for predict_energy cross-checks).
+_disp_matrix(disps) = reduce(hcat, [Vector(u) for u in disps])
+
+# Tile a training-cell displacement list periodically onto the supercell of `H`.
+_tile_disps(H::MC.TiledHamiltonian, cell_disps) =
+    [cell_disps[MC.site_atom(H, s)] for s = 1:H.n_sites]
+
 # Random unit spin from `rng` (Gaussian-normalized — uniform on S²).
 _rand_spin(rng) = normalize(SVector{3,Float64}(randn(rng), randn(rng), randn(rng)))
 

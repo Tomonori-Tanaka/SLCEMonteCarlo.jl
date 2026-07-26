@@ -13,8 +13,8 @@ ferrimagnetic Nd-vs-Fe order at 250 K.
 | File | Contents |
 |---|---|
 | `src/units.jl` | `KB_EV`, `resolve_kt` (kelvin XOR model-energy-unit control) |
-| `src/hamiltonian.jl` | `ScaledTerm`, `TiledHamiltonian` (supercell tiling, CSR instance/site adjacency, `site_active`/`n_active` — non-magnetic sites are frozen and excluded, precompiled sparse contraction programs, conflict-graph coloring for parallel sweeps), `site_index` |
-| `src/energy.jl` | the energy contract: `total_energy`, `site_coeffs!`, `delta_energy`, `site_gradient`, all-site `energy_gradient!` (program kernels + bitwise-gated rank-generic reference kernels) |
+| `src/hamiltonian.jl` | `TermSlot`, `ScaledTerm`, `TiledHamiltonian` (supercell tiling, CSR instance/site adjacency, `site_active`/`n_active` for scheduling and `site_has_spin`/`n_spin_active` for the spin channel — non-magnetic sites are frozen and excluded, precompiled sparse contraction programs, conflict-graph coloring for parallel sweeps), `site_index` |
+| `src/energy.jl` | the energy contract: `total_energy`, `site_coeffs!`, `delta_energy`, `site_gradient`, all-site `energy_gradient!` (program kernels + bitwise-gated rank-generic reference kernels), joint `total_energy(H, config, disps)` and the displacement row filler |
 | `src/binning.jl` | `LogBinner`, `BinStore`, `jackknife` |
 | `src/observables.jl` | `Observable`, `Evaluable`, standard sets |
 | `src/state.jl` | `SpinConfig`, `ChainState` (chain + per-site RNG streams), `SweepScratch` |
@@ -30,9 +30,13 @@ ferrimagnetic Nd-vs-Fe order at 250 K.
 ## Dependency boundary
 
 Reads a fitted model only through `SLCE`'s public surface
-(`multipole_terms`, `n_atoms`, `intercept`, `SLCE.load`, `Lattice`/`Crystal`,
-`SLCE.Harmonics`). The `(4π)^(body/2)` per-term scale is applied exactly once,
-in the `TiledHamiltonian` constructor. The MC core is geometry-free (integer site
+(`decorated_terms`, `row_layout`/`row_index`/`site_rows!`, `restrict`,
+`multipole_terms`, `n_atoms`, `intercept`, `SLCE.load`, `Lattice`/`Crystal`,
+`SLCE.Harmonics`, `SLCE.SolidHarmonics`). The per-term scale — the general
+`(4π)^(n_spin_slots/2)` carried by `DecoratedTerm.scale`, which reduces to
+`(4π)^(body/2)` on the frozen pure-spin surface — is applied exactly once,
+in the `TiledHamiltonian` constructor. Row numbering is **not** invented here: it is
+`SLCE.row_layout(model)`, so a pure-spin model's row tables are the pre-M4 ones. The MC core is geometry-free (integer site
 topology only); geometry helpers take an explicit `Crystal`.
 
 ## Public API
@@ -46,7 +50,7 @@ l02/l044 production validations) the GPU sweep API: `GPUTiledHamiltonian`,
 `GPUChainState`, `gpu_metropolis_sweep!`, `gpu_run_sweeps!`, `to_host!`.
 
 Public, unexported (`SLCEMonteCarlo.<name>`): `resolve_kt`, `ScaledTerm`,
-`SpinConfig`, `site_index`, `site_atom`, `site_coeffs!`, `delta_energy`,
+`TermSlot`, `has_disp`, `SpinConfig`, `site_index`, `site_atom`, `site_coeffs!`, `delta_energy`,
 `site_gradient`, `energy_gradient`, `energy_gradient!` (all-site exact
 tangent-projected `∂E/∂e_s`, bit-identical for any `ntasks` — the field/torque
 entry point for dependent packages such as spin dynamics),

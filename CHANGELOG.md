@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — joint spin–lattice ingest and energy (M4 slice 3b)
+
+- `TiledHamiltonian` now accepts **joint (spin + displacement) models**. A term's
+  tensor axes are `TermSlot`s rather than sites — one site may carry both a spin and
+  a displacement axis — and the row numbering is the upstream sampler-row contract
+  `SLCE.row_layout(model)`, whose `SPIN` block is `Harmonics.lm_index` at offset 0.
+  New constructor `TiledHamiltonian(n_cell_atoms, ::Vector{DecoratedTerm}, ::RowLayout;
+  dims)`, and `TiledHamiltonian(model; dims)` routes a joint model to it.
+- `total_energy(H, config, disps)` — the joint energy, with `disps` a
+  `Vector{SVector{3,Float64}}` of Cartesian displacements per site. It is **required**
+  on a Hamiltonian with displacement rows (omitting it throws rather than silently
+  meaning `u = 0`) and ignored otherwise. Gates: `dims = (1,1,1)` against
+  `predict_energy(model, e, u) − intercept(model)`, 2×2×2 periodic replication = 8×,
+  and a bitwise check of this package's row filler against `SLCE.site_rows!`.
+- The constructor enforces **at most one tensor axis per `(site, channel)`** (upstream's
+  `SiteDecor` rule). Two axes of the same channel on one site would make even a
+  single-channel move drop a cross term, and such a term has a pure-spin layout — so no
+  displacement guard would catch it.
+- `site_has_spin` / `n_spin_active` alongside `site_active` / `n_active`: on a joint
+  model a displacement-only ligand is active for scheduling but carries no moment, so
+  the spin sweeps, `_renormalize!` and the spin observables read the spin predicate.
+  Identical to the old fields on any pure-spin model.
+- `has_disp(H)` (public, unexported) and the new fields `H.nrows`, `H.disp_lmax`,
+  `H.layout`. `H.lmax`/`H.nlm` keep describing the **SPIN block alone**, so every
+  spin-only consumer's scratch sizing is unchanged.
+- `site_coeffs!` is exact for a move that changes **one channel** of a site (all this
+  package's updates); a simultaneous spin+displacement move on one site misses the
+  cross term `Δz·Δr`, which is documented and gated as such.
+
+### Changed — BREAKING: `ScaledTerm.ls` → `ScaledTerm.slots`
+
+- `ScaledTerm` (public, unexported) carries `slots::Vector{TermSlot}`, one per tensor
+  axis, instead of the per-site angular-momentum list `ls`. `_ContractionPrograms`
+  gained `efac_site` and its `sfac_slot` now means "member **site position**" (the same
+  integer as before on any pure-spin term). Nothing a pure-spin model produces moved:
+  the two ingest surfaces flatten to **byte-identical** program arrays (gate:
+  `test_joint.jl` "MultipoleTerm ≡ DecoratedTerm (bitwise)"), and the checkpoint
+  fingerprint is unchanged for every pure-spin model, pinned against an in-test copy of
+  the pre-M4 formula.
+- The sweeps, `minimize_energy`/`find_ground_state`, `energy_gradient!`/`site_gradient`
+  and the GPU device path **refuse** a joint Hamiltonian (`_require_spin_only`) rather
+  than sample it at an implied `u = 0`. Displacement moves are slice 3c.
+
+### Fixed
+
+- `model_fingerprint` now mixes `layout.disp_factors` on a joint Hamiltonian. Without
+  it two models differing only by a displacement radial power `k` — hence by a factor
+  `|u|²` — collided, because `TermSlot.row0` is a layout-relative block start and
+  `(k, l) → row0` is not injective across layouts. Unchanged for every pure-spin model.
+- Passing nonzero `disps` to a Hamiltonian without displacement rows now throws instead
+  of silently evaluating the clamped-ion energy (all-zero is still accepted).
+- The GPU reference kernels `_gradient_lane_ref!` / `_metropolis_sweep_keyed_ref!` now
+  refuse a joint Hamiltonian too. The former is called by qualified name from
+  SLCEDynamics, so it is a real cross-package entry point.
+- The fixtures, benches, assets and guide pages still used the upstream `isotropy`
+  keyword, which `SLCE.jl` replaced by `soc` with an **inverted** meaning
+  (`isotropy = true` ⇔ `soc = false`). The whole unit suite errored at fixture
+  construction; all call sites are migrated (including `bench/fixtures.jl`'s own
+  keyword and `bench/assets/nd2fe14b.toml`'s `[interaction]` key).
+
+
 ### Changed — BREAKING: package renamed SCEMonteCarlo.jl → SLCEMonteCarlo.jl (SLCE family, M0)
 
 - The whole family is renamed to the **spin–lattice cluster expansion (SLCE)**

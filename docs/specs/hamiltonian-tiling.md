@@ -123,3 +123,88 @@ adjacency entry (`site_col`/`site_col2` — the same asymptotics as the CSR
 adjacency itself) and two per site-program entry (`pent_row`/`pent_row2`). The
 templates themselves stay stored (introspection, `_site_energy_scale`, the
 checkpoint fingerprint, the reference kernels).
+
+## T6 — channels: a tensor axis is a *slot*, not a site (M4 slice 3b)
+
+A joint spin–lattice term reads two different kinds of site factor —
+`Z_{l,m}(ê_a)` on a spin axis and `|u_a|^{2k} R_{l,m}(u_a)` on a displacement one —
+and **one site may carry one of each**. So the object indexed by a tensor axis is
+not the site: `ScaledTerm` carries one `TermSlot` per axis (`site` = a position in
+the term's `atoms`, `row0`/`l` = the row block it gathers from, `spin` = which
+channel), replacing the pre-M4 per-site `ls`. Everything T1–T5 says about tiling,
+CSR adjacency, memory and the bitwise program contract carries over verbatim with
+"member slot" read as "member **site position**"; the two coincide exactly on a
+pure-spin term, which is why nothing a pure-spin model produces moved.
+
+**The row numbering is upstream, not local.** Which row an axis reads is
+`SLCE.row_layout(model)` — the sampler-row contract of `SLCE.jl/src/slce/rowlayout.jl`
+— whose `SPIN` block is `Harmonics.lm_index` at offset 0, followed by one `2l + 1`
+block per `(k, l)` displacement factor. Two consequences are load-bearing:
+
+- A pure-spin model's rows are *the same integers* as before the displacement
+  channel existed, so `H.lmax`/`H.nlm` (the SPIN block alone) still describe every
+  spin-only consumer's scratch, and `H.nrows` is what a joint one allocates.
+- The layout must come from the **model**, not from the surviving terms: it covers
+  every factor the basis can build, so a consumer's row tables survive a
+  coefficient hot swap. The frozen `MultipoleTerm` constructor deliberately keeps
+  deriving its layout from the terms (`_spin_row_layout`) — the frozen surface keeps
+  the frozen layout, and `TiledHamiltonian(model)` routes a model with no
+  displacement rows down it byte for byte.
+
+**The scale is `(4π)^(n_spin_slots/2)`** — one `√(4π)` per *spin slot*, taken from
+`DecoratedTerm.scale` and never re-derived from the cluster shape. It agrees with the
+pre-M4 `(4π)^(body/2)` exactly when every site holds one spin factor and nothing
+else; on a force-constant term (sites with no spin factor at all) the old shortcut
+invents a factor from nothing. Still applied exactly once, in the constructor.
+
+**Site programs merge the axes of one site.** `site_coeffs!` builds the coefficient of
+each of site `s`'s rows, so the program of a member site position concatenates the
+entry lists of *every* axis sitting there, in ascending axis order (one axis ⇒ the
+pre-M4 program byte for byte). Consequences:
+
+- `c` is exact for a move that changes **one channel** of the site: the other
+  channel's row is then a constant factor already folded into `c`, and the rows that
+  did not move contribute `c_k · 0`. A *simultaneous* spin+displacement move on one
+  site misses the cross term `Δz·Δr` — the documented boundary, which no update
+  crosses. This is the channel analogue of T2's distinct-sites invariant.
+- The pair/triplet fast paths hoist columns only when every axis of the site
+  produces the *same* ascending column tuple. Two axes on one site drop different
+  axes from their factor lists, and in canonical axis order (all `SPIN`, then all
+  `DISP`, each by site) a third axis can separate them — so `_hoisted_columns`
+  computes the tuples and compares rather than reasoning about the order. A
+  disagreement selects the general path, which is always correct.
+
+**At most one axis per `(site, channel)`** (upstream's `SiteDecor` rule) is a ctor
+invariant, not an assumption. Two axes of the *same* channel on one site would make even
+a single-channel move drop a cross term (`Δz·Δz′`) — and such a term has a pure-spin
+layout, so `_require_spin_only` would not catch it: it would enter the sweeps with wrong
+Boltzmann weights (measured 21 % ΔE error on a two-spin-axis onsite term). Conversely,
+that the invariant holds is what makes the single-channel exactness above *complete*:
+the residual of a simultaneous move is exactly `Δzᵀ M Δr` with no `Δz·Δz` or `Δr·Δr`
+remainder, which `test_joint.jl` pins by value rather than by non-vanishing.
+
+**Two per-site activity notions**, because on a joint model they differ. A site
+referenced only by displacement axes — a force-constant-only ligand, e.g. boron at
+`lmax = 0` alongside a displacement sector — is active for the coloring and the sweep
+schedule (`site_active`/`n_active`) yet carries no moment at all
+(`site_has_spin`/`n_spin_active`). The spin sweeps, `_renormalize!`, the spin
+observables and their per-site normalizations read the *spin* predicate; dividing
+`m = Σ_s e_s / n` by a count that includes a frozen random direction is exactly the
+constant bias the inactive-site convention exists to prevent. The two coincide on any
+pure-spin model, so the switch was a bitwise no-op there.
+
+**The checkpoint fingerprint is unchanged for pure spin.** `_fingerprint` mixes each
+axis's degree (which for the identity slot layout *is* the pre-M4 `ls`), and mixes the
+slot layout itself only when the term is not that identity — so every checkpoint
+written before this slice still identifies its Hamiltonian, while a joint model is
+still separated. It must ALSO mix `layout.disp_factors`, because `TermSlot.row0` is a
+layout-relative block start and `(k, l) → row0` is not injective across layouts: a
+`degree = 3:5` sector's `(1,1),(2,1)` blocks begin exactly where a `1:3` sector's
+`(0,1),(1,1)` do, so two models differing only by a factor `|u|²` would otherwise share
+a fingerprint and disagree on every energy. Gates: `test_joint.jl` against an in-test
+copy of the pre-M4 formula, plus that `|u|²` pair.
+
+**Scope.** Slice 3b is the ingest and the energy. The sweeps, the descent, the
+observables and the GPU path are still spin-only and *refuse* a joint Hamiltonian
+(`_require_spin_only`) rather than sample it at an implied `u = 0`; displacement moves
+and pass scheduling are slice 3c.

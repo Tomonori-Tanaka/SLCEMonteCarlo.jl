@@ -1,13 +1,23 @@
 # The tiled Hamiltonian: the fitted training-cell SCE unfolded onto an N₁×N₂×N₃
 # supercell (see `docs/specs/hamiltonian-tiling.md`).
 #
-# `MultipoleTerm.shifts` are per-site integer lattice translations of the *training*
-# cell (`shifts[1] = 0` anchored), so tiling is pure integer bookkeeping: for every
+# A term's `shifts` are per-site integer lattice translations of the *training* cell
+# (`shifts[1] = 0` anchored), so tiling is pure integer bookkeeping: for every
 # supercell cell `t` and every fitted term, one instance places member `i` at
 # `site_index(atoms[i], mod.(t + shifts[i], dims))`. Each directed cluster member is a
 # plain summand of the energy (the introspection contract — no ½ or 1/N factors), so
 # the tiled sum on a periodically replicated configuration is exactly
 # `prod(dims) × (predict_energy − intercept)` of the training cell — the M1 gate.
+#
+# CHANNELS (M4 slice 3b). A term's tensor axes are *slots*, not sites: a joint
+# spin–lattice term reads `Z_{l,m}(ê_a)` on a spin axis and `|u_a|^{2k} R_{l,m}(u_a)` on
+# a displacement one, and one site may carry one of each. So `ScaledTerm` carries
+# `slots::Vector{TermSlot}` (one per axis) instead of a per-site `ls`, and each slot
+# names the row block it gathers from. The row numbering is NOT invented here — it is
+# `SLCE.row_layout(model)`, the upstream sampler-row contract, whose SPIN block is
+# `Harmonics.lm_index` at offset 0. That is what makes a pure-spin model's row tables —
+# and hence every number this package produces for one — bit-for-bit what they were
+# before the displacement channel existed.
 #
 # Memory: the `folded` coefficient tensors are stored ONCE per fitted term
 # (`ScaledTerm` templates); instances are compact integer CSR index lists. This is the
@@ -26,22 +36,54 @@ appears only at the I/O boundary (`to_matrix` / `from_matrix`).
 const SpinConfig = Vector{SVector{3,Float64}}
 
 """
+    TermSlot
+
+One tensor axis of a [`ScaledTerm`](@ref): which member it reads (`site`, a **position
+in the term's `atoms`**, not a global site id), the per-site row block it gathers from
+(`row0`, the row just *before* the `m = −l` component, so component `m` sits at
+`row0 + m + l + 1`), the degree `l`, and whether it is a spin axis (`spin`; `false` is
+a displacement axis).
+
+Several slots may share a `site` — a site is not an axis. `row0` is derived once, at
+construction, from `SLCE.SlotRef` + the model's `SLCE.RowLayout`, so no hot kernel ever
+re-derives a row index; that both channels number their `2l + 1` components
+contiguously is checked per slot against `SLCE.row_index` when the term is ingested.
+"""
+struct TermSlot
+    site::Int
+    row0::Int
+    l::Int
+    spin::Bool
+end
+
+"""
     ScaledTerm
 
-One fitted SCE term template in consumer form: `coef` is the raw fitted `jϕ` times
-`(4π)^(body/2)` — the scale is applied here, **exactly once** in the package — with
-the member `atoms` (training-cell indices), per-site integer lattice `shifts`
-(`shifts[1] = 0`), per-site angular momenta `ls`, and the rank-`body` real coefficient
-tensor `folded`. Copied out of `SLCE.MultipoleTerm` (value semantics — never an
-alias of the model's arrays).
+One fitted SCE term template in consumer form: `coef` is the raw fitted `jϕ` times the
+term's scale `(4π)^(n_spin_slots/2)` — applied here, **exactly once** in the package —
+with the member `atoms` (training-cell indices), per-site integer lattice `shifts`
+(`shifts[1] = 0`), one [`TermSlot`](@ref) per tensor axis, and the
+rank-`length(slots)` real coefficient tensor `folded`. Copied out of
+`SLCE.DecoratedTerm` (or its frozen pure-spin predecessor `SLCE.MultipoleTerm`) with
+value semantics — never an alias of the model's arrays.
+
+On a pure-spin term the slots are the identity layout (axis `i` = the spin factor of
+site `i`) and the scale reduces to `(4π)^(body/2)`, exactly the pre-M4 form.
 """
 struct ScaledTerm
     coef::Float64
     atoms::Vector{Int}
     shifts::Vector{SVector{3,Int}}
-    ls::Vector{Int}
+    slots::Vector{TermSlot}
     folded::Array{Float64}
 end
+
+# Is this term's slot layout the pure-spin identity — axis i = the spin factor of site
+# i? Then `slots` carries no information beyond the old per-site `ls`, which is what
+# lets the checkpoint fingerprint stay unchanged for every pure-spin model
+# (checkpoint.jl `_fingerprint`).
+_is_spin_identity(slots::Vector{TermSlot})::Bool =
+    all(v -> slots[v].spin && slots[v].site == v, eachindex(slots))
 
 # Precompiled sparse contraction programs — the hot-kernel view of the templates.
 # Rank-generic iteration over the rank-erased `ScaledTerm.folded` costs a dynamic
@@ -60,8 +102,8 @@ struct _ContractionPrograms
     sent_w::Vector{Float64}    # coef · folded[idx], nonzero entries only
     sent_tgt::Vector{Int32}    # target row lm_index(ls[slot], μ_slot) in `c`
     sfac_ptr::Vector{Int32}    # entry e's factors: sfac_ptr[e]:sfac_ptr[e+1]-1
-    sfac_row::Vector{Int32}    # factor row lm_index(ls[k], μ_k) in `zrows`
-    sfac_slot::Vector{Int8}    # factor member slot k (site = inst_sites[off + k])
+    sfac_row::Vector{Int32}    # factor row (slot k's row0 + μ_k + l_k + 1) in `zrows`
+    sfac_slot::Vector{Int8}    # factor's member SITE POSITION (site = inst_sites[off+·])
     # pair/triplet fast paths (body-2/3 templates — the bulk of every adjacency):
     # a body-2 (body-3) entry has exactly one (two) factors and they always
     # reference the same member slots (the others, ascending), so the neighbor
@@ -80,50 +122,94 @@ struct _ContractionPrograms
     eent_w::Vector{Float64}    # raw folded[idx] (the coef multiplies the per-instance
                                #   entry sum — the reference kernel's operation order)
     efac_ptr::Vector{Int32}    # entry e's factors: efac_ptr[e]:efac_ptr[e+1]-1
-    efac_row::Vector{Int32}    # factor rows; member slot = position within the range
+    efac_row::Vector{Int32}    # factor rows, one per axis in slot order
+    efac_site::Vector{Int8}    # each factor's member site position — for a pure-spin
+                               #   term this is 1, 2, … (axis ≡ site) and the kernel
+                               #   reduces to the pre-M4 `off + m` indexing
     term_coef::Vector{Float64} # scaled template coef (== terms[k].coef)
 end
 
 # One template flattened into the program arrays (rank-specialized barrier —
 # construction-time only). Entry order is the `CartesianIndices` column-major order
-# of `folded`; factor order is ascending member slot; the skip predicates
+# of `folded`; factor order is ascending axis; the skip predicates
 # (`coef·folded == 0` for the site programs, `folded == 0` for the energy program)
 # are the reference kernels' own — all verbatim, which is what makes the program
 # kernels bitwise-identical to them.
+#
+# There is one site program per member **site position** `q`, not per axis: the
+# leave-one-out quantity `site_coeffs!` builds is "the coefficient of each row of site
+# q", and when a site carries two axes (a spin factor and a displacement one) both
+# contribute, into their own target rows. Their entry lists are concatenated in
+# ascending axis order, so a pure-spin term — exactly one axis per site — yields the
+# pre-M4 program byte for byte.
+#
+# `slot_rows[v][j]` is axis `v`'s row for tensor index `j`, and `slot_site[v]` its
+# member site position; `q_axes[q]` lists the axes sitting on site position `q`.
 function _push_term_programs!(pr::_ContractionPrograms, coef::Float64,
-                              ls::Vector{Int}, folded::Array{Float64,D}) where {D}
-    for v = 1:D                          # site program of member slot v
-        for idx in CartesianIndices(folded)
-            w = coef * folded[idx]
-            w == 0.0 && continue
-            push!(pr.sent_w, w)
-            push!(pr.sent_tgt, Int32(Harmonics.lm_index(ls[v], idx[v] - ls[v] - 1)))
-            for k = 1:D
-                k == v && continue
-                push!(pr.sfac_row, Int32(Harmonics.lm_index(ls[k], idx[k] - ls[k] - 1)))
-                push!(pr.sfac_slot, Int8(k))
+                              slot_site::Vector{Int8}, slot_rows::Vector{Vector{Int32}},
+                              q_axes::Vector{Vector{Int}},
+                              folded::Array{Float64,D}) where {D}
+    for axes in q_axes                   # site program of member site position q
+        for v in axes
+            for idx in CartesianIndices(folded)
+                w = coef * folded[idx]
+                w == 0.0 && continue
+                push!(pr.sent_w, w)
+                push!(pr.sent_tgt, slot_rows[v][idx[v]])
+                for k = 1:D
+                    k == v && continue
+                    push!(pr.sfac_row, slot_rows[k][idx[k]])
+                    push!(pr.sfac_slot, slot_site[k])
+                end
+                push!(pr.sfac_ptr, Int32(length(pr.sfac_row) + 1))
+                # rank 2/3 ⇒ the loop above pushed exactly one/two factors (ascending
+                # axes): their rows, entry-indexed, feed the fast paths of
+                # `site_coeffs!`
+                push!(pr.pent_row, D == 2 ? pr.sfac_row[end] :
+                                   D == 3 ? pr.sfac_row[end - 1] : Int32(0))
+                push!(pr.pent_row2, D == 3 ? pr.sfac_row[end] : Int32(0))
             end
-            push!(pr.sfac_ptr, Int32(length(pr.sfac_row) + 1))
-            # body-2/3 ⇒ the loop above pushed exactly one/two factors (ascending
-            # slots): their rows, entry-indexed, feed the fast paths of
-            # `site_coeffs!`
-            push!(pr.pent_row, D == 2 ? pr.sfac_row[end] :
-                               D == 3 ? pr.sfac_row[end - 1] : Int32(0))
-            push!(pr.pent_row2, D == 3 ? pr.sfac_row[end] : Int32(0))
         end
         push!(pr.sprog_ptr, Int32(length(pr.sent_w) + 1))
     end
-    for idx in CartesianIndices(folded)  # energy program (every slot is a factor)
+    for idx in CartesianIndices(folded)  # energy program (every axis is a factor)
         w = folded[idx]
         w == 0.0 && continue
         push!(pr.eent_w, w)
         for k = 1:D
-            push!(pr.efac_row, Int32(Harmonics.lm_index(ls[k], idx[k] - ls[k] - 1)))
+            push!(pr.efac_row, slot_rows[k][idx[k]])
+            push!(pr.efac_site, slot_site[k])
         end
         push!(pr.efac_ptr, Int32(length(pr.efac_row) + 1))
     end
     push!(pr.eprog_ptr, Int32(length(pr.eent_w) + 1))
     return pr
+end
+
+# The pair/triplet fast paths of `site_coeffs!` hoist the neighbour *columns* out of the
+# entry loop, which is sound only when every entry of a site's program reads the same
+# columns in the same order. With one axis per site (every pure-spin term) that is
+# automatic. When a site carries two axes their entry lists are concatenated and each
+# drops a different axis from its factor list, so the ascending-order column tuples
+# agree only sometimes — they do when the dropped axes are adjacent in axis order (both
+# sit on the same site), and need not when a third axis separates them. Compute the
+# tuples and compare rather than reasoning about the canonical axis order: the general
+# path is always available, and a disagreement simply selects it.
+function _hoisted_columns(slots::Vector{TermSlot}, slot_site::Vector{Int8},
+                          axes::Vector{Int})::Tuple{Int8,Int8}
+    D = length(slots)
+    (D == 2 || D == 3) || return (Int8(0), Int8(0))
+    ref = Int8[]
+    for v in axes
+        cols = Int8[slot_site[k] for k = 1:D if k != v]
+        if isempty(ref)
+            ref = cols
+        elseif cols != ref
+            return (Int8(0), Int8(0))
+        end
+    end
+    isempty(ref) && return (Int8(0), Int8(0))
+    return (ref[1], D == 3 ? ref[2] : Int8(0))
 end
 
 # Index widths (Int32 ids/pointers, Int8 slots) use checked conversions throughout,
@@ -138,26 +224,30 @@ function _build_programs(terms::Vector{ScaledTerm}, inst_term::Vector{Int32},
                               Vector{Int32}(undef, length(site_inst)),
                               Vector{Int32}(undef, length(site_inst)),
                               Int32[], Int32[],
-                              Int32[1], Float64[], Int32[1], Int32[],
+                              Int32[1], Float64[], Int32[1], Int32[], Int8[],
                               [t.coef for t in terms])
-    # program id of (template k, member slot v) = pbase[k] + v;
-    # pslot1/pslot2[pid] = the fast paths' hoisted factor slots — the member slots
-    # other than v, ascending (body-2: (3 − v, 0); body-3: the remaining two);
-    # (0, 0) for any other body order
+    # program id of (template k, member site position q) = pbase[k] + q;
+    # pslot1/pslot2[pid] = the fast paths' hoisted factor SITE POSITIONS — for a rank-2
+    # or rank-3 template, the positions of the axes other than the one being targeted,
+    # ascending — or (0, 0) when no hoisting applies (any other rank, or a site whose
+    # axes disagree about the column tuple; see `_hoisted_columns`).
     pbase = Vector{Int}(undef, length(terms))
     pslot1 = Int8[]
     pslot2 = Int8[]
     np = 0
     for (k, t) in enumerate(terms)
         pbase[k] = np
-        D = length(t.ls)
-        np += D
-        for v = 1:D
-            push!(pslot1, D == 2 ? Int8(3 - v) : D == 3 ? Int8(v == 1 ? 2 : 1) :
-                          Int8(0))
-            push!(pslot2, D == 3 ? Int8(v == 3 ? 2 : 3) : Int8(0))
+        np += length(t.atoms)
+        slot_site = Int8[Int8(s.site) for s in t.slots]
+        slot_rows = [Int32[Int32(s.row0 + m + s.l + 1) for m = (-s.l):(s.l)]
+                     for s in t.slots]
+        q_axes = [findall(s -> s.site == q, t.slots) for q = 1:length(t.atoms)]
+        for axes in q_axes
+            f1, f2 = _hoisted_columns(t.slots, slot_site, axes)
+            push!(pslot1, f1)
+            push!(pslot2, f2)
         end
-        _push_term_programs!(pr, t.coef, t.ls, t.folded)
+        _push_term_programs!(pr, t.coef, slot_site, slot_rows, q_axes, t.folded)
     end
     for j in eachindex(site_inst)
         pid = pbase[inst_term[site_inst[j]]] + site_slot[j]
@@ -177,30 +267,42 @@ end
 """
     TiledHamiltonian(model::SLCEModel; dims = (1, 1, 1))
     TiledHamiltonian(n_cell_atoms, terms::Vector{MultipoleTerm}; dims = (1, 1, 1))
+    TiledHamiltonian(n_cell_atoms, terms::Vector{DecoratedTerm}, layout::RowLayout;
+                     dims = (1, 1, 1))
 
 The fitted SCE Hamiltonian tiled onto an `dims = (N₁, N₂, N₃)` supercell of the
-training cell: `n_sites = n_cell_atoms · N₁N₂N₃` spin sites, with one cluster
+training cell: `n_sites = n_cell_atoms · N₁N₂N₃` sites, with one cluster
 *instance* per fitted term and supercell cell (member `i` of a term anchored in cell
 `t` sits at `site_index(atoms[i], mod.(t .+ shifts[i], dims))` — toroidal boundary
 conditions). Energies are in the model's energy units with the intercept `j0`
 excluded; on the training cell (`dims = (1,1,1)`) the total energy equals
-`predict_energy(model, config) − intercept(model)`.
+`predict_energy(model, config[, disps]) − intercept(model)`.
 
-The second form consumes a hand-built `MultipoleTerm` list with **raw** (unscaled)
-coefficients; the `(4π)^(body/2)` scale is applied here, exactly once. Terms with
-`coef == 0` are dropped up front (they contribute nothing anywhere; `multipole_terms`
-already filters fitted zeros, so this only affects hand-built lists). Every term's
-member sites must be **distinct after the toroidal wrap** — `(atomᵢ, mod.(shiftsᵢ,
-dims))` pairwise different — which is what makes the single-site coefficient vector
-of [`site_coeffs!`](@ref) independent of that site's own spin (exact single-spin ΔE).
-Minimum-image fitted models satisfy this for any `dims` (distinct atoms per cluster);
-an `AllImages`-fitted model may reuse an atom across images and then needs `dims`
-large enough that the images stay distinct sites. `shifts[1] == 0` (the anchoring
+The second and third forms consume hand-built term lists with **raw** (unscaled)
+coefficients; the scale — `(4π)^(body/2)` for a `MultipoleTerm`, the general
+`(4π)^(n_spin_slots/2)` carried by a `DecoratedTerm` — is applied here, exactly once.
+Terms with `coef == 0` are dropped up front (they contribute nothing anywhere;
+the introspection surfaces already filter fitted zeros, so this only affects hand-built
+lists). Every term's member sites must be **distinct after the toroidal wrap** —
+`(atomᵢ, mod.(shiftsᵢ, dims))` pairwise different — which is what makes the single-site
+coefficient vector of [`site_coeffs!`](@ref) independent of that site's own state (exact
+single-site ΔE). Minimum-image fitted models satisfy this for any `dims` (distinct atoms
+per cluster); an `AllImages`-fitted model may reuse an atom across images and then needs
+`dims` large enough that the images stay distinct sites. `shifts[1] == 0` (the anchoring
 convention of the introspection contract) is required.
+
+**Channels.** A term's tensor axes are [`TermSlot`](@ref)s, and one site may carry both
+a spin and a displacement axis, so a `DecoratedTerm` model needs the model's own row
+numbering — pass `SLCE.row_layout(model)`, which the one-argument form does for you.
+`H.lmax`/`H.nlm` describe the SPIN row block alone (so every pure-spin consumer is
+unaffected) while `H.nrows` counts all rows; [`total_energy`](@ref) then takes the
+displacements as a third argument. Because a site's two axes multiply each other, the
+leave-one-out vector of [`site_coeffs!`](@ref) is exact for a move that changes **one
+channel** of a site — which is all the updates ever propose.
 
 **Inactive (non-magnetic) sites.** A site no instance touches — e.g. every site of a
 species with `lmax = 0` (boron in Nd₂Fe₁₄B), or one whose SALC coefficients all
-fitted to zero — has a spin-independent energy. Such sites are flagged
+fitted to zero — has a state-independent energy. Such sites are flagged
 `site_active[s] == false` (`n_active` counts the rest) and are **skipped by the
 update sweeps and excluded from the standard observables and their per-site
 normalizations**: they keep whatever direction the initial configuration gave them,
@@ -215,8 +317,11 @@ struct TiledHamiltonian
     n_cell_atoms::Int
     dims::SVector{3,Int}
     n_sites::Int
-    lmax::Int
-    nlm::Int
+    lmax::Int                        # SPIN block only (−1 = no spin content)
+    nlm::Int                         # SPIN block width == layout.disp_offset
+    nrows::Int                       # all per-site rows == layout.nrows
+    disp_lmax::Int                   # max displacement l (−1 = pure spin)
+    layout::RowLayout                # the upstream sampler-row contract
     terms::Vector{ScaledTerm}        # templates — `folded` payloads stored once
     # enumerated instances, CSR over member sites (body orders vary):
     inst_term::Vector{Int32}         # instance → template index
@@ -225,10 +330,13 @@ struct TiledHamiltonian
     # per-site adjacency, CSR:
     site_ptr::Vector{Int32}          # site s touches site_inst[ptr[s]:ptr[s+1]-1]
     site_inst::Vector{Int32}         # instance ids
-    site_slot::Vector{Int8}          # this site's member slot within that instance
+    site_slot::Vector{Int8}          # this site's member SITE POSITION in that
+                                     #   instance (1:body — not an axis index)
     site_has_l1::Vector{Bool}        # any adjacent instance carries l = 1 at this site
-    site_active::Vector{Bool}        # any adjacent instance at all (else non-magnetic)
-    n_active::Int                    # number of active sites
+    site_has_spin::Vector{Bool}      # any adjacent instance carries a SPIN axis here
+    site_active::Vector{Bool}        # any adjacent instance at all (either channel)
+    n_active::Int                    # number of active sites (scheduling / coloring)
+    n_spin_active::Int               # number of spin-active sites (spin observables)
     progs::_ContractionPrograms      # precompiled sparse contraction programs
     # proper coloring of the site-conflict graph (conflict = shares an instance):
     # the sweeps scan color classes in order; sites within one class never co-occur
@@ -238,52 +346,78 @@ struct TiledHamiltonian
     color_ptr::Vector{Int32}         # class c: color_sites[ptr[c]:ptr[c+1]-1]
     color_sites::Vector{Int32}       # active sites, class-major, ascending in class
 
-    function TiledHamiltonian(n_cell_atoms::Integer, mterms::Vector{MultipoleTerm};
-                              dims::NTuple{3,Integer} = (1, 1, 1))
+    function TiledHamiltonian(n_cell_atoms::Integer, terms::Vector{ScaledTerm},
+                              layout::RowLayout; dims::NTuple{3,Integer} = (1, 1, 1))
         n_cell_atoms >= 1 ||
             throw(ArgumentError("n_cell_atoms must be ≥ 1; got $n_cell_atoms"))
         all(d -> d >= 1, dims) || throw(ArgumentError("dims must be ≥ 1; got $dims"))
-        # A coef == 0 term contributes nothing to any energy, coefficient vector, or
-        # gradient — drop it so "no adjacent instance" means "spin-independent site".
-        mterms = filter(t -> t.coef != 0.0, mterms)
-        isempty(mterms) && throw(ArgumentError(
-            "the term list is empty (no spin-dependent SALCs with nonzero coefficients)"))
+        isempty(terms) && throw(ArgumentError(
+            "the term list is empty (no state-dependent SALCs with nonzero coefficients)"))
 
         d = SVector{3,Int}(dims)
-        terms = Vector{ScaledTerm}(undef, length(mterms))
-        lmax = 0
-        for (k, mt) in enumerate(mterms)
-            body = length(mt.atoms)
-            (length(mt.shifts) == body && length(mt.ls) == body) ||
-                throw(ArgumentError("term $k: atoms/shifts/ls lengths disagree"))
-            all(a -> 1 <= a <= n_cell_atoms, mt.atoms) || throw(ArgumentError(
-                "term $k: atoms $(mt.atoms) outside 1:$n_cell_atoms"))
+        for (k, t) in enumerate(terms)
+            body = length(t.atoms)
+            body >= 1 || throw(ArgumentError("term $k: no member sites"))
+            length(t.shifts) == body ||
+                throw(ArgumentError("term $k: atoms/shifts lengths disagree"))
+            all(a -> 1 <= a <= n_cell_atoms, t.atoms) || throw(ArgumentError(
+                "term $k: atoms $(t.atoms) outside 1:$n_cell_atoms"))
             # Distinct member *sites* per instance ⇒ the leave-one-out coefficients of
-            # `site_coeffs!` are independent of the site's own spin (exact ΔE). The
+            # `site_coeffs!` are independent of the site's own state (exact ΔE). The
             # wrapped relative pattern is the same for every cell, so checking the
             # cell-0 instance covers all of them. Minimum-image models have distinct
             # atoms outright; AllImages models may reuse an atom across images and
             # then need `dims` large enough to keep the images distinct sites.
-            allunique(zip(mt.atoms, (mod.(sh, d) for sh in mt.shifts))) ||
+            allunique(zip(t.atoms, (mod.(sh, d) for sh in t.shifts))) ||
                 throw(ArgumentError(
-                    "term $k (atoms = $(mt.atoms), shifts = $(mt.shifts)) folds two " *
+                    "term $k (atoms = $(t.atoms), shifts = $(t.shifts)) folds two " *
                     "member sites onto one supercell site under dims = $dims; the " *
-                    "single-spin update assumes distinct sites per cluster — " *
+                    "single-site update assumes distinct sites per cluster — " *
                     "enlarge dims"))
-            iszero(mt.shifts[1]) || throw(ArgumentError(
-                "term $k: shifts[1] = $(mt.shifts[1]) breaks the home-cell anchoring " *
+            iszero(t.shifts[1]) || throw(ArgumentError(
+                "term $k: shifts[1] = $(t.shifts[1]) breaks the home-cell anchoring " *
                 "convention (shifts[1] == 0) of the introspection contract"))
-            all(l -> l >= 0, mt.ls) ||
-                throw(ArgumentError("term $k: negative angular momentum in $(mt.ls)"))
-            size(mt.folded) == Tuple(2l + 1 for l in mt.ls) || throw(ArgumentError(
-                "term $k: size(folded) = $(size(mt.folded)) does not match " *
-                "ls = $(mt.ls)"))
-            lmax = max(lmax, maximum(mt.ls))
-            # The package's single (4π)^(body/2) application site.
-            terms[k] = ScaledTerm(mt.coef * (4π)^(body / 2), copy(mt.atoms),
-                                  copy(mt.shifts), copy(mt.ls), copy(mt.folded))
+            size(t.folded) == Tuple(2s.l + 1 for s in t.slots) || throw(ArgumentError(
+                "term $k: size(folded) = $(size(t.folded)) does not match its slot " *
+                "degrees $([s.l for s in t.slots])"))
+            for s in t.slots
+                1 <= s.site <= body || throw(ArgumentError(
+                    "term $k: slot site $(s.site) outside 1:$body"))
+                s.l >= 0 || throw(ArgumentError("term $k: negative slot degree $(s.l)"))
+                (s.row0 >= 0 && s.row0 + 2s.l + 1 <= layout.nrows) ||
+                    throw(ArgumentError(
+                        "term $k: slot rows $(s.row0 + 1):$(s.row0 + 2s.l + 1) fall " *
+                        "outside the layout's 1:$(layout.nrows) — the layout does not " *
+                        "belong to these terms"))
+            end
+            for q = 1:body
+                # A member site with no axis at all would be flagged active (it appears
+                # in `inst_sites`) while contributing nothing — the sweeps would visit it
+                # and the observables would count it. That is not a term this package can
+                # honour, so refuse it rather than let the inactive-site convention lie.
+                nq = count(s -> s.site == q, t.slots)
+                nq >= 1 || throw(ArgumentError(
+                    "term $k: member site position $q carries no tensor axis"))
+                # AT MOST ONE AXIS PER (site, channel) — upstream's `SiteDecor` rule, and
+                # the invariant the exact single-channel ΔE rests on. With two axes of the
+                # SAME channel on one site, a single-channel move moves both of their rows
+                # and `delta_energy` silently drops the `Δz·Δz′` cross term (measured 21 %
+                # on a two-spin-axis onsite term) — and such a term has a pure-spin
+                # layout, so `_require_spin_only` would not catch it either: it would go
+                # straight into the sweeps with wrong Boltzmann weights.
+                nq <= 2 && length(unique(s.spin for s in t.slots if s.site == q)) == nq ||
+                    throw(ArgumentError(
+                        "term $k: member site position $q carries $nq axes of which two " *
+                        "share a channel; at most one axis per (site, channel) is " *
+                        "allowed — the exact single-channel ΔE of site_coeffs! " *
+                        "depends on it"))
+            end
         end
 
+        lmax = layout.spin_lmax
+        nlm = layout.disp_offset
+        disp_lmax = isempty(layout.disp_factors) ? -1 :
+                    maximum(l for (_, l) in layout.disp_factors)
         ncells = prod(d)
         n_sites = n_cell_atoms * ncells
         nterms = length(terms)
@@ -333,27 +467,136 @@ struct TiledHamiltonian
             end
         end
 
+        # Two per-site activity notions, and on a joint model they DIFFER: a site
+        # referenced only by displacement axes (a force-constant-only ligand — boron in
+        # Nd₂Fe₁₄B with `lmax = 0` plus a displacement sector is a realistic production
+        # case) is active for scheduling/coloring but carries no magnetic moment at all.
+        # `site_active` drives the coloring and the sweep schedule (both channels need
+        # it); `site_has_spin`/`n_spin_active` is what the SPIN sweeps, `_renormalize!`,
+        # the spin observables and their per-site normalizations read. Conflating them
+        # would divide `m = Σ_s e_s / n` by a count including sites whose direction is a
+        # frozen random vector — the constant observable bias the inactive-site
+        # convention exists to avoid. They coincide exactly on a pure-spin model.
         site_has_l1 = zeros(Bool, n_sites)
+        site_has_spin = zeros(Bool, n_sites)
         for s = 1:n_sites, j = site_ptr[s]:(site_ptr[s + 1] - 1)
-            ls = terms[inst_term[site_inst[j]]].ls
-            site_has_l1[s] |= ls[site_slot[j]] == 1
+            slots = terms[inst_term[site_inst[j]]].slots
+            q = site_slot[j]
+            site_has_l1[s] |= any(sl -> sl.site == q && sl.spin && sl.l == 1, slots)
+            site_has_spin[s] |= any(sl -> sl.site == q && sl.spin, slots)
         end
         site_active = [site_ptr[s + 1] > site_ptr[s] for s = 1:n_sites]
         n_active = count(site_active)
+        n_spin_active = count(site_has_spin)
         progs = _build_programs(terms, inst_term, inst_ptr, inst_sites, site_inst,
                                 site_slot)
         n_colors, color_ptr, color_sites = _color_sites(
             n_sites, site_ptr, site_inst, inst_ptr, inst_sites, site_active)
 
-        return new(n_cell_atoms, d, n_sites, lmax, Harmonics.num_lm(lmax), terms,
+        return new(n_cell_atoms, d, n_sites, lmax, nlm, layout.nrows, disp_lmax,
+                   layout, terms,
                    inst_term, inst_ptr, inst_sites, site_ptr, site_inst, site_slot,
-                   site_has_l1, site_active, n_active, progs, n_colors, color_ptr,
-                   color_sites)
+                   site_has_l1, site_has_spin, site_active, n_active, n_spin_active,
+                   progs, n_colors, color_ptr, color_sites)
     end
 end
 
-TiledHamiltonian(model::SLCEModel; dims::NTuple{3,Integer} = (1, 1, 1)) =
-    TiledHamiltonian(n_atoms(model), multipole_terms(model); dims = dims)
+# --- term ingest: the two upstream introspection surfaces -> ScaledTerm --------------
+
+# The pure-spin row layout of a `MultipoleTerm` list: the SPIN block alone, with `lmax`
+# read off the surviving terms exactly as it was before the displacement channel
+# existed. (`row_layout(model)` would instead cover every factor the BASIS can build,
+# which for a pure-spin model is a superset — correct, but it would widen the row
+# tables of every existing production run. The frozen surface keeps the frozen layout.)
+_spin_row_layout(lmax::Int)::RowLayout =
+    RowLayout(Harmonics.num_lm(lmax), lmax, Harmonics.num_lm(lmax),
+              Tuple{Int,Int}[], Int[])
+
+function TiledHamiltonian(n_cell_atoms::Integer, mterms::Vector{MultipoleTerm};
+                          dims::NTuple{3,Integer} = (1, 1, 1))
+    # A coef == 0 term contributes nothing to any energy, coefficient vector, or
+    # gradient — drop it so "no adjacent instance" means "state-independent site".
+    mterms = filter(t -> t.coef != 0.0, mterms)
+    lmax = 0
+    terms = Vector{ScaledTerm}(undef, length(mterms))
+    for (k, mt) in enumerate(mterms)
+        body = length(mt.atoms)
+        (length(mt.shifts) == body && length(mt.ls) == body) ||
+            throw(ArgumentError("term $k: atoms/shifts/ls lengths disagree"))
+        all(l -> l >= 0, mt.ls) ||
+            throw(ArgumentError("term $k: negative angular momentum in $(mt.ls)"))
+        lmax = max(lmax, maximum(mt.ls))
+        # axis i IS site i, and the SPIN block is `lm_index` at offset 0, so the row of
+        # component m is lm_index(l, m) = row0 + m + l + 1 with row0 = lm_index(l, −l) − 1
+        slots = [TermSlot(i, Harmonics.lm_index(mt.ls[i], -mt.ls[i]) - 1, mt.ls[i], true)
+                 for i in eachindex(mt.ls)]
+        # The package's single scale-application site for this surface.
+        terms[k] = ScaledTerm(mt.coef * (4π)^(body / 2), copy(mt.atoms), copy(mt.shifts),
+                              slots, copy(mt.folded))
+    end
+    return TiledHamiltonian(n_cell_atoms, terms, _spin_row_layout(lmax); dims = dims)
+end
+
+function TiledHamiltonian(n_cell_atoms::Integer, dterms::Vector{DecoratedTerm},
+                          layout::RowLayout; dims::NTuple{3,Integer} = (1, 1, 1))
+    dterms = filter(t -> t.coef != 0.0, dterms)
+    terms = Vector{ScaledTerm}(undef, length(dterms))
+    for (k, dt) in enumerate(dterms)
+        length(dt.slots) == ndims(dt.folded) || throw(ArgumentError(
+            "term $k: $(length(dt.slots)) slots but a rank-$(ndims(dt.folded)) folded " *
+            "tensor"))
+        slots = Vector{TermSlot}(undef, length(dt.slots))
+        for (v, sl) in enumerate(dt.slots)
+            l = sl.factor.l
+            row0 = row_index(layout, sl.factor, -l) - 1
+            # both channels number their 2l+1 components contiguously and ascending in
+            # m — the assumption every `row0 + m + l + 1` in this package rests on
+            row_index(layout, sl.factor, l) == row0 + 2l + 1 || throw(ArgumentError(
+                "term $k slot $v: the layout does not number $(sl.factor) contiguously"))
+            slots[v] = TermSlot(sl.site, row0, l, sl.factor.channel == SLCE.SPIN)
+        end
+        # The package's single scale-application site for this surface — `scale` is the
+        # general (4π)^(n_spin_slots/2), read off the field and NEVER re-derived from
+        # the cluster shape (SLCE's DecoratedTerm docstring, design record §7).
+        terms[k] = ScaledTerm(dt.coef * dt.scale, copy(dt.atoms), copy(dt.shifts),
+                              slots, copy(dt.folded))
+    end
+    return TiledHamiltonian(n_cell_atoms, terms, layout; dims = dims)
+end
+
+function TiledHamiltonian(model::SLCEModel; dims::NTuple{3,Integer} = (1, 1, 1))
+    layout = row_layout(model)
+    # A model with no displacement rows goes down the frozen pure-spin path, byte for
+    # byte as before M4. `restrict` is a no-op on a genuinely pure-spin basis and the
+    # exact u = 0 sub-model otherwise, which is what makes `multipole_terms` — whose
+    # refusal is triggered by the SPEC, not by the surviving coefficients — accept the
+    # pathological "declared a displacement sector, built no displacement SALC" case.
+    isempty(layout.disp_factors) &&
+        return TiledHamiltonian(n_atoms(model), multipole_terms(restrict(model, :spin));
+                                dims = dims)
+    return TiledHamiltonian(n_atoms(model), decorated_terms(model), layout; dims = dims)
+end
+
+"""
+    has_disp(H::TiledHamiltonian) -> Bool
+
+Whether `H` carries displacement rows — i.e. whether its energy is a function of the
+displacements as well as the spins. `false` for every pure-spin model, in which case
+`H.nrows == H.nlm` and the row tables are exactly the pre-M4 tesseral ones.
+"""
+has_disp(H::TiledHamiltonian)::Bool = !isempty(H.layout.disp_factors)
+
+# Guard for the surfaces that are still spin-only (chain state, sweeps, descent, GPU):
+# refuse a joint Hamiltonian loudly instead of silently sampling at u = 0.
+function _require_spin_only(H::TiledHamiltonian, what::AbstractString)
+    has_disp(H) && throw(ArgumentError(
+        "$what does not support displacement-decorated Hamiltonians yet; this model " *
+        "carries displacement rows $(H.layout.disp_factors). Use " *
+        "`total_energy(H, config, disps)` for energies, or restrict the model to its " *
+        "clamped-ion sub-model with `SLCE.restrict(model, :spin)` to sample spins " *
+        "at the ideal lattice"))
+    return nothing
+end
 
 # Greedy proper coloring of the site-conflict graph, in site order (deterministic —
 # a function of the Hamiltonian alone). Two sites conflict when some instance
@@ -410,7 +653,9 @@ Base.show(io::IO, H::TiledHamiltonian) =
     print(io, "TiledHamiltonian(", H.n_cell_atoms, " atoms × ", H.dims[1], "×",
           H.dims[2], "×", H.dims[3], " = ", H.n_sites, " sites",
           H.n_active < H.n_sites ? " ($(H.n_sites - H.n_active) inactive)" : "",
-          ", lmax=", H.lmax, ", ", length(H.terms), " terms, ",
+          ", lmax=", H.lmax,
+          has_disp(H) ? ", disp $(H.layout.disp_factors)" : "",
+          ", ", length(H.terms), " terms, ",
           length(H.inst_term), " instances)")
 
 """

@@ -34,10 +34,13 @@ using Random: Random, AbstractRNG, Xoshiro
 using StaticArrays
 using Statistics: Statistics, mean
 
-using SLCE: SLCEModel, MultipoleTerm, multipole_terms, intercept,
+using SLCE: SLCE, SLCEModel, MultipoleTerm, multipole_terms, intercept,
+                  DecoratedTerm, decorated_terms, restrict,
+                  RowLayout, row_layout, row_index,
                   Lattice, Crystal, cartesian_positions
 import SLCE: n_atoms                  # extended for ReducedCell
 import SLCE.Harmonics
+import SLCE.SolidHarmonics
 
 include("units.jl")
 include("hamiltonian.jl")
@@ -72,7 +75,7 @@ export supercell_crystal
 export ReducedCell, reduce_cell
 
 public resolve_kt
-public ScaledTerm, SpinConfig, site_index, site_atom
+public ScaledTerm, TermSlot, SpinConfig, site_index, site_atom, has_disp
 public site_coeffs!, delta_energy, site_gradient, energy_gradient, energy_gradient!
 public philox_block, philox_normal2
 public model_fingerprint

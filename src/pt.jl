@@ -315,7 +315,7 @@ function _pt_run!(lanes::Vector{_PTLane}, H::TiledHamiltonian, plan::UpdatePlan,
                   acc_o = st.att_or == 0 ? NaN : st.acc_or / st.att_or
                   TempResult(lane.kt, lane.kt / KB_EV,
                              _finalize_stats(lane.accs, evaluables, lane.kt,
-                                             H.n_active),
+                                             H.n_spin_active),
                              acc_m, acc_o, st.step, st.max_drift)
               end
               for lane in lanes]
