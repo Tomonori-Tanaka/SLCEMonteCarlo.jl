@@ -286,7 +286,7 @@ function _gs_start!(configs::Vector{SpinConfig}, energies::Vector{Float64},
                     end
                     sweep % adapt_interval == 0 && _adapt_step!(st, adapt_target)
                 end
-                _renormalize!(st, H, scs[1].plm)   # exact rung-boundary energy
+                _renormalize!(st, H, scs[1])   # exact rung-boundary energy
             end
             # cycle 1 always snapshots (also the NaN-safe fallback: a non-finite
             # chain energy can never leave `bestcfg` aliased to the live config)

@@ -58,6 +58,12 @@ end
 # Swap the replica payload between two chains (reference swaps — O(1)).
 function _swap_payload!(a::ChainState, b::ChainState)
     a.config, b.config = b.config, a.config
+    # The displacements and their accumulated re-centring record travel with the
+    # configuration: a replica exchange moves a whole physical state between lanes,
+    # and the frame that state has been pinned to is part of it. The RNG streams and
+    # the proposal widths stay with the lane.
+    a.disps, b.disps = b.disps, a.disps
+    a.com_removed, b.com_removed = b.com_removed, a.com_removed
     a.zrows, b.zrows = b.zrows, a.zrows
     a.energy, b.energy = b.energy, a.energy
     return nothing
@@ -75,7 +81,7 @@ function _lane_segment!(lane::_PTLane, H::TiledHamiltonian, plan::UpdatePlan,
         measure || (lane.phase_sweeps % plan.adapt_interval == 0 &&
                     _adapt_step!(st, plan.adapt_target))
         lane.phase_sweeps % plan.renorm_interval == 0 &&
-            _renormalize!(st, H, lane.scs[1].plm)
+            _renormalize!(st, H, lane.scs[1])
         if measure && lane.phase_sweeps % plan.measure_interval == 0
             for acc in lane.accs
                 _measure!(acc, st.config, st.energy, H)
@@ -288,13 +294,8 @@ function _pt_run!(lanes::Vector{_PTLane}, H::TiledHamiltonian, plan::UpdatePlan,
                                 swap_acc, nt, parity; done0 = done0, ck = ck)
         planned = fld(plan.sweeps_measure, plan.measure_interval)
         for lane in lanes
-            _renormalize!(lane.st, H, lane.scs[1].plm)
-            lane.st.frozen = true
-            lane.st.acc_metro = 0
-            lane.st.att_metro = 0
-            lane.st.acc_or = 0
-            lane.st.att_or = 0
-            lane.st.max_drift = 0.0
+            _renormalize!(lane.st, H, lane.scs[1])
+            _freeze_and_reset!(lane.st)
             lane.accs = [ObsAccumulator(o, planned, plan.nbins)
                          for o in observables]
             lane.phase_sweeps = 0
@@ -392,6 +393,9 @@ function run_pt(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                       renorm_interval = renorm_interval, nbins = nbins,
                       carryover = false, sweep_tasks = sweep_tasks, seed = seed)
     _check_observables(observables)
+    # See `run_mc`: no displacement pass scheduling yet, so refuse rather than sample
+    # a joint model at frozen u.
+    _require_spin_only(H, "run_pt")
     nt * sweep_tasks > Threads.nthreads() && @warn(
         "ntasks · sweep_tasks = $(nt * sweep_tasks) exceeds the " *
         "$(Threads.nthreads()) available threads; the run stays correct and " *

@@ -80,7 +80,8 @@ public site_coeffs!, delta_energy, site_gradient, energy_gradient, energy_gradie
 public philox_block, philox_normal2
 public model_fingerprint
 public LogBinner, BinStore, jackknife, std_error, tau_int, bin_means
-public ChainState, SweepScratch, metropolis_sweep!, overrelaxation_sweep!
+public ChainState, SweepScratch, metropolis_sweep!, overrelaxation_sweep!,
+       displacement_sweep!
 public to_matrix, from_matrix
 # GPU sweep API (exported 2026-07-19: A100 GO 30.1x + l02/l044 production
 # validation landed; the gradient tier below stays public-unexported — it is the

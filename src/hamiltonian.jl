@@ -348,10 +348,17 @@ struct TiledHamiltonian
     disp_comp_ptr::Vector{Int32}
     disp_comp_sites::Vector{Int32}
     n_disp_comps::Int
-    # How flat the uniform-shift direction actually is, measured on this Hamiltonian
-    # (see `_translation_residual`): 0 means exactly flat, ~1 means not flat at all.
-    translation_residual::Float64
-    translation_invariant::Bool      # false = the absolute frame is physical
+    # How flat each component's rigid-shift directions actually are, measured on this
+    # Hamiltonian (see `_translation_residuals`): 0 means exactly flat, ~1 means not flat
+    # at all. Kept per (Cartesian direction, component) because BOTH axes matter — the
+    # components are independent symmetries, so one pinned component must not disable
+    # re-centring for a flat one; and a single component's flat directions can be a
+    # proper subspace (a substrate-clamped slab is pinned along the normal, free in the
+    # plane), so re-centring must project onto exactly that subspace.
+    comp_residual::Matrix{Float64}   # 3 × n_disp_comps, one per Cartesian direction
+    comp_free::Matrix{Bool}          # true = that (direction, component) is a symmetry
+    translation_residual::Float64    # the worst entry (summary/show)
+    translation_invariant::Bool      # `all(comp_free)`
     progs::_ContractionPrograms      # precompiled sparse contraction programs
     # proper coloring of the site-conflict graph (conflict = shares an instance):
     # the sweeps scan color classes in order; sites within one class never co-occur
@@ -405,6 +412,22 @@ struct TiledHamiltonian
                         "term $k: slot rows $(s.row0 + 1):$(s.row0 + 2s.l + 1) fall " *
                         "outside the layout's 1:$(layout.nrows) — the layout does not " *
                         "belong to these terms"))
+                # The channel FLAG and the row BLOCK must say the same thing. `spin` and
+                # `row0` are independent fields of the public `TermSlot`, and the
+                # single-channel ΔE partitions the row table by BLOCK
+                # (`1:disp_offset` vs the rest) while every activity predicate and the
+                # one-axis-per-(site, channel) rule below partition it by FLAG. Let the
+                # two disagree and a displacement move moves a row the range-limited
+                # `delta_energy` treats as a spin row — dropping a genuine cross term
+                # while passing every other check (measured 0.25 on |E| ≈ 1).
+                (s.spin ? s.row0 + 2s.l + 1 <= layout.disp_offset :
+                          s.row0 >= layout.disp_offset) || throw(ArgumentError(
+                    "term $k: slot flagged $(s.spin ? "spin" : "displacement") occupies " *
+                    "rows $(s.row0 + 1):$(s.row0 + 2s.l + 1), which is not inside the " *
+                    "$(s.spin ? "SPIN block 1:$(layout.disp_offset)" :
+                       "displacement blocks $(layout.disp_offset + 1):$(layout.nrows)") " *
+                    "— the channel flag and the row block must agree, since the exact " *
+                    "single-channel ΔE splits the row table by block"))
             end
             for q = 1:body
                 # A member site with no axis at all would be flagged active (it appears
@@ -514,7 +537,7 @@ struct TiledHamiltonian
         n_colors, color_ptr, color_sites = _color_sites(
             n_sites, site_ptr, site_inst, inst_ptr, inst_sites, site_active)
 
-        # `_translation_residual` needs a finished Hamiltonian to evaluate energies on,
+        # `_translation_residuals` needs a finished Hamiltonian to evaluate energies on,
         # and the residual is a field — so build once with a placeholder, measure, and
         # build again with the verdict. `new` may be called more than once; the two
         # objects share every array by reference, so the second is nearly free.
@@ -523,14 +546,46 @@ struct TiledHamiltonian
                  inst_term, inst_ptr, inst_sites, site_ptr, site_inst, site_slot,
                  site_has_l1, site_has_spin, site_has_disp, site_active,
                  n_active, n_spin_active, n_disp_active,
-                 dcomp_ptr, dcomp_sites, ncomp, 0.0, true,
+                 dcomp_ptr, dcomp_sites, ncomp, zeros(3, ncomp), trues(3, ncomp),
+                 0.0, true,
                  progs, n_colors, color_ptr, color_sites)
-        resid = ncomp == 0 ? 0.0 : _translation_residual(H0)
-        invariant = resid <= _TRANSLATION_TOL
+        # PER COMPONENT, and kept per component. Two components share no instance, so
+        # their rigid shifts are independent symmetries and a single global verdict is
+        # the wrong shape: on a mixed model (one flat component, one genuinely pinned)
+        # a global `false` would disable re-centring for the flat component too, and its
+        # frame would then drift without bound — which costs the reporting convention
+        # AND numerical conditioning (see `_recenter!`).
+        resid_c = ncomp == 0 ? zeros(3, 0) : _translation_residuals(H0)
+        comp_free = resid_c .<= _TRANSLATION_TOL
+        resid = isempty(resid_c) ? 0.0 : maximum(resid_c)
+        invariant = all(comp_free)
+        # A one-site component that IS flat is a pure gauge coordinate: the energy is
+        # exactly independent of that site's displacement (a "rigid shift of the
+        # component" is just that one site moving). Sampling it would spend randomness
+        # on always-accepted moves, dilute the acceptance statistics, and write a
+        # meaningless nonzero displacement into every reported configuration — the
+        # pathology the inactive-site convention exists to prevent. It also cannot arise
+        # from a fitted model: a lone displacement axis is never translation-invariant,
+        # so the ASR drives its coefficients to zero and it is pruned. Its presence is
+        # therefore information, and the right thing is to say so.
+        for c = 1:ncomp
+            all(view(comp_free, :, c)) && dcomp_ptr[c + 1] - dcomp_ptr[c] == 1 &&
+                throw(ArgumentError(
+                    "displacement component $c is the single site " *
+                    "$(dcomp_sites[dcomp_ptr[c]]) and its rigid shift is flat along " *
+                    "ALL THREE Cartesian directions, so the energy does not depend on " *
+                    "that site's displacement: it is a pure gauge coordinate, not a " *
+                    "degree of freedom. A fitted model cannot produce this (upstream " *
+                    "requires 2k + l ≥ 1 on a displacement factor, and the ASR zeroes a " *
+                    "lone displacement axis), so the term list is describing something " *
+                    "else — check it, or drop the axis"))
+        end
         if !invariant && !fixed_reference
             throw(ArgumentError(
                 "this Hamiltonian's uniform-displacement direction is not flat " *
-                "(relative residual $(resid) > $(_TRANSLATION_TOL)): a rigid shift of " *
+                "(pinned direction(s) $(Tuple.(findall(!, comp_free))) as " *
+                "(direction, component), worst relative residual " *
+                "$(resid) > $(_TRANSLATION_TOL)): a rigid shift of " *
                 "the whole crystal changes the energy as much as a generic distortion " *
                 "of the same size. The displacement sampler needs that direction to be " *
                 "a symmetry (it re-centres along it, and the fit's trust region is " *
@@ -547,7 +602,8 @@ struct TiledHamiltonian
                    inst_term, inst_ptr, inst_sites, site_ptr, site_inst, site_slot,
                    site_has_l1, site_has_spin, site_has_disp, site_active,
                    n_active, n_spin_active, n_disp_active,
-                   dcomp_ptr, dcomp_sites, ncomp, resid, invariant,
+                   dcomp_ptr, dcomp_sites, ncomp, resid_c, comp_free,
+                   resid, invariant,
                    progs, n_colors, color_ptr, color_sites)
     end
 end
@@ -616,30 +672,53 @@ end
 # term list has no `asr_residual` to consult).
 const _TRANSLATION_TOL = 1e-10
 
-function _translation_residual(H::TiledHamiltonian)::Float64
+function _translation_residuals(H::TiledHamiltonian)::Matrix{Float64}
     cfg, u = _probe_state(H)
     E0 = _total_energy(H, _zrows(H, cfg, u))
-    num = 0.0
-    den = 0.0
+    resid = zeros(3, H.n_disp_comps)
     ushift = similar(u)
     for t in (0.02, 0.2)
+        # Normalize PER COMPONENT, not against the largest component's scale.
+        # Per-component invariance is strictly stronger than the ASR's global
+        # statement: shifting one component alone changes E by `a_c·t` with only
+        # `Σ_c a_c = 0` guaranteed, so a small, weakly-coupled component can carry a
+        # real net force and still look flat against a dominant component's
+        # denominator — and `_recenter!` would then apply a genuinely biasing
+        # projection to exactly that component.
+        #
+        # The denominator is `max(den, |E0|, tiny)`: `den` is the physical scale, and the
+        # `|E0|` floor keeps a genuinely flat component's ratio at roundoff (`num ~
+        # eps·|E0|`) instead of 0/0. Note that floor is a GLOBAL energy, so on a large
+        # supercell a small component's residual is scaled down by it — conservative for
+        # the flat case, and the reason the tolerance is 1e-10 rather than something tight.
         for c = 1:H.n_disp_comps
-            copyto!(ushift, u)
-            for q = H.disp_comp_ptr[c]:(H.disp_comp_ptr[c + 1] - 1)
-                s = Int(H.disp_comp_sites[q])
-                ushift[s] += t * SVector(0.6, -0.8, 0.5)          # rigid
-            end
-            num = max(num, abs(_total_energy(H, _zrows(H, cfg, ushift)) - E0))
             copyto!(ushift, u)
             for q = H.disp_comp_ptr[c]:(H.disp_comp_ptr[c + 1] - 1)
                 s = Int(H.disp_comp_sites[q])
                 ushift[s] += t * SVector(0.6 * sin(1.7s), -0.8 * cos(2.3s),
                                          0.5 * sin(0.9s + 1.1))   # generic
             end
-            den = max(den, abs(_total_energy(H, _zrows(H, cfg, ushift)) - E0))
+            scale = max(abs(_total_energy(H, _zrows(H, cfg, ushift)) - E0),
+                        abs(E0), 1e-300)
+            # ONE RIGID PROBE PER CARTESIAN DIRECTION. A component's flat directions can
+            # be a proper subspace of the three: a substrate-clamped slab is pinned along
+            # the surface normal and free in the plane. A single probe direction would
+            # report the whole component as pinned, `_recenter!` would skip it entirely,
+            # and the in-plane centre of mass would then random-walk without bound — with
+            # nothing to catch it, since free diffusion sits below the escape detector's
+            # threshold by construction.
+            for d = 1:3
+                copyto!(ushift, u)
+                ê = SVector{3,Float64}(ntuple(i -> i == d ? 1.0 : 0.0, 3))
+                for q = H.disp_comp_ptr[c]:(H.disp_comp_ptr[c + 1] - 1)
+                    ushift[Int(H.disp_comp_sites[q])] += t * ê
+                end
+                num = abs(_total_energy(H, _zrows(H, cfg, ushift)) - E0)
+                resid[d, c] = max(resid[d, c], num / scale)
+            end
         end
     end
-    return num / max(den, abs(E0), 1e-300)
+    return resid
 end
 
 # A deterministic probe state — no RNG, so construction stays a pure function of the

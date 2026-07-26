@@ -47,10 +47,12 @@ end
         _rotate(e, _random_unit(rng), step * randn(rng))
     end
     _zlm_row!(sc.znew, e2, H.lmax, sc.plm)
-    ΔE = delta_energy(sc.c, view(zrows, :, s), sc.znew)
+    # SPIN block only: a spin move leaves every displacement row untouched, so those
+    # rows contribute `c_k · 0` and `sc.znew` need not even hold them.
+    ΔE = delta_energy(sc.c, view(zrows, :, s), sc.znew, 1, H.nlm)
     if ΔE <= 0.0 || rand(rng) < exp(-β * ΔE)
         config[s] = e2
-        copyto!(view(zrows, :, s), sc.znew)
+        copyto!(view(zrows, 1:H.nlm, s), view(sc.znew, 1:H.nlm))
         @inbounds dE[s] = ΔE
         return 1
     end
@@ -76,14 +78,44 @@ end
     e = config[s]
     e2 = 2 * dot(e, axis) * axis - e
     _zlm_row!(sc.znew, e2, H.lmax, sc.plm)
-    ΔE = delta_energy(sc.c, view(zrows, :, s), sc.znew)
+    ΔE = delta_energy(sc.c, view(zrows, :, s), sc.znew, 1, H.nlm)
     if ΔE <= 0.0 || rand(rng) < exp(-β * ΔE)
         config[s] = e2
-        copyto!(view(zrows, :, s), sc.znew)
+        copyto!(view(zrows, 1:H.nlm, s), view(sc.znew, 1:H.nlm))
         @inbounds dE[s] = ΔE
         return (1, 1)
     end
     return (1, 0)
+end
+
+# One displacement Metropolis attempt at site `s`: an isotropic Gaussian shift
+# `u′ = u + step_u·(randn, randn, randn)` from the site's own stream — symmetric, so
+# the acceptance is the bare Boltzmann ratio — with the exact
+# `ΔE = c_s·(R(u′) − R(u))` over the DISPLACEMENT rows only (the spin row of the site
+# is unchanged and folded into `c_s`; the constructor's one-axis-per-(site, channel)
+# rule is what makes this single-channel ΔE exact rather than a linearization).
+# Accept with `ΔE ≤ 0 || rand < exp(−β·ΔE)` — the uniform drawn ONLY when `ΔE > 0`,
+# the same RNG-consumption contract as the spin move. On accept, updates
+# `disps`/`zrows` and stages ΔE in `dE[s]`. Returns 1 on accept.
+@inline function _attempt_disp!(disps::Vector{SVector{3,Float64}},
+                                zrows::Matrix{Float64}, H::TiledHamiltonian,
+                                β::Float64, step_u::Float64, s::Int,
+                                sc::SweepScratch, rng::Xoshiro,
+                                dE::Vector{Float64})::Int
+    fill!(sc.c, 0.0)
+    site_coeffs!(sc.c, H, s, zrows)
+    u2 = disps[s] +
+         step_u * SVector{3,Float64}(randn(rng), randn(rng), randn(rng))
+    _disp_rows!(sc.znew, H, u2, sc.rbuf)
+    ΔE = delta_energy(sc.c, view(zrows, :, s), sc.znew, H.nlm + 1, H.nrows)
+    if ΔE <= 0.0 || rand(rng) < exp(-β * ΔE)
+        disps[s] = u2
+        copyto!(view(zrows, (H.nlm + 1):H.nrows, s),
+                view(sc.znew, (H.nlm + 1):H.nrows))
+        @inbounds dE[s] = ΔE
+        return 1
+    end
+    return 0
 end
 
 # Deterministic energy reduction: read the staged per-site ΔE back in the fixed
@@ -288,6 +320,81 @@ function overrelaxation_sweep!(st::ChainState, H::TiledHamiltonian, β::Float64,
     st.energy += _reduce_dE(H, dE)
     st.acc_or += nacc[]
     st.att_or += natt[]
+    return nacc[]
+end
+
+"""
+    displacement_sweep!(st::ChainState, H::TiledHamiltonian, β, sc) -> Int
+
+One single-site displacement Metropolis lattice sweep: one attempt per
+**displacement-active** site (`H.site_has_disp`), scanned in the same color-class
+order as [`metropolis_sweep!`](@ref) and accepting the same serial `SweepScratch` /
+parallel `Vector{SweepScratch}` forms with the same bit-deterministic result. The
+proposal is an isotropic Gaussian shift of width `st.step_u` (a **length**, in the
+model's units — not an angle) drawn from the site's own RNG stream, and the ΔE is the
+exact `c_s·(R(u′) − R(u))` over the site's displacement rows.
+
+Sites with no displacement axis are skipped: their displacement is not a variable of
+the energy, so an attempt there is always-accepted noise that would waste RNG and
+bias the acceptance statistics. Only meaningful on a joint Hamiltonian
+([`has_disp`](@ref)); on a pure-spin one there are no displacement-active sites and
+the sweep is a no-op that consumes no randomness.
+
+The centre-of-mass of each displacement-coupling component is a flat direction under
+the acoustic sum rule, so this sweep alone lets the frame diffuse; `_renormalize!`
+takes that mean back out (`ChainState.com_removed` records how much). Returns the
+number of accepted moves.
+"""
+function displacement_sweep!(st::ChainState, H::TiledHamiltonian, β::Float64,
+                             sc::SweepScratch)::Int
+    fill!(sc.dE, 0.0)
+    nacc = 0
+    @inbounds for q in eachindex(H.color_sites)
+        s = Int(H.color_sites[q])
+        H.site_has_disp[s] || continue
+        nacc += _attempt_disp!(st.disps, st.zrows, H, β, st.step_u, s, sc,
+                               st.site_rngs[s], sc.dE)
+    end
+    st.energy += _reduce_dE(H, sc.dE)
+    st.acc_disp += nacc
+    st.att_disp += H.n_disp_active
+    return nacc
+end
+
+function displacement_sweep!(st::ChainState, H::TiledHamiltonian, β::Float64,
+                             scs::Vector{SweepScratch})::Int
+    isempty(scs) && throw(ArgumentError("scs must hold at least one SweepScratch"))
+    length(scs) == 1 && return displacement_sweep!(st, H, β, scs[1])
+    ntasks = length(scs)
+    dE = scs[1].dE
+    fill!(dE, 0.0)
+    bar = _SweepBarrier(ntasks)
+    nacc = Threads.Atomic{Int}(0)
+    @sync for t = 1:ntasks
+        Threads.@spawn begin
+            sc = scs[t]
+            a = 0
+            try
+                for c = 1:H.n_colors
+                    q1 = Int(H.color_ptr[c + 1]) - 1
+                    for q = (Int(H.color_ptr[c]) + t - 1):ntasks:q1
+                        s = Int(H.color_sites[q])
+                        H.site_has_disp[s] || continue
+                        a += _attempt_disp!(st.disps, st.zrows, H, β, st.step_u, s,
+                                            sc, st.site_rngs[s], dE)
+                    end
+                    _barrier_wait!(bar) || break
+                end
+            catch
+                bar.poisoned[] = true
+                rethrow()
+            end
+            Threads.atomic_add!(nacc, a)
+        end
+    end
+    st.energy += _reduce_dE(H, dE)
+    st.acc_disp += nacc[]
+    st.att_disp += H.n_disp_active
     return nacc[]
 end
 

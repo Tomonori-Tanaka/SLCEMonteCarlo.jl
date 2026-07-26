@@ -117,6 +117,42 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   tuple (`_hoisted_columns` compares them — canonical axis order does NOT guarantee
   same-site axes are adjacent). Gates: `test_joint.jl` throughout; every spin-only
   entry point must keep calling `_require_spin_only` until slice 3c lands.
+- **The displacement channel of the sampler: `ChainState.disps` ↔ `SweepScratch` ↔
+  `_attempt_disp!` ↔ `_recenter!` ↔ `_renormalize!` ↔ `_swap_payload!` ↔ the checkpoint
+  schema** (`state.jl`, `updates.jl`, `pt.jl`, `checkpoint.jl`,
+  `docs/specs/updates-stationarity.md` U7). Five things that must move together:
+  (1) the two proposal widths have **different dimensions** — `step` is an angle
+  (radians, clamped to `(1e-3, π)` by `_adapt_step!`) and `step_u` is a **length** in the
+  model's units; never feed one through the other's adaptation or clamp;
+  (2) a single-channel move writes only its own block of `SweepScratch.znew`, so its ΔE
+  **must** use the range-limited `delta_energy(c, zold, znew, lo, hi)` — the full-range
+  form would read the stale half of the buffer, and the row-difference form itself is
+  load-bearing (`c·znew − c·zold` loses two to three digits);
+  (3) `_recenter!` lives in `_renormalize!` and **nowhere else** — a mean over sites is
+  an order-dependent reduction, and inside the barrier-separated color loop it would
+  make the trajectory depend on `sweep_tasks` (P6). It is per displacement-coupling
+  component, over `site_has_disp` sites only, and skipped when
+  `translation_invariant == false`;
+  (4) `disps` and `com_removed` are part of the replica-exchange **payload** (a swap
+  moves a whole physical state, frame included), unlike the RNG streams and the
+  proposal widths, which stay with the lane;
+  (5) checkpoint schema v2 stores no displacement state, so `_read_chain` refuses a
+  joint Hamiltonian; `run_mc`/`run_pt` refuse one too until the pass scheduling lands.
+  Delete a guard and a joint model silently samples the clamped-ion ensemble;
+  (6) **every restriction of the displacement state space must be gauge-invariant**
+  (a function of `u_s − ū_c`, not of `u_s`). `_recenter!` is stationarity-preserving
+  because the chain is a skew product whose quotient marginal is Markov — an argument
+  that holds only under that hypothesis. A gauge-DEPENDENT restriction (an absolute
+  radius bound, say) makes the region move relative to the state and silently breaks it,
+  and no existing gate would notice, since "re-centring is energy-neutral" stays true.
+  The flatness verdict itself is per component (`H.comp_invariant`) for the same reason:
+  the components are independent symmetries.
+  Related: `_check_escape!` is the only diagnostic that measures **recurrence**, which
+  is what an unbounded target destroys — the ΔE drift warning and the acceptance rate
+  are both silent by construction there (U8).
+  Gates: `test_joint.jl` "joint displacement sampling" (exact ΔE against a
+  from-scratch recomputation, serial ≡ parallel bitwise, re-centring energy-neutral
+  and per component, pure-spin no-op consuming no randomness).
 - **Upstream BREAKING spec keywords ↔ this package's fixtures/benches/docs/assets**:
   `SLCE`'s `BasisSpec` keywords are consumed in `test/unit/fixtures.jl`,
   `bench/fixtures.jl`, `bench/assets/*.toml` (`[interaction]`) and every

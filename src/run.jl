@@ -153,16 +153,11 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
         for sweep = (sweep0 + 1):plan.sweeps_therm
             _compound_sweep!(st, H, β, scs, plan)
             sweep % plan.adapt_interval == 0 && _adapt_step!(st, plan.adapt_target)
-            sweep % plan.renorm_interval == 0 && _renormalize!(st, H, scs[1].plm)
+            sweep % plan.renorm_interval == 0 && _renormalize!(st, H, scs[1])
             _ck_mc!(ck, H, st, points, temp_index, :therm, sweep, nothing)
         end
-        _renormalize!(st, H, scs[1].plm)
-        st.frozen = true
-        st.acc_metro = 0
-        st.att_metro = 0
-        st.acc_or = 0
-        st.att_or = 0
-        st.max_drift = 0.0     # report measurement-phase drift only (as run_pt)
+        _renormalize!(st, H, scs[1])
+        _freeze_and_reset!(st)     # measurement-phase acceptances / drift only
         planned = fld(plan.sweeps_measure, plan.measure_interval)
         accs = [ObsAccumulator(o, planned, plan.nbins) for o in observables]
     else
@@ -173,7 +168,7 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
     end
     for sweep = (msweep0 + 1):plan.sweeps_measure
         _compound_sweep!(st, H, β, scs, plan)
-        sweep % plan.renorm_interval == 0 && _renormalize!(st, H, scs[1].plm)
+        sweep % plan.renorm_interval == 0 && _renormalize!(st, H, scs[1])
         if sweep % plan.measure_interval == 0
             for acc in accs
                 _measure!(acc, st.config, st.energy, H)
@@ -280,6 +275,10 @@ function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                       carryover = carryover, sweep_tasks = sweep_tasks,
                       seed = seed)
     _check_observables(observables)
+    # Until the drivers schedule displacement passes, a joint model would be sampled
+    # with its displacements frozen at the clamped-ion state — a different ensemble,
+    # silently. `displacement_sweep!` is callable directly in the meantime.
+    _require_spin_only(H, "run_mc")
     sweep_tasks > Threads.nthreads() && @warn(
         "sweep_tasks = $sweep_tasks exceeds the $(Threads.nthreads()) available " *
         "threads; the run stays correct and bit-identical but oversubscribed",

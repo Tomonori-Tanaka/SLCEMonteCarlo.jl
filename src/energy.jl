@@ -230,15 +230,33 @@ end
 
 """
     delta_energy(c, zold, znew) -> Float64
+    delta_energy(c, zold, znew, lo, hi) -> Float64
 
-Exact energy change of a single-spin move whose leave-one-out coefficients are `c`
-(from [`site_coeffs!`](@ref)) and whose old/new tesseral rows are `zold`/`znew`:
+Exact energy change of a single-site move whose leave-one-out coefficients are `c`
+(from [`site_coeffs!`](@ref)) and whose old/new basis rows are `zold`/`znew`:
 `Σ_k c_k (znew_k − zold_k)`. β-free — the caller applies the Boltzmann factor.
+
+`lo`/`hi` restrict the sum to one row range, which is what makes a **single-channel**
+move exact from a partially-written `znew`: a spin move rewrites only the SPIN block
+(`1:nlm`) and a displacement move only the displacement blocks (`nlm+1:nrows`), and
+the rows the move did not touch contribute `c_k · 0` — so summing over the moved
+block alone is not an approximation, it is the same number without the cancelling
+terms (and without reading the stale half of the buffer). The three-argument form is
+the whole table, `1:length(c)`.
+
+Keep the **row-difference** form `Σ c_k (znew_k − zold_k)`: the algebraically equal
+`c·znew − c·zold` cancels two large sums against each other and loses two to three
+orders of magnitude of accuracy in the ΔE that drives the accept step.
 """
+delta_energy(c::Vector{Float64}, zold::AbstractVector{Float64},
+             znew::AbstractVector{Float64})::Float64 =
+    delta_energy(c, zold, znew, 1, length(c))
+
 function delta_energy(c::Vector{Float64}, zold::AbstractVector{Float64},
-                      znew::AbstractVector{Float64})::Float64
+                      znew::AbstractVector{Float64}, lo::Integer,
+                      hi::Integer)::Float64
     ΔE = 0.0
-    @inbounds for k in eachindex(c)
+    @inbounds for k = Int(lo):Int(hi)
         ck = c[k]
         ck == 0.0 && continue
         ΔE += ck * (znew[k] - zold[k])

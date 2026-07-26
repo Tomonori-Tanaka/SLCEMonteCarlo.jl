@@ -137,6 +137,12 @@ _config_from_matrix(m::Matrix{Float64})::SpinConfig =
                 for s = 1:size(m, 2)])
 
 function _write_chain(f, g::String, st::ChainState)
+    # The reader refuses a joint Hamiltonian; refuse at the WRITE end too, so a run
+    # that cannot be resumed fails while it is still cheap to fix rather than at the
+    # resume attempt, after the trajectory is gone.
+    (isempty(st.com_removed) && all(iszero, st.disps)) || throw(ArgumentError(
+        "checkpoint schema v$(_CKPT_SCHEMA_VERSION) stores no displacement state, but " *
+        "this chain carries displacements; it could be written but never resumed"))
     f["$g/config"] = _config_matrix(st.config)
     f["$g/energy"] = st.energy
     f["$g/rng"] = _rng_words(st.rng)
@@ -149,6 +155,10 @@ function _write_chain(f, g::String, st::ChainState)
 end
 
 function _read_chain(f, g::String, H::TiledHamiltonian)::ChainState
+    # Schema v2 stores no displacement state. Nothing joint can reach the
+    # checkpointer yet (`run_mc`/`run_pt` refuse a displacement Hamiltonian until the
+    # pass scheduling lands), but say so rather than silently resuming at u = 0.
+    _require_spin_only(H, "checkpoint resume (schema v$(_CKPT_SCHEMA_VERSION))")
     config = _config_from_matrix(f["$g/config"])
     length(config) == H.n_sites || error(
         "checkpoint config has $(length(config)) sites; the Hamiltonian has " *
@@ -160,9 +170,14 @@ function _read_chain(f, g::String, H::TiledHamiltonian)::ChainState
         "checkpoint has $(size(srw, 2)) site RNG streams; the Hamiltonian has " *
         "$(H.n_sites) sites")
     site_rngs = [_rng_from_words(srw[:, s]) for s = 1:H.n_sites]
-    return ChainState(config, zrows, f["$g/energy"], _rng_from_words(f["$g/rng"]),
-                      site_rngs, f["$g/step"], f["$g/frozen"], cnt[1], cnt[2],
-                      cnt[3], cnt[4], f["$g/max_drift"])
+    # Pure-spin by the guard above: no displacements, no components to re-centre, and
+    # the displacement proposal width is never read.
+    return ChainState(config, zeros(SVector{3,Float64}, H.n_sites), zrows,
+                      f["$g/energy"], _rng_from_words(f["$g/rng"]), site_rngs,
+                      f["$g/step"], _DEFAULT_STEP_U, f["$g/frozen"], cnt[1], cnt[2],
+                      cnt[3], cnt[4], 0, 0, f["$g/max_drift"],
+                      SVector{3,Float64}[], 0.0, 0.0, 0.0, 0, 0.0, 0, 1, 0.0,
+                      0, false)
 end
 
 function _write_accs(f, g::String, accs::Vector{ObsAccumulator})

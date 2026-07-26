@@ -17,8 +17,8 @@ ferrimagnetic Nd-vs-Fe order at 250 K.
 | `src/energy.jl` | the energy contract: `total_energy`, `site_coeffs!`, `delta_energy`, `site_gradient`, all-site `energy_gradient!` (program kernels + bitwise-gated rank-generic reference kernels), joint `total_energy(H, config, disps)` and the displacement row filler |
 | `src/binning.jl` | `LogBinner`, `BinStore`, `jackknife` |
 | `src/observables.jl` | `Observable`, `Evaluable`, standard sets |
-| `src/state.jl` | `SpinConfig`, `ChainState` (chain + per-site RNG streams), `SweepScratch` |
-| `src/updates.jl` | Metropolis (adaptive step), overrelaxation, compound sweeps — color-ordered, serial or `sweep_tasks`-parallel with bit-identical results |
+| `src/state.jl` | `SpinConfig`, `ChainState` (spin config + displacements + per-site RNG streams + the two proposal widths), `SweepScratch`, `_recenter!` (per-component centre-of-mass projection, called from `_renormalize!`) |
+| `src/updates.jl` | Metropolis (adaptive step), overrelaxation, displacement Metropolis, compound sweeps — color-ordered, serial or `sweep_tasks`-parallel with bit-identical results |
 | `src/gpu/*.jl` | GPU Metropolis prototype (KernelAbstractions, backend supplied by the caller): `philox.jl` keyed Philox4x32-10 stream, `zlm_device.jl` bitwise device tesseral row, `gpu_hamiltonian.jl`/`gpu_state.jl` device tables + chain state, `gpu_sweep.jl` fused kernel + drivers + keyed serial reference |
 | `src/minimize.jl` | `minimize_energy` (on-sphere BB descent), `find_ground_state` (multi-start anneal + polish), `GroundStateResult` |
 | `src/run.jl` | `run_mc` (single T + annealing), `TempResult`, `MCResult` |
@@ -56,6 +56,7 @@ tangent-projected `∂E/∂e_s`, bit-identical for any `ntasks` — the field/to
 entry point for dependent packages such as spin dynamics),
 `LogBinner`, `std_error`, `tau_int`, `BinStore`, `bin_means`,
 `jackknife`, `ChainState`, `SweepScratch`, `metropolis_sweep!`, `overrelaxation_sweep!`,
+`displacement_sweep!`,
 `to_matrix`, `from_matrix`, `philox_block`,
 `philox_normal2` (the counter-based RNG as a stable contract for dependent
 packages; consumers must claim a nonzero `ctr[4]` domain tag — MC streams use 0),

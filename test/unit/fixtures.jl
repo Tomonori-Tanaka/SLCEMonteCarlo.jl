@@ -168,6 +168,24 @@ function _joint_model(seed = 5; asr::Bool = true)
     return SLCEModel(b, 0.37, jphi), cr
 end
 
+# An Einstein oscillator: one atom per cell in an isotropic harmonic well `E = a|u|²`,
+# hand-built as a single rank-1 displacement axis with `(k, l) = (1, 0)` — the factor is
+# `|u|^{2} R_{0,0}(u)` and `R_{0,0} ≡ 1`. Deliberately NOT translation-invariant (the
+# well pins each atom), hence `fixed_reference = true`; each atom is its own
+# displacement-coupling component.
+#
+# Its whole value is that the answer is known in closed form: `exp(−βa|u|²)` is an
+# isotropic Gaussian with per-component variance `kT/(2a)`, so `⟨|u|²⟩ = 3kT/(2a)`
+# exactly. Everything else in the displacement suite checks the sampler against itself
+# (incremental vs from-scratch, serial vs parallel); this checks it against an external
+# truth, and it doubles as the equilibrated control the escape detector is calibrated
+# against.
+function _einstein_terms(a::Float64 = 2.5)
+    L = SLCE.RowLayout(2, 0, 1, [(1, 0)], [1])       # spin row 1, displacement row 2
+    return [MC.ScaledTerm(a, [1], [SVector(0, 0, 0)],
+                          [MC.TermSlot(1, 1, 0, false)], [1.0])], L
+end
+
 # Random displacements on the sites of `H` (small — the polynomial kernel is exact at
 # any amplitude, but a physical scale keeps the magnitudes comparable to the spin rows).
 _rand_disps(rng, H::MC.TiledHamiltonian; amp = 0.08) =

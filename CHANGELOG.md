@@ -7,6 +7,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — the displacement sampler (M4 slice 3c, part 2)
+
+- **`displacement_sweep!(st, H, β, sc)`** — one single-site displacement Metropolis
+  sweep, in the same color-class order as the spin sweeps and with the same serial
+  `SweepScratch` / parallel `Vector{SweepScratch}` forms and the same
+  bit-determinism for any task count (P6). The proposal is an isotropic Gaussian
+  shift of width `ChainState.step_u` — a **length**, in the model's units, not an
+  angle — drawn from the site's own RNG stream. Sites with no displacement axis are
+  skipped, so on a pure-spin model the sweep is a no-op that consumes no randomness.
+  Decision record: `docs/specs/updates-stationarity.md` U7.
+- **`ChainState` carries the displacements**: `disps` (Cartesian, one per site,
+  all-zero and never read on a pure-spin model), the proposal width `step_u`, the
+  `acc_disp`/`att_disp` counters, and `com_removed` — the accumulated centre-of-mass
+  shift taken out of each displacement-coupling component, so a site's uncentred
+  position is `disps[s] + com_removed[c]`. The constructor takes them as keywords
+  (`disps`, `step_u`); `disps = nothing` starts from the clamped-ion state `u = 0`.
+  Displacements and their re-centring record are part of the replica-exchange
+  payload — a swap moves a whole physical state, frame included.
+- **Re-centring.** `_renormalize!` now removes each displacement-coupling
+  component's mean displacement before re-anchoring the energy, projected onto the
+  directions the construction gate measured as flat. Along those the projection costs no
+  energy; what it buys is that the displacement observables measure against a fixed
+  frame instead of a diffusing one, and that the solid-harmonic rows stay
+  well-conditioned. It
+  lives in `_renormalize!` and **not** in the sweep on purpose: a mean over sites is
+  an order-dependent reduction, and inside the barrier-separated color loop it would
+  make the trajectory depend on `sweep_tasks`.
+- **`delta_energy(c, zold, znew, lo, hi)`** — the row-range-limited form. A
+  single-channel move rewrites one block of the row table, and the rows it did not
+  touch contribute exactly zero, so restricting the sum is not an approximation; it
+  also means the proposal buffer never has to hold the untouched half. `SweepScratch`
+  now sizes `c`/`znew` to `H.nrows` and carries the solid-harmonic batch workspace
+  `rbuf` (empty on a pure-spin model). All of this is a bitwise no-op there.
+
+- **An escape detector, because an unbounded target is otherwise invisible.** The
+  cluster expansion is a finite polynomial in `u`, so `exp(−βE)` is a probability
+  measure only when the leading even form is positive definite — and nothing upstream
+  guarantees that. When it fails the chain has no stationary distribution and runs
+  downhill, and *no pre-existing diagnostic notices*: the ΔE bookkeeping stays exact
+  (drift `1e-14`, so the drift warning is silent by construction) and the acceptance
+  sits at 0.97–0.99. `_check_escape!` runs inside `_renormalize!` and compares the
+  block-averaged centre-of-mass-free mean square displacement against the previous
+  block's, plus an absolute guard against order-of-magnitude growth — the one property
+  that separates the two cases is recurrence.
+  `ChainState` reports `disp_rms`/`disp_max`. Detection only, deliberately: a
+  displacement bound would convert a loud failure into a quiet one, with the reported
+  numbers set by the bound rather than by the Hamiltonian (measured). Decision record:
+  `docs/specs/updates-stationarity.md` **U8**, which also records why umbrella sampling
+  — not a wall — is the right instrument where the boundary genuinely carries weight.
+- **An analytic gate for the displacement sampler.** `_einstein_terms` builds
+  `E = a|u|²`, whose Boltzmann distribution is an isotropic Gaussian with
+  `⟨|u|²⟩ = 3kT/(2a)` exactly. Every other displacement test compares the sampler with
+  itself (incremental vs from-scratch, serial vs parallel); this one compares it with an
+  external truth, and agrees to 0.54 %. It doubles as the equilibrated control that
+  pins the escape detector's false-positive rate (zero strikes and zero warnings over
+  8 seeds × 120 checks).
+
+### Fixed
+
+- **The flatness verdict is now per (Cartesian direction, displacement-coupling
+  component)** — `H.comp_free`, a `3 × n_disp_comps` matrix, with `_recenter!`
+  projecting the mean onto exactly the flat subspace. `_translation_residuals` probed a
+  single rigid direction, so a component whose flat directions are a proper subspace —
+  a substrate-clamped slab, pinned along its normal and free in the plane, which is the
+  example the spec itself gives — was reported as wholly pinned, re-centring skipped it
+  entirely, and its in-plane centre of mass then random-walked without bound. Nothing
+  would have caught that: free diffusion sits below the escape detector's threshold by
+  construction. Gated by a fixture in which a one-body `l = 1` displacement axis pins
+  exactly one direction and leaves two free, for each tesseral slot.
+- **The escape detector's growth test is block-averaged with a capped window**
+  (`_ESCAPE_WINDOW = 16`, three strikes) rather than an unbounded doubling ladder, plus
+  an absolute guard at `10×` the phase's first measurement. The ladder had a structural
+  blind spot — comparisons only at checks 1, 2, 4, 8, …, so an escape starting after a
+  quarter of the run never gets two consecutive comparisons and is never reported, and
+  a spin-driven escape (the model becomes unbounded only once the spins order) is
+  exactly that case. It also let sub-threshold growth accumulate for ever, and its
+  false-positive rate is governed by the effective number of degrees of freedom
+  carrying `⟨|u|²⟩` — a single dominant soft mode has `ν ≈ 1` at any system size — not
+  by the site count. Measured on the Einstein control: zero strikes and zero warnings
+  over 8 seeds × 120 checks.
+- **The escape warning is once per chain phase, not once per session.** `maxlog = 1` is
+  per callsite for the whole logger, so a single spurious strike anywhere would have
+  silenced every genuine report from every other temperature and every replica-exchange
+  lane for the rest of the run.
+- **The flatness verdict was previously per displacement-coupling component**
+  rather than global (`translation_residual`/`translation_invariant` remain as the
+  worst-entry summary). `_translation_residual` already measured it per component, but a
+  single global `Bool` meant that on a mixed model — one flat
+  component, one genuinely pinned — re-centring was disabled for the flat component too,
+  so its frame drifted without bound. That costs the reporting convention *and*
+  numerical conditioning (`_disp_rows!` evaluates the solid harmonics at the absolute
+  `u`, so drift makes the energy a difference of large near-cancelling terms).
+- **A flat one-site displacement component is now refused.** Its energy does not depend
+  on that site's displacement at all — it is a pure gauge coordinate, and sampling it
+  spends randomness on always-accepted moves, dilutes the acceptance statistics, and
+  writes a meaningless displacement into every reported configuration. A fitted model
+  cannot produce one (the ASR zeroes a lone displacement axis), so its presence is
+  information.
+
+### Changed
+
+- `_recenter!` is now justified by **π-invariance** rather than by energy neutrality
+  (which is strictly weaker): the chain is a skew product whose quotient marginal is
+  Markov, so re-centring transforms only an unmeasured passenger. That argument holds
+  **only while every state-space restriction is gauge-invariant**, which is now recorded
+  as a standing constraint on anything added downstream.
+- `run_mc` / `run_pt` refuse a displacement Hamiltonian (the guard moved off the
+  `ChainState` constructor, which now accepts one): the drivers schedule no
+  displacement pass yet, so they would silently sample the clamped-ion ensemble.
+  `displacement_sweep!` is callable directly in the meantime. Checkpoint resume
+  refuses one too — schema v2 stores no displacement state.
+- `_renormalize!` takes a `SweepScratch` rather than a bare `plm` workspace (it now
+  needs the solid-harmonic buffer as well).
+
 ### Added — the displacement sampler's preconditions (M4 slice 3c, part 1)
 
 - **Displacement-coupling components.** Two displacement-active sites are joined when
