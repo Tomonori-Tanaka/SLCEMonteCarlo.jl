@@ -284,7 +284,9 @@ using Test
                                 SLCE.SlotRef(2, SLCE.SiteFactor(SLCE.DISP, 0, 1))],
                                randn(3, 3))]
         L2 = SLCE.RowLayout(7, 1, 4, [(0, 1)], [4])
-        Hm = MC.TiledHamiltonian(2, mixed, L2)
+        # hand-built and not translation-invariant; this test is about the activity
+        # predicates, not the flat direction
+        Hm = MC.TiledHamiltonian(2, mixed, L2; fixed_reference = true)
         @test Hm.site_active == [true, true] && Hm.n_active == 2
         @test Hm.site_has_spin == [true, false] && Hm.n_spin_active == 1
         @test Hm.site_has_l1 == [true, false]
@@ -306,12 +308,53 @@ using Test
                                [SLCE.SlotRef(1, SLCE.SiteFactor(SLCE.SPIN, 0, 1)),
                                 SLCE.SlotRef(2, SLCE.SiteFactor(SLCE.DISP, k, 1))],
                                fill(0.5, 3, 3))]
-        HA = MC.TiledHamiltonian(2, mk(0), SLCE.RowLayout(7, 1, 4, [(0, 1)], [4]))
-        HB = MC.TiledHamiltonian(2, mk(1), SLCE.RowLayout(7, 1, 4, [(1, 1)], [4]))
+        HA = MC.TiledHamiltonian(2, mk(0), SLCE.RowLayout(7, 1, 4, [(0, 1)], [4]);
+                                 fixed_reference = true)
+        HB = MC.TiledHamiltonian(2, mk(1), SLCE.RowLayout(7, 1, 4, [(1, 1)], [4]);
+                                 fixed_reference = true)
         @test MC.model_fingerprint(HA) != MC.model_fingerprint(HB)
         cfg = MC.SpinConfig([SVector(0.0, 0.0, 1.0), SVector(1.0, 0.0, 0.0)])
         u = [SVector(0.1, -0.2, 0.3), SVector(-0.05, 0.15, 0.2)]
         @test total_energy(HA, cfg, u) != total_energy(HB, cfg, u)
+    end
+
+    @testset "the uniform-shift direction must be flat, or be declared physical" begin
+        # The displacement sampler re-centres along the uniform direction and the fit's
+        # trust region is centre-of-mass-free, so a model whose rigid shift costs energy
+        # is refused — measured on the Hamiltonian itself, not inferred from the fit.
+        @test H.translation_invariant
+        @test H.translation_residual < 1e-10
+        @test SLCE.asr_residual(model) < 1e-10
+        # the components: with no inter-cell displacement coupling in this fixture, each
+        # supercell cell's dimer is its OWN flat direction — a single global centre of
+        # mass would leave the other seven drifting
+        @test H.n_disp_comps == 1
+        H8 = MC.TiledHamiltonian(model; dims = (2, 2, 2))
+        @test H8.n_disp_comps == 8
+        @test H8.translation_residual < 1e-10
+        @test sum(H8.disp_comp_ptr[c + 1] - H8.disp_comp_ptr[c]
+                  for c = 1:H8.n_disp_comps) == H8.n_disp_active
+        @test issorted(H8.disp_comp_sites[1:2])            # ascending within a component
+
+        # an unconstrained fit of the SAME basis is refused, and the message names both
+        # ways forward
+        bad, _ = _joint_model(5; asr = false)
+        @test SLCE.asr_residual(bad) > 1e-3
+        err = try
+            MC.TiledHamiltonian(bad)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("asr = true", sprint(showerror, err))
+        @test occursin("fixed_reference = true", sprint(showerror, err))
+        # …and accepted when the absolute frame is declared physical
+        Hf = MC.TiledHamiltonian(bad; fixed_reference = true)
+        @test !Hf.translation_invariant && Hf.translation_residual > 1e-3
+        # a pure-spin model has no uniform direction to be flat, and is never probed
+        @test TiledHamiltonian(_dimer_model()).translation_residual == 0.0
+        @test TiledHamiltonian(_dimer_model()).translation_invariant
     end
 
     @testset "a pure-spin model still takes the frozen path" begin

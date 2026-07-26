@@ -142,9 +142,13 @@ end
 #   * with the disp degree landing on a single site, the coupled rank-3 term has its two
 #     same-site axes separated by a third in canonical order — the column tuples then
 #     disagree and the fast path must decline (asserted where used).
-# Coefficients are random: no fit is involved, and the tiling identity against
-# `predict_energy` holds for any coefficient vector (ASR or not).
-function _joint_model(seed = 5)
+# No fit is involved: the tiling identity against `predict_energy` holds for any
+# coefficient vector. But the displacement sampler requires a flat uniform-shift
+# direction, so `asr = true` (the default) projects the random coefficients onto the
+# acoustic-sum-rule null space — `SLCE.build_asr(b).Z` — which is exactly what a
+# `fit(...; asr = true)` produces and what `TiledHamiltonian` demands. Pass
+# `asr = false` for the fixture that must be REFUSED.
+function _joint_model(seed = 5; asr::Bool = true)
     lat = Lattice(Matrix(3.0 * I(3)))
     cr = Crystal(lat, [1/6 -1/6; 0.0 0.0; 0.0 0.0], [1, 1], ["Fe"])
     spec = BasisSpec(cr; lmax = 1, pmax = 2, sectors = [
@@ -152,7 +156,16 @@ function _joint_model(seed = 5)
         Sector(spin = [1, 1], disp = (degree = 2,), nbody = 2, cutoff = 1.1),
         Sector(disp = (degree = 2,), nbody = 1:2, cutoff = 1.1)])
     b = SLCEBasis(cr, spec)
-    return SLCEModel(b, 0.37, 0.05 .* randn(MersenneTwister(seed), n_salcs(b))), cr
+    rng = MersenneTwister(seed)
+    jphi = if asr
+        # the warning about structurally-zeroed columns is expected on a fixture this
+        # small (a few displacement partners fall outside the cutoff)
+        Z = (@test_logs (:warn,) match_mode = :any SLCE.build_asr(b)).Z
+        0.4 .* (Z * randn(rng, size(Z, 2)))
+    else
+        0.05 .* randn(rng, n_salcs(b))
+    end
+    return SLCEModel(b, 0.37, jphi), cr
 end
 
 # Random displacements on the sites of `H` (small — the polynomial kernel is exact at

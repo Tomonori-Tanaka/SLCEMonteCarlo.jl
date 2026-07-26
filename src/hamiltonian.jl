@@ -334,9 +334,24 @@ struct TiledHamiltonian
                                      #   instance (1:body — not an axis index)
     site_has_l1::Vector{Bool}        # any adjacent instance carries l = 1 at this site
     site_has_spin::Vector{Bool}      # any adjacent instance carries a SPIN axis here
+    site_has_disp::Vector{Bool}      # any adjacent instance carries a DISP axis here
     site_active::Vector{Bool}        # any adjacent instance at all (either channel)
     n_active::Int                    # number of active sites (scheduling / coloring)
     n_spin_active::Int               # number of spin-active sites (spin observables)
+    n_disp_active::Int               # number of displacement-active sites
+    # Displacement-coupling components (CSR, component-major, sites ascending). Two
+    # disp-active sites are joined when some instance carries a DISP axis on BOTH: the
+    # energy then splits into groups of displacement variables that never meet, and a
+    # uniform shift of EACH group separately is an exact symmetry under the ASR. The
+    # flat space is therefore 3 × n_disp_comps, not 3 — the "exactly three zero
+    # eigenvalues of D(0)" statement is about a CONNECTED model.
+    disp_comp_ptr::Vector{Int32}
+    disp_comp_sites::Vector{Int32}
+    n_disp_comps::Int
+    # How flat the uniform-shift direction actually is, measured on this Hamiltonian
+    # (see `_translation_residual`): 0 means exactly flat, ~1 means not flat at all.
+    translation_residual::Float64
+    translation_invariant::Bool      # false = the absolute frame is physical
     progs::_ContractionPrograms      # precompiled sparse contraction programs
     # proper coloring of the site-conflict graph (conflict = shares an instance):
     # the sweeps scan color classes in order; sites within one class never co-occur
@@ -347,7 +362,8 @@ struct TiledHamiltonian
     color_sites::Vector{Int32}       # active sites, class-major, ascending in class
 
     function TiledHamiltonian(n_cell_atoms::Integer, terms::Vector{ScaledTerm},
-                              layout::RowLayout; dims::NTuple{3,Integer} = (1, 1, 1))
+                              layout::RowLayout; dims::NTuple{3,Integer} = (1, 1, 1),
+                              fixed_reference::Bool = false)
         n_cell_atoms >= 1 ||
             throw(ArgumentError("n_cell_atoms must be ≥ 1; got $n_cell_atoms"))
         all(d -> d >= 1, dims) || throw(ArgumentError("dims must be ≥ 1; got $dims"))
@@ -479,26 +495,167 @@ struct TiledHamiltonian
         # convention exists to avoid. They coincide exactly on a pure-spin model.
         site_has_l1 = zeros(Bool, n_sites)
         site_has_spin = zeros(Bool, n_sites)
+        site_has_disp = zeros(Bool, n_sites)
         for s = 1:n_sites, j = site_ptr[s]:(site_ptr[s + 1] - 1)
             slots = terms[inst_term[site_inst[j]]].slots
             q = site_slot[j]
             site_has_l1[s] |= any(sl -> sl.site == q && sl.spin && sl.l == 1, slots)
             site_has_spin[s] |= any(sl -> sl.site == q && sl.spin, slots)
+            site_has_disp[s] |= any(sl -> sl.site == q && !sl.spin, slots)
         end
         site_active = [site_ptr[s + 1] > site_ptr[s] for s = 1:n_sites]
         n_active = count(site_active)
         n_spin_active = count(site_has_spin)
+        n_disp_active = count(site_has_disp)
+        ncomp, dcomp_ptr, dcomp_sites = _disp_components(
+            n_sites, terms, inst_term, inst_ptr, inst_sites, site_has_disp)
         progs = _build_programs(terms, inst_term, inst_ptr, inst_sites, site_inst,
                                 site_slot)
         n_colors, color_ptr, color_sites = _color_sites(
             n_sites, site_ptr, site_inst, inst_ptr, inst_sites, site_active)
 
+        # `_translation_residual` needs a finished Hamiltonian to evaluate energies on,
+        # and the residual is a field — so build once with a placeholder, measure, and
+        # build again with the verdict. `new` may be called more than once; the two
+        # objects share every array by reference, so the second is nearly free.
+        H0 = new(n_cell_atoms, d, n_sites, lmax, nlm, layout.nrows, disp_lmax,
+                 layout, terms,
+                 inst_term, inst_ptr, inst_sites, site_ptr, site_inst, site_slot,
+                 site_has_l1, site_has_spin, site_has_disp, site_active,
+                 n_active, n_spin_active, n_disp_active,
+                 dcomp_ptr, dcomp_sites, ncomp, 0.0, true,
+                 progs, n_colors, color_ptr, color_sites)
+        resid = ncomp == 0 ? 0.0 : _translation_residual(H0)
+        invariant = resid <= _TRANSLATION_TOL
+        if !invariant && !fixed_reference
+            throw(ArgumentError(
+                "this Hamiltonian's uniform-displacement direction is not flat " *
+                "(relative residual $(resid) > $(_TRANSLATION_TOL)): a rigid shift of " *
+                "the whole crystal changes the energy as much as a generic distortion " *
+                "of the same size. The displacement sampler needs that direction to be " *
+                "a symmetry (it re-centres along it, and the fit's trust region is " *
+                "centre-of-mass-free), so it refuses this model.\n" *
+                "  * If the model is meant to be translation-invariant, refit under " *
+                "the acoustic sum rule: `fit(...; asr = true)` (the default).\n" *
+                "  * If the absolute position IS physical — a substrate-clamped slab, " *
+                "a pinning defect, anything with a fixed external reference — pass " *
+                "`fixed_reference = true`. Re-centring is then disabled and the " *
+                "displacement guard works in the absolute frame."))
+        end
         return new(n_cell_atoms, d, n_sites, lmax, nlm, layout.nrows, disp_lmax,
                    layout, terms,
                    inst_term, inst_ptr, inst_sites, site_ptr, site_inst, site_slot,
-                   site_has_l1, site_has_spin, site_active, n_active, n_spin_active,
+                   site_has_l1, site_has_spin, site_has_disp, site_active,
+                   n_active, n_spin_active, n_disp_active,
+                   dcomp_ptr, dcomp_sites, ncomp, resid, invariant,
                    progs, n_colors, color_ptr, color_sites)
     end
+end
+
+# Connected components of the displacement-coupling graph: disp-active sites joined
+# when some instance carries a DISP axis on both. Union-find with path halving, then a
+# CSR relabel in site order so the component layout is a deterministic function of `H`
+# (the re-centring loop walks it, and P6 needs a fixed order).
+function _disp_components(n_sites::Int, terms::Vector{ScaledTerm},
+                          inst_term::Vector{Int32}, inst_ptr::Vector{Int32},
+                          inst_sites::Vector{Int32}, site_has_disp::Vector{Bool})
+    parent = collect(1:n_sites)
+    find(x) = (while parent[x] != x
+                   parent[x] = parent[parent[x]]
+                   x = parent[x]
+               end; x)
+    for i in eachindex(inst_term)
+        t = terms[inst_term[i]]
+        off = Int(inst_ptr[i]) - 1
+        anchor = 0
+        for sl in t.slots
+            sl.spin && continue
+            s = Int(inst_sites[off + sl.site])
+            if anchor == 0
+                anchor = s
+            else
+                ra, rs = find(anchor), find(s)
+                ra == rs || (parent[rs] = ra)
+            end
+        end
+    end
+    label = zeros(Int32, n_sites)
+    ncomp = 0
+    for s = 1:n_sites                       # site order ⇒ deterministic labelling
+        site_has_disp[s] || continue
+        r = find(s)
+        label[r] == 0 && (ncomp += 1; label[r] = Int32(ncomp))
+        label[s] = label[r]
+    end
+    counts = zeros(Int32, ncomp)
+    for s = 1:n_sites
+        site_has_disp[s] && (counts[label[s]] += 1)
+    end
+    ptr = Vector{Int32}(undef, ncomp + 1)
+    ptr[1] = 1
+    for c = 1:ncomp
+        ptr[c + 1] = ptr[c] + counts[c]
+    end
+    sites = Vector{Int32}(undef, ptr[ncomp + 1] - 1)
+    cursor = copy(@view ptr[1:ncomp])
+    for s = 1:n_sites                       # ascending within each component
+        site_has_disp[s] || continue
+        c = label[s]
+        sites[cursor[c]] = Int32(s)
+        cursor[c] += 1
+    end
+    return ncomp, ptr, sites
+end
+
+# Relative flatness of the uniform-shift direction, measured on the Hamiltonian itself
+# rather than inferred from the fit: shift one displacement component rigidly by `t` and
+# compare the energy change against the change a GENERIC distortion of the same size
+# makes. Under the ASR the ratio is ~1e-16; without it, ~1. Dimensionless and
+# scale-free, so no energy unit or displacement scale has to be assumed — and it tests
+# the property the sampler actually depends on, on every construction path (a hand-built
+# term list has no `asr_residual` to consult).
+const _TRANSLATION_TOL = 1e-10
+
+function _translation_residual(H::TiledHamiltonian)::Float64
+    cfg, u = _probe_state(H)
+    E0 = _total_energy(H, _zrows(H, cfg, u))
+    num = 0.0
+    den = 0.0
+    ushift = similar(u)
+    for t in (0.02, 0.2)
+        for c = 1:H.n_disp_comps
+            copyto!(ushift, u)
+            for q = H.disp_comp_ptr[c]:(H.disp_comp_ptr[c + 1] - 1)
+                s = Int(H.disp_comp_sites[q])
+                ushift[s] += t * SVector(0.6, -0.8, 0.5)          # rigid
+            end
+            num = max(num, abs(_total_energy(H, _zrows(H, cfg, ushift)) - E0))
+            copyto!(ushift, u)
+            for q = H.disp_comp_ptr[c]:(H.disp_comp_ptr[c + 1] - 1)
+                s = Int(H.disp_comp_sites[q])
+                ushift[s] += t * SVector(0.6 * sin(1.7s), -0.8 * cos(2.3s),
+                                         0.5 * sin(0.9s + 1.1))   # generic
+            end
+            den = max(den, abs(_total_energy(H, _zrows(H, cfg, ushift)) - E0))
+        end
+    end
+    return num / max(den, abs(E0), 1e-300)
+end
+
+# A deterministic probe state — no RNG, so construction stays a pure function of the
+# term list. Spins are a golden-angle spiral (unit by construction); displacements are a
+# small incommensurate pattern.
+function _probe_state(H::TiledHamiltonian)
+    cfg = SpinConfig(undef, H.n_sites)
+    u = Vector{SVector{3,Float64}}(undef, H.n_sites)
+    for s = 1:H.n_sites
+        φ = 2.399963229728653 * s
+        z = 1 - 2 * (s - 0.5) / H.n_sites
+        r = sqrt(max(0.0, 1 - z * z))
+        cfg[s] = SVector(r * cos(φ), r * sin(φ), z)
+        u[s] = 0.05 * SVector(sin(0.7s), cos(1.3s), sin(2.1s + 0.4))
+    end
+    return cfg, u
 end
 
 # --- term ingest: the two upstream introspection surfaces -> ScaledTerm --------------
@@ -513,7 +670,8 @@ _spin_row_layout(lmax::Int)::RowLayout =
               Tuple{Int,Int}[], Int[])
 
 function TiledHamiltonian(n_cell_atoms::Integer, mterms::Vector{MultipoleTerm};
-                          dims::NTuple{3,Integer} = (1, 1, 1))
+                          dims::NTuple{3,Integer} = (1, 1, 1),
+                          fixed_reference::Bool = false)
     # A coef == 0 term contributes nothing to any energy, coefficient vector, or
     # gradient — drop it so "no adjacent instance" means "state-independent site".
     mterms = filter(t -> t.coef != 0.0, mterms)
@@ -534,11 +692,13 @@ function TiledHamiltonian(n_cell_atoms::Integer, mterms::Vector{MultipoleTerm};
         terms[k] = ScaledTerm(mt.coef * (4π)^(body / 2), copy(mt.atoms), copy(mt.shifts),
                               slots, copy(mt.folded))
     end
-    return TiledHamiltonian(n_cell_atoms, terms, _spin_row_layout(lmax); dims = dims)
+    return TiledHamiltonian(n_cell_atoms, terms, _spin_row_layout(lmax); dims = dims,
+                            fixed_reference = fixed_reference)
 end
 
 function TiledHamiltonian(n_cell_atoms::Integer, dterms::Vector{DecoratedTerm},
-                          layout::RowLayout; dims::NTuple{3,Integer} = (1, 1, 1))
+                          layout::RowLayout; dims::NTuple{3,Integer} = (1, 1, 1),
+                          fixed_reference::Bool = false)
     dterms = filter(t -> t.coef != 0.0, dterms)
     terms = Vector{ScaledTerm}(undef, length(dterms))
     for (k, dt) in enumerate(dterms)
@@ -561,10 +721,12 @@ function TiledHamiltonian(n_cell_atoms::Integer, dterms::Vector{DecoratedTerm},
         terms[k] = ScaledTerm(dt.coef * dt.scale, copy(dt.atoms), copy(dt.shifts),
                               slots, copy(dt.folded))
     end
-    return TiledHamiltonian(n_cell_atoms, terms, layout; dims = dims)
+    return TiledHamiltonian(n_cell_atoms, terms, layout; dims = dims,
+                            fixed_reference = fixed_reference)
 end
 
-function TiledHamiltonian(model::SLCEModel; dims::NTuple{3,Integer} = (1, 1, 1))
+function TiledHamiltonian(model::SLCEModel; dims::NTuple{3,Integer} = (1, 1, 1),
+                          fixed_reference::Bool = false)
     layout = row_layout(model)
     # A model with no displacement rows goes down the frozen pure-spin path, byte for
     # byte as before M4. `restrict` is a no-op on a genuinely pure-spin basis and the
@@ -573,8 +735,9 @@ function TiledHamiltonian(model::SLCEModel; dims::NTuple{3,Integer} = (1, 1, 1))
     # pathological "declared a displacement sector, built no displacement SALC" case.
     isempty(layout.disp_factors) &&
         return TiledHamiltonian(n_atoms(model), multipole_terms(restrict(model, :spin));
-                                dims = dims)
-    return TiledHamiltonian(n_atoms(model), decorated_terms(model), layout; dims = dims)
+                                dims = dims, fixed_reference = fixed_reference)
+    return TiledHamiltonian(n_atoms(model), decorated_terms(model), layout; dims = dims,
+                            fixed_reference = fixed_reference)
 end
 
 """
@@ -656,7 +819,8 @@ Base.show(io::IO, H::TiledHamiltonian) =
           ", lmax=", H.lmax,
           has_disp(H) ? ", disp $(H.layout.disp_factors)" : "",
           ", ", length(H.terms), " terms, ",
-          length(H.inst_term), " instances)")
+          length(H.inst_term), " instances",
+          H.translation_invariant ? "" : ", fixed reference", ")")
 
 """
     n_sites(H::TiledHamiltonian) -> Int

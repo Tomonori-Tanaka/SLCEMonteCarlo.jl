@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — the displacement sampler's preconditions (M4 slice 3c, part 1)
+
+- **Displacement-coupling components.** Two displacement-active sites are joined when
+  some instance carries a displacement axis on both; a uniform shift of **each
+  component separately** is an exact symmetry under the acoustic sum rule, so the flat
+  space is `3 × n_disp_comps`, not 3. (The 2×2×2 tiling of the joint test fixture has
+  eight components — a single global centre of mass would have left seven relative
+  drifts unbounded.) Exposed as `H.disp_comp_ptr`/`disp_comp_sites`/`n_disp_comps`.
+- **`site_has_disp` / `n_disp_active`**, completing the per-channel activity split
+  started in 3b.
+- **A translation-invariance gate.** `TiledHamiltonian` measures how flat the
+  uniform-shift direction actually is — `H.translation_residual`, the energy change
+  under a rigid shift relative to that under a generic distortion of the same size — and
+  **refuses** a displacement model whose direction is not flat. The measurement is on
+  the Hamiltonian itself, not inferred from the fit, so it works on every construction
+  path (a hand-built term list has no `asr_residual`). The error names both ways
+  forward: refit with `fit(...; asr = true)`, or pass **`fixed_reference = true`** if
+  the absolute position is genuinely physical (a substrate-clamped slab, a pinning
+  defect), which disables re-centring and puts the displacement guard in the absolute
+  frame.
+
 ### Added — joint spin–lattice ingest and energy (M4 slice 3b)
 
 - `TiledHamiltonian` now accepts **joint (spin + displacement) models**. A term's
