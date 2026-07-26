@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — displacement observables and the harmonic screen (M4 slice 3d)
+
+- **`MCView`** — the single argument every [`Observable`](@ref) now receives
+  (`v.config`, `v.disps`, `v.energy`, `v.H`). **BREAKING**: `f(config, energy, H)`
+  becomes `f(v)`; every observable definition, here and downstream in
+  `SLCEDynamics`, is rewritten. The sampled state grows with the model —
+  displacements arrived in M4 — and a positional contract would break every
+  observable ever written each time it did.
+  `disps` is **emptied** on a Hamiltonian with no displacement channel, whatever the
+  producer passed, so a displacement observable throws on a pure-spin model instead
+  of reporting a confident zero.
+- **Displacement observables** on a model with a displacement-active site: `:u2`
+  (mean square displacement — a *binned* observable with an autocorrelation-aware
+  error bar, unlike `TempResult.disp_rms`), `:u4`, and `:sublattice_u2` /
+  `:sublattice_u4` per training-cell atom (`:sublattice_u2` is the isotropic
+  Debye–Waller input `B_a = 8π²⟨u²⟩_a/3`). Every one is a moment of `u_s − ū_c`:
+  the centre of mass is removed **inside the observable**, along the flat directions
+  only, because the sampler re-centres at renormalization points while measurements
+  fire far more often — relying on the sampler's frame biases `⟨u²⟩` by an amount
+  linear in `renorm_interval` (over 100 % at the defaults on a small cell), always
+  positive and shrinking with system size, so it would read as a finite-size effect.
+- **`:u_moment_ratio`** = `⟨u⁴⟩/⟨u²⟩²`, the anharmonicity screen. Read against
+  **temperature**: for a harmonic model every `σ_s² ∝ T`, so the ratio is
+  temperature-independent whatever the crystal. Its *level* is
+  `(5/3)·mean(σ⁴)/(mean σ²)² ≥ 5/3` by Jensen — 5/3 only when every
+  displacement-active site samples the same isotropic Gaussian, and a two-sublattice
+  Einstein crystal with a 4× stiffness contrast measures 2.26 while being exactly
+  harmonic. The clean 5/3 test is the per-sublattice ratio, which is why both
+  sublattice moments are measured. Gated on a heterogeneous fixture against the
+  Jensen prediction and on the per-sublattice ratio against 5/3.
+- **`force_constant_matrix` / `harmonic_stability`** — the displacement Hessian of
+  the **tiled** Hamiltonian at a given spin configuration, by central differences of
+  `total_energy`, and its spectrum. This is the screen that runs *before* a joint
+  run, complementing the escape detector, which only reports the case that has
+  already diverged: on the package's own unbounded fixture it finds negative
+  eigenvalues without sampling anything. An eigenvalue below `−tol` is a proof of
+  failure; a clean spectrum proves nothing (deciding global non-negativity of a
+  quartic form is NP-hard), and the docstring says so. Deliberately finite
+  differences rather than a second analytic derivation of the force constants:
+  `SLCE.force_constants` already owns that convention, and this one answers the
+  different question of what the sampler actually evaluates.
+  The returned `tol` is **measured, not modelled**: a translation-invariant model has
+  `3·n_disp_comps` exact zero eigenvalues and finite differences scatter each across
+  zero, so an untolerated `count(< 0, λ)` reports the documented proof of failure on
+  a healthy model about half the time. The floor is read off the residual of the
+  rigid-shift directions the construction gate certified flat — where the exact
+  answer is zero, so whatever comes out is pure roundoff — and it tracks the acoustic
+  scatter to ~12 % across three decades of `step`. `acoustic_residual` is likewise
+  normalized **per displacement-coupling component**, not against the global scale,
+  so a dominant or pinned component cannot mask a broken sum rule in another.
+- **`MCResult.final_disps` / `PTResult.final_disps`** — the chain's last displacement
+  configuration, so a continuation run can warm-start from it instead of silently
+  restarting at the clamped-ion state. Empty on a pure-spin model.
+
 ### Added — the drivers take the displacement channel (M4 slice 3c, part 3)
 
 - **`run_mc` / `run_pt` now sample joint spin–lattice models.** The

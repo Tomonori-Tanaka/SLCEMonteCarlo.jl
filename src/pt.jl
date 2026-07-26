@@ -21,13 +21,20 @@
 
 Result of [`run_pt`](@ref): `points` (one [`TempResult`](@ref) per ladder rung, in
 ladder order), the adjacent-pair `swap_acceptance` fractions (length
-`n_rungs − 1`; over the whole run), each lane's `final_config`, and the run `seed`.
-Prints as a summary table.
+`n_rungs − 1`; over the whole run), each lane's `final_config` and `final_disps`, and
+the run `seed`. Prints as a summary table.
+
+`final_disps[r]` is lane `r`'s last displacement configuration in the
+centre-of-mass-free frame (empty on a pure-spin model). Note it is the *lane's*
+payload at the end of the run — a replica exchange moves whole physical states
+between lanes, so it is a sample of rung `r`'s marginal, not the continuation of one
+replica's trajectory.
 """
 struct PTResult
     points::Vector{TempResult}
     swap_acceptance::Vector{Float64}
     final_configs::Vector{SpinConfig}
+    final_disps::Vector{Vector{SVector{3,Float64}}}
     seed::UInt64
 end
 
@@ -88,8 +95,9 @@ function _lane_segment!(lane::_PTLane, H::TiledHamiltonian, plan::UpdatePlan,
         lane.phase_sweeps % plan.renorm_interval == 0 &&
             _renormalize!(st, H, lane.scs[1])
         if measure && lane.phase_sweeps % plan.measure_interval == 0
+            view = MCView(H, st.config, st.disps, st.energy)
             for acc in lane.accs
-                _measure!(acc, st.config, st.energy, H)
+                _measure!(acc, view)
             end
         end
     end
@@ -329,7 +337,7 @@ function _pt_run!(lanes::Vector{_PTLane}, H::TiledHamiltonian, plan::UpdatePlan,
               for lane in lanes]
     swaps = [swap_att[i] == 0 ? NaN : swap_acc[i] / swap_att[i] for i = 1:(R - 1)]
     return PTResult(points, swaps, [copy(lane.st.config) for lane in lanes],
-                    plan.seed)
+                    [_final_disps(H, lane.st) for lane in lanes], plan.seed)
 end
 
 """

@@ -57,6 +57,7 @@ include("gpu/gpu_state.jl")
 include("gpu/gpu_sweep.jl")
 include("gpu/gpu_gradient.jl")
 include("minimize.jl")
+include("stability.jl")
 include("run.jl")
 include("pt.jl")
 include("checkpoint.jl")
@@ -65,11 +66,12 @@ include("reduce.jl")
 
 export KB_EV
 export TiledHamiltonian, n_sites, total_energy
-export Observable, Evaluable, ObservableStat, standard_observables,
+export MCView, Observable, Evaluable, ObservableStat, standard_observables,
        standard_evaluables
 export run_mc, MCResult, TempResult
 export run_pt, PTResult
 export minimize_energy, find_ground_state, GroundStateResult
+export force_constant_matrix, harmonic_stability
 export resume
 export supercell_crystal
 export ReducedCell, reduce_cell

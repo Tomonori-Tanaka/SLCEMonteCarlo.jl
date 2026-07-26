@@ -13,11 +13,11 @@
                                 for s = 1:n_sites(H)])
         E = total_energy(H, config)
         obs = Dict(o.name => o for o in standard_observables(H))
-        @test obs[:energy].f(config, E, H) == E
-        @test obs[:energy2].f(config, E, H) == E^2
-        @test obs[:m].f(config, E, H) ≈ SVector(0.0, 0.0, 0.0) atol = 1e-15
-        @test obs[:absm].f(config, E, H) ≈ 0.0 atol = 1e-15
-        sub = obs[:sublattice_m].f(config, E, H)
+        @test obs[:energy].f(_view(H, config, E)) == E
+        @test obs[:energy2].f(_view(H, config, E)) == E^2
+        @test obs[:m].f(_view(H, config, E)) ≈ SVector(0.0, 0.0, 0.0) atol = 1e-15
+        @test obs[:absm].f(_view(H, config, E)) ≈ 0.0 atol = 1e-15
+        sub = obs[:sublattice_m].f(_view(H, config, E))
         @test length(sub) == 12
         @test sub[3] ≈ 1.0 atol = 1e-15      # atom 1, z
         @test sub[6] ≈ -1.0 atol = 1e-15     # atom 2, z
@@ -25,9 +25,9 @@
         # uniform tilt: |m| = 1, m4 = m2² = 1
         tilt = normalize(SVector(1.0, 2.0, 2.0))
         uniform = MC.SpinConfig([tilt for _ = 1:n_sites(H)])
-        @test obs[:absm].f(uniform, 0.0, H) ≈ 1.0 atol = 1e-14
-        @test obs[:m2].f(uniform, 0.0, H) ≈ 1.0 atol = 1e-14
-        @test obs[:m4].f(uniform, 0.0, H) ≈ 1.0 atol = 1e-14
+        @test obs[:absm].f(_view(H, uniform)) ≈ 1.0 atol = 1e-14
+        @test obs[:m2].f(_view(H, uniform)) ≈ 1.0 atol = 1e-14
+        @test obs[:m4].f(_view(H, uniform)) ≈ 1.0 atol = 1e-14
     end
 
     @testset "accumulate → finalize: raw stats and jackknifed evaluables" begin
@@ -39,7 +39,7 @@
             cfg = _rand_config(rng, H)
             E = total_energy(H, cfg)
             for acc in accs
-                MC._measure!(acc, cfg, E, H)
+                MC._measure!(acc, _view(H, cfg, E))
             end
         end
         kT = 0.05
@@ -64,17 +64,17 @@
     @testset "user observables and evaluables" begin
         # a scalar user observable: the z-projection of sublattice 1
         myobs = Observable(:sub1z, 1,
-                           (cfg, E, H) -> mean(cfg[s][3] for s = 1:length(cfg)
-                                               if MC.site_atom(H, s) == 1))
+                           v -> mean(v.config[s][3] for s = 1:length(v.config)
+                                     if MC.site_atom(v.H, s) == 1))
         up = SVector(0.0, 0.0, 1.0)
         config = MC.SpinConfig([up for _ = 1:n_sites(H)])
-        @test myobs.f(config, 0.0, H) ≈ 1.0 atol = 1e-15
+        @test myobs.f(_view(H, config)) ≈ 1.0 atol = 1e-15
 
         # an evaluable over it
         myev = Evaluable(:sub1z_sq, [:sub1z], (m, kT, n) -> m.sub1z^2)
         accs = [MC.ObsAccumulator(myobs, 64, 8)]
         for _ = 1:64
-            MC._measure!(accs[1], config, 0.0, H)
+            MC._measure!(accs[1], _view(H, config))
         end
         stats = MC._finalize_stats(accs, [myev], 1.0, n_sites(H), n_sites(H))
         @test stats[:sub1z_sq].mean[1] ≈ 1.0 atol = 1e-12
@@ -82,15 +82,15 @@
         # guards: missing / non-scalar inputs
         bad = Evaluable(:nope, [:missing_obs], (m, kT, n) -> 0.0)
         @test_throws ArgumentError MC._finalize_stats(accs, [bad], 1.0, 8, 8)
-        vec_obs = Observable(:vec3, 3, (cfg, E, H) -> SVector(1.0, 2.0, 3.0))
+        vec_obs = Observable(:vec3, 3, v -> SVector(1.0, 2.0, 3.0))
         vaccs = [MC.ObsAccumulator(vec_obs, 8, 4)]
         badv = Evaluable(:nope2, [:vec3], (m, kT, n) -> 0.0)
         @test_throws ArgumentError MC._finalize_stats(vaccs, [badv], 1.0, 8, 8)
 
         # a wrongly-declared component count is caught at measurement time
-        wrong = Observable(:oops, 2, (cfg, E, H) -> 1.0)
+        wrong = Observable(:oops, 2, v -> 1.0)
         wacc = MC.ObsAccumulator(wrong, 8, 4)
-        @test_throws DimensionMismatch MC._measure!(wacc, config, 0.0, H)
+        @test_throws DimensionMismatch MC._measure!(wacc, _view(H, config))
     end
 
     @testset "fewer planned measurements than nbins degrades, not NaNs" begin
@@ -98,12 +98,12 @@
         # runs over those (≥ 2) instead of erroring or NaN-ing.
         up = SVector(0.0, 0.0, 1.0)
         config = MC.SpinConfig([up for _ = 1:n_sites(H)])
-        obs = [Observable(:energy, 1, (c, E, h) -> E),
-               Observable(:energy2, 1, (c, E, h) -> E^2)]
+        obs = [Observable(:energy, 1, v -> v.energy),
+               Observable(:energy2, 1, v -> v.energy^2)]
         accs = [MC.ObsAccumulator(o, 5, 32) for o in obs]   # planned 5 ≪ nbins 32
         for k = 1:5
             for acc in accs
-                MC._measure!(acc, config, Float64(k), H)
+                MC._measure!(acc, _view(H, config, Float64(k)))
             end
         end
         stats = MC._finalize_stats(accs, standard_evaluables()[1:1], 0.1,
@@ -113,7 +113,7 @@
         # and with < 2 bins the evaluable is NaN-guarded
         acc1 = [MC.ObsAccumulator(o, 1, 32) for o in obs]
         for acc in acc1
-            MC._measure!(acc, config, 1.0, H)
+            MC._measure!(acc, _view(H, config, 1.0))
         end
         s1 = MC._finalize_stats(acc1, standard_evaluables()[1:1], 0.1, n_sites(H),
                                 n_sites(H))

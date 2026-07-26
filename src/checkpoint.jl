@@ -479,7 +479,8 @@ function resume(path::AbstractString, H::TiledHamiltonian;
     b = data.body
     if data.kind == "mc"
         b.temp_index > length(data.plan.kts) &&
-            return MCResult(b.points, copy(b.st.config), data.plan.seed)
+            return MCResult(b.points, copy(b.st.config), _final_disps(H, b.st),
+                            data.plan.seed)
         return _mc_loop!(b.points, b.st, H, data.plan, observables, evaluables,
                          b.temp_index, b.phase, b.sweep, b.accs, ck)
     end

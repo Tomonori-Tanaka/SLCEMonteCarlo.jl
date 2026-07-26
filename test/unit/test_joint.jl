@@ -908,7 +908,7 @@ end
     terms, L = _einstein_terms(2.5)
     Hj = MC.TiledHamiltonian(1, terms, L; dims = (2, 2, 1), fixed_reference = true)
     Hs = TiledHamiltonian(_biquadratic_model(0); dims = (2, 2, 1))
-    obs = [Observable(:energy, 1, (c, E, h) -> E)]
+    obs = [Observable(:energy, 1, v -> v.energy)]
 
     @testset "the default resolves from the model" begin
         @test MC._resolve_disp_passes(Hj, nothing) == 1
@@ -1057,6 +1057,166 @@ end
         @test MC._adapt_step!(st, 0.5) === (s4, su4)
     end
 
+    @testset "displacement observables against their analytic values" begin
+        # The Einstein well is the only place in the package where every displacement
+        # moment is known in closed form: `|u|²/σ² ∼ χ²₃` with `σ² = kT/(2a)`, so
+        # ⟨u²⟩ = 3kT/(2a), ⟨u⁴⟩ = 15(kT/2a)² and the ratio is EXACTLY 5/3 at any
+        # temperature. The ratio is the useful one — it is the anharmonicity screen,
+        # and being temperature-independent it cannot be faked by a mis-set kT.
+        a, kT = 2.5, 0.4
+        terms8, L8 = _einstein_terms(a)
+        H8 = MC.TiledHamiltonian(1, terms8, L8; dims = (2, 2, 2),
+                                 fixed_reference = true)
+        r = run_mc(H8; kT = kT, sweeps_therm = 2_000, sweeps_measure = 20_000,
+                   nbins = 16, renorm_interval = 20, step_u = 0.3, seed = 21)
+        p = r.points[1]
+        @test haskey(p.stats, :u2) && haskey(p.stats, :u4)
+        @test haskey(p.stats, :sublattice_u2) && haskey(p.stats, :u_moment_ratio)
+        u2, ratio = p.stats[:u2], p.stats[:u_moment_ratio]
+        @test u2.err[1] > 0                       # a BINNED observable, unlike disp_rms
+        @test abs(u2.mean[1] - 3kT / (2a)) < 4 * u2.err[1]
+        @test isapprox(p.stats[:u4].mean[1], 15 * (kT / (2a))^2; rtol = 0.05)
+        @test abs(ratio.mean[1] - 5 / 3) < 4 * ratio.err[1]
+        # one atom per cell ⇒ the sublattice resolution is the global value
+        @test p.stats[:sublattice_u2].mean[1] == u2.mean[1]
+        # …and it is the same quantity the escape detector reports, measured twice
+        @test isapprox(p.disp_rms^2, u2.mean[1]; rtol = 0.05)
+    end
+
+    @testset "the results carry the final displacements" begin
+        # Without this the displacement state never leaves the sampler, and a
+        # continuation run silently restarts from the clamped-ion state — a different,
+        # colder starting point that costs a whole thermalization to undo.
+        kw = (; sweeps_therm = 200, sweeps_measure = 300, nbins = 4,
+              renorm_interval = 20, step_u = 0.3, seed = 5, observables = obs,
+              evaluables = Evaluable[])
+        r = run_mc(Hj; kT = 0.4, kw...)
+        @test length(r.final_disps) == Hj.n_sites
+        @test any(!iszero, r.final_disps)
+        # the frame is the sampler's centre-of-mass-free one, so on these PINNED
+        # Einstein wells nothing was removed and the state is absolute
+        @test !any(Hj.comp_free)
+        # warm start: continuing from it must reproduce the state exactly, so the
+        # chain the second run starts from IS the one the first ended on
+        c = run_mc(Hj; kT = 0.4, kw..., init = r.final_config,
+                   disps = r.final_disps, sweeps_therm = 0, sweeps_measure = 1)
+        @test c.final_disps != r.final_disps            # it kept sampling…
+        e0 = total_energy(Hj, r.final_config, r.final_disps)
+        @test isfinite(e0)
+        # …and starting from the clamped-ion state is a *different* run, so the warm
+        # start is not a no-op dressed up as one
+        z = run_mc(Hj; kT = 0.4, kw..., init = r.final_config, sweeps_therm = 0,
+                   sweeps_measure = 1)
+        @test z.final_disps != c.final_disps
+        # a pure-spin run reports no displacements at all, rather than zeros
+        @test isempty(run_mc(Hs; kT = 0.5, sweeps_therm = 10, sweeps_measure = 20,
+                             nbins = 4, seed = 1).final_disps)
+        # PT: one payload per lane
+        p = run_pt(Hj; kT = [0.4, 0.3], kw..., exchange_interval = 10)
+        @test length(p.final_disps) == 2
+        @test all(d -> length(d) == Hj.n_sites, p.final_disps)
+        @test p.final_disps[1] != p.final_disps[2]
+    end
+
+    @testset "the fourth-moment ratio on a HETEROGENEOUS crystal" begin
+        # The gate above cannot fail: one atom per cell makes every site identical, so
+        # `⟨u⁴⟩/⟨u²⟩² = 5/3` holds trivially. Real magnets are not like that. `:u2` and
+        # `:u4` each average over sites BEFORE the ratio is taken, so by Jensen the
+        # global ratio is `(5/3)·mean(σ⁴)/(mean σ²)² ≥ 5/3`, with equality only when
+        # every displacement-active site samples the same isotropic Gaussian. A 4×
+        # stiffness contrast — mild next to Nd₂Fe₁₄B — reads as ≈2.27 on a model that
+        # is EXACTLY harmonic. What stays at 5/3 is the per-sublattice ratio.
+        kT = 0.4
+        for (a1, a2) in ((2.5, 2.5), (2.5, 10.0), (1.0, 20.0))
+            th, Lh = _hetero_einstein_terms(a1, a2)
+            Hh = MC.TiledHamiltonian(2, th, Lh; dims = (2, 2, 1),
+                                     fixed_reference = true)
+            rh = run_mc(Hh; kT = kT, sweeps_therm = 3_000, sweeps_measure = 60_000,
+                        nbins = 16, renorm_interval = 50, step_u = 0.2, seed = 4)
+            ph = rh.points[1]
+            # the global ratio tracks the Jensen-corrected harmonic value, NOT 5/3
+            @test isapprox(ph.stats[:u_moment_ratio].mean[1],
+                           _hetero_ratio(a1, a2, kT); rtol = 0.02)
+            # …and the per-sublattice ratio is 5/3 in every case, which is why both
+            # sublattice moments are measured
+            s2 = ph.stats[:sublattice_u2].mean
+            s4 = ph.stats[:sublattice_u4].mean
+            @test all(isapprox(s4[a] / s2[a]^2, 5 / 3; rtol = 0.02) for a = 1:2)
+            # the per-sublattice ⟨u²⟩ themselves are the analytic ones
+            @test isapprox(s2[1], 3kT / (2a1); rtol = 0.03)
+            @test isapprox(s2[2], 3kT / (2a2); rtol = 0.03)
+        end
+    end
+
+    @testset "displacement observables see the centre-of-mass-free frame" begin
+        # `_recenter!` runs at renormalization points; measurements fire every
+        # `measure_interval`. If the observable did not remove the frame ITSELF, it
+        # would measure `mean|u−ū|² + |ū|²` with `ū` the free random walk between
+        # re-centrings — a bias linear in `renorm_interval`, always positive, and
+        # shrinking with system size, so it would read as a finite-size effect.
+        model, _ = _joint_model()
+        Ht = MC.TiledHamiltonian(model; dims = (2, 2, 2))
+        @test all(Ht.comp_free)                    # the frame is genuinely free here
+        kw = (; kT = 0.05, sweeps_therm = 200, sweeps_measure = 2_000, nbins = 8,
+              step_u = 0.03, seed = 3, evaluables = Evaluable[],
+              observables = standard_observables(Ht))
+        # three cadences spanning two orders of magnitude: the measured ⟨u²⟩ must not
+        # depend on how often the sampler happens to re-centre
+        u2 = [run_mc(Ht; kw..., renorm_interval = ri).points[1].stats[:u2].mean[1]
+              for ri in (10, 200, 1000)]
+        @test isapprox(u2[1], u2[2]; rtol = 0.15)
+        @test isapprox(u2[1], u2[3]; rtol = 0.15)
+        # and it agrees with the escape detector's own number, which is recorded
+        # immediately after `_recenter!` — the two are the same quantity again
+        r = run_mc(Ht; kw..., renorm_interval = 50)
+        @test isapprox(r.points[1].stats[:u2].mean[1], r.points[1].disp_rms^2;
+                       rtol = 0.1)
+    end
+
+    @testset "displacement observables are gauge-invariant and masked" begin
+        # U7's standing constraint, as a property of the observable rather than of a
+        # comment: a rigid shift of a component changes every ABSOLUTE displacement
+        # but must leave the observable untouched once the frame is removed. Here the
+        # view is fed the already-centred `u`, so the invariance under re-centring is
+        # the statement — shift, re-centre, compare.
+        rng2 = MersenneTwister(31)
+        shift = SVector(0.7, -0.3, 0.2)
+        # a translation-invariant model: the shift is pure gauge, and `_recenter!`
+        # takes it back out exactly, so the observable cannot see it
+        model, _ = _joint_model()
+        Ht = MC.TiledHamiltonian(model; dims = (2, 2, 2))
+        @test all(Ht.comp_free)
+        ct = _rand_config(rng2, Ht)
+        ut = _rand_disps(rng2, Ht)
+        f = Dict(o.name => o for o in standard_observables(Ht))[:u2].f
+        s1 = MC.ChainState(Ht, ct, Xoshiro(2), 0.5; disps = copy(ut))
+        s2 = MC.ChainState(Ht, ct, Xoshiro(2), 0.5;
+                           disps = [u + shift for u in ut])
+        MC._recenter!(s1, Ht)
+        MC._recenter!(s2, Ht)
+        @test isapprox(f(MCView(Ht, ct, s1.disps, 0.0)),
+                       f(MCView(Ht, ct, s2.disps, 0.0)); rtol = 1e-12)
+        # the Einstein wells are PINNED (`comp_free` all false), so the same shift is
+        # NOT gauge there: re-centring is correctly refused and the observable must
+        # move — the invariance above is a property of the flat directions, not a
+        # blindness of the observable
+        @test !any(Hj.comp_free)
+        cfg = MC.SpinConfig([SVector(0.0, 0.0, 1.0) for _ = 1:Hj.n_sites])
+        u0 = [0.1 .* SVector{3,Float64}(randn(rng2), randn(rng2), randn(rng2))
+              for _ = 1:Hj.n_sites]
+        g = Dict(o.name => o for o in standard_observables(Hj))[:u2].f
+        @test g(MCView(Hj, cfg, [u + shift for u in u0], 0.0)) !=
+              g(MCView(Hj, cfg, u0, 0.0))
+        # a pure-spin view carries NO displacements at all — the view empties them
+        # whatever the producer passed — so a user observable that reads one fails
+        # loudly instead of reporting a confident zero
+        vs = MCView(Hs, _rand_config(rng2, Hs),
+                    zeros(SVector{3,Float64}, Hs.n_sites), 0.0)
+        @test isempty(vs.disps)
+        @test_throws BoundsError Observable(:u1, 1,
+                                            w -> sum(abs2, w.disps[1])).f(vs)
+    end
+
     @testset "the standard observable set is joint-aware" begin
         # Two things break the moment `run_mc` accepts a joint model with the DEFAULT
         # observables, and both are silent:
@@ -1067,8 +1227,10 @@ end
         #      passes every finiteness check a user is likely to write.
         @test Hj.n_spin_active == 0 && Hj.n_disp_active == Hj.n_sites
         names = [o.name for o in standard_observables(Hj)]
-        @test names == [:energy, :energy2]                    # no 0/0 magnetization
-        @test [e.name for e in standard_evaluables(Hj)] == [:specific_heat]
+        # no 0/0 magnetization; the displacement channel it DOES have is measured
+        @test names == [:energy, :energy2, :u2, :u4, :sublattice_u2, :sublattice_u4]
+        @test [e.name for e in standard_evaluables(Hj)] ==
+              [:specific_heat, :u_moment_ratio]
         # the scope declaration is what routes the count
         sh = standard_evaluables()[1]
         @test sh.name === :specific_heat && sh.scope === :energy
@@ -1090,6 +1252,143 @@ end
         @test standard_evaluables(Hs) == standard_evaluables() ||
               [e.name for e in standard_evaluables(Hs)] ==
               [e.name for e in standard_evaluables()]
+    end
+
+    @testset "the harmonic screen catches beforehand what the detector catches after" begin
+        # The escape detector is a post-mortem: it reports a chain that has already
+        # diverged, after the sweeps are spent. This is the same failure seen up front,
+        # and on the very fixture the detector was calibrated on.
+        a = 2.5
+        terms2, L2 = _einstein_terms(a)
+        He = MC.TiledHamiltonian(1, terms2, L2; dims = (2, 1, 1),
+                                 fixed_reference = true)
+        cfg = MC.SpinConfig([SVector(0.0, 0.0, 1.0) for _ = 1:He.n_sites])
+        Φ = force_constant_matrix(He, cfg)
+        # E = a|u|² ⇒ Φ = 2a·I, exactly, and the finite differences reproduce it to
+        # the roundoff floor rather than to a tolerance chosen to pass
+        @test size(Φ) == (6, 6)
+        @test maximum(abs, Matrix(Φ) - 2a * I) < 1e-9
+        s = harmonic_stability(He, cfg)
+        @test isapprox(s.min_eigenvalue, 2a; rtol = 1e-9)
+        @test s.n_negative == 0
+        # a pinned frame is NOT translation invariant, and the residual says so
+        @test s.acoustic_residual > 0.1
+
+        # …and the joint fixture, whose displacement energy IS unbounded below (the
+        # detector fires on it in the testset above), is caught here at three
+        # independent spin configurations without sampling anything
+        model, _ = _joint_model()
+        Hu = MC.TiledHamiltonian(model; dims = (2, 2, 1))
+        rng3 = MersenneTwister(9)
+        for _ = 1:3
+            v = harmonic_stability(Hu, _rand_config(rng3, Hu))
+            @test v.n_negative > 0
+            @test v.min_eigenvalue < -1.0
+            # a translation-invariant model obeys the acoustic sum rule to numerical
+            # zero, and carries 3 zero modes per displacement-coupling component —
+            # NOT three: the "exactly three zero eigenvalues" statement is about a
+            # CONNECTED model
+            @test v.acoustic_residual < 1e-6
+            @test count(λ -> abs(λ) < 1e-6, v.eigenvalues) >= 3 * Hu.n_disp_comps
+            # the verdict counts genuine branches, not the acoustic modes' roundoff
+            @test v.n_negative == count(λ -> λ < -1e-4, v.eigenvalues)
+        end
+        @test Hu.translation_invariant
+
+        @testset "the verdict tolerance is what makes it a verdict" begin
+            # A translation-invariant model has 3·n_disp_comps EXACT zero eigenvalues,
+            # and finite differences scatter each across zero at the ε|E|/h² floor. An
+            # untolerated `count(< 0, λ)` therefore reports imaginary branches — the
+            # documented proof of failure — on a perfectly healthy model, and the count
+            # moves with `step`. This gate pins that the tolerance absorbs exactly the
+            # acoustic modes and nothing else, at three step sizes spanning 10³.
+            c0 = _rand_config(rng3, Hu)
+            counts = Int[]
+            for st in (1e-2, 1e-3, 1e-4)
+                v = harmonic_stability(Hu, c0; step = st)
+                @test v.tol > 0
+                push!(counts, v.n_negative)
+                # the tolerance absorbs the acoustic scatter and nothing coarser: the
+                # verdict agrees with a physically-scaled threshold three orders of
+                # magnitude above the floor
+                @test v.n_negative == count(λ -> λ < -1e-3, v.eigenvalues)
+                # …while the UNTOLERATED count is inflated by the acoustic modes, which
+                # is the whole point (it varies with `step`; the verdict must not)
+                @test count(<(0), v.eigenvalues) > v.n_negative
+                @test v.acoustic_residual < 1e-5
+            end
+            @test allequal(counts)               # step-invariant, over 10³ in `step`
+            # a bounded model reports no branches at all, and its minimum sits far
+            # above the floor rather than straddling it
+            vs = harmonic_stability(He, cfg)
+            @test vs.n_negative == 0 && vs.min_eigenvalue > 1e6 * vs.tol
+        end
+
+        @testset "shape, masking and refusals" begin
+            # rows/columns run over the DISPLACEMENT-active sites only: carrying a
+            # spin-only site as an exact zero row would put a spurious zero into every
+            # spectrum and make `eigmin` read as marginal stability
+            nd = count(Hu.site_has_disp)
+            @test size(force_constant_matrix(Hu, _rand_config(rng3, Hu))) ==
+                  (3nd, 3nd)
+            # a pure-spin model has no displacement curvature to report — an empty
+            # matrix would let `eigmin` of nothing read as a clean verdict
+            @test_throws ArgumentError force_constant_matrix(Hs,
+                                                             _rand_config(rng3, Hs))
+            @test_throws ArgumentError harmonic_stability(Hs, _rand_config(rng3, Hs))
+            @test_throws ArgumentError force_constant_matrix(Hu,
+                                                             _rand_config(rng3, Hu);
+                                                             step = 0.0)
+            # the O(d²) cost guard, so a screen cannot quietly become the run
+            @test_throws ArgumentError force_constant_matrix(Hu,
+                                                             _rand_config(rng3, Hu);
+                                                             maxdim = 4)
+            # evaluated at an arbitrary expansion point, not only at u = 0
+            c0 = _rand_config(rng3, Hu)
+            @test force_constant_matrix(Hu, c0) !=
+                  force_constant_matrix(Hu, c0; disps = _rand_disps(rng3, Hu))
+        end
+
+        @testset "a displacement LAYOUT with no displacement-active site" begin
+            # `has_disp` is a property of the row layout, and a joint basis whose
+            # displacement couplings all fitted to zero has displacement rows and not
+            # one site whose energy depends on its displacement. Gating on the layout
+            # would measure `:u2 = 0.0` — the confident zero the whole design exists to
+            # prevent — and return a 0×0 Hessian, which is exactly what `_require_disp`
+            # says would let `eigmin` of nothing read as a clean verdict.
+            L0 = SLCE.RowLayout(5, 1, 4, [(1, 0)], [4])
+            spinonly = [MC.ScaledTerm(0.3, [1, 2], [SVector(0, 0, 0),
+                                                    SVector(0, 0, 0)],
+                                      [MC.TermSlot(1, 0, 1, true),
+                                       MC.TermSlot(2, 0, 1, true)],
+                                      randn(MersenneTwister(2), 3, 3))]
+            H0 = MC.TiledHamiltonian(2, spinonly, L0; dims = (2, 1, 1))
+            @test MC.has_disp(H0) && H0.n_disp_active == 0
+            @test [o.name for o in standard_observables(H0)] ==
+                  [:energy, :energy2, :m, :absm, :m2, :m4, :sublattice_m]
+            @test !any(e -> e.name === :u_moment_ratio, standard_evaluables(H0))
+            @test_throws ArgumentError harmonic_stability(H0,
+                                                          _rand_config(rng3, H0))
+        end
+
+        @testset "a numerically zero Hessian is refused, not reported as clean" begin
+            # The one case where a clean spectrum is maximally misleading: a
+            # displacement sector of degree ≥ 3 only has NO harmonic part at u = 0, so
+            # `(min_eigenvalue = 0, n_negative = 0, acoustic_residual = 0)` would be the
+            # most reassuring possible output about the model carrying the least
+            # information. The cubic well `E = a·|u|²·R₁ₘ(u)` is that case.
+            Lc = SLCE.RowLayout(4, 0, 1, [(1, 1)], [1])
+            cubic = [MC.ScaledTerm(1.0, [1], [SVector(0, 0, 0)],
+                                   [MC.TermSlot(1, 1, 1, false)], [1.0, 0.0, 0.0])]
+            Hc = MC.TiledHamiltonian(1, cubic, Lc; dims = (2, 1, 1),
+                                     fixed_reference = true)
+            cc = MC.SpinConfig([SVector(0.0, 0.0, 1.0) for _ = 1:Hc.n_sites])
+            @test all(iszero, Matrix(force_constant_matrix(Hc, cc)))
+            @test_throws ArgumentError harmonic_stability(Hc, cc)
+            # …and away from u = 0 the same model does have curvature to report
+            u = [SVector(0.2, 0.1, -0.15) for _ = 1:Hc.n_sites]
+            @test harmonic_stability(Hc, cc; disps = u).n_negative >= 0
+        end
     end
 
     @testset "a pure-spin run is bit-identical to the pre-M4 schedule" begin

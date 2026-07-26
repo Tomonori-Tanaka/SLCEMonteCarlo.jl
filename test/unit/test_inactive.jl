@@ -58,8 +58,8 @@
         up = SVector(0.0, 0.0, 1.0)
         x = SVector(1.0, 0.0, 0.0)
         cfg = MC.SpinConfig([up, up, x, x])     # active aligned +z, inactive +x
-        @test MC._mean_spin(cfg, 0.0, Hd) == up
-        sub = MC._sublattice_m(cfg, 0.0, Hd)
+        @test MC._mean_spin(_view(Hd, cfg)) == up
+        sub = MC._sublattice_m(_view(Hd, cfg))
         @test sub[1:6] == [0, 0, 1, 0, 0, 1]
         @test sub[7:12] == zeros(6)             # inactive sublattices exactly zero
         # evaluables receive n_active, not n_sites

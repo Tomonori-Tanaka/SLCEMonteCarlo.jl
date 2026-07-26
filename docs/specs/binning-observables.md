@@ -39,8 +39,8 @@ normalizations use `n_active`. *Why exclusion and skipping come together*: a fro
 spin included in `:m` would add a constant bias, a free-walking one dilution noise —
 either contaminates; excluded, its updates are pure waste. `:sublattice_m` reports
 exactly zero for inactive sublattices (a frozen random unit vector would look like
-perfect order). The `f(config, energy, H)` signature hands custom observables
-`H.site_active` for the same masking.
+perfect order). The `MCView` a custom observable receives carries `v.H`, so
+`v.H.site_active` gives it the same masking.
 
 **Two counts, once displacements exist.** `n_active` counts sites active in
 **either** channel; `n_spin_active` counts the magnetic ones. They coincide on every
@@ -61,6 +61,31 @@ with `n_spin_active == 0` the magnetization observables are **omitted** rather t
 measured: every one is `0/0`, and a column of `NaN`s passes every finiteness check a
 caller is likely to write. `standard_evaluables(H)` drops the ones that read them.
 
+**Displacement set** (added M4 slice 3d, on a model with at least one
+**displacement-active** site — `n_disp_active > 0`, NOT merely `has_disp`, since a
+joint basis whose displacement couplings all fitted to zero has displacement rows and
+nothing to measure): `:u2`, `:u4`, `:sublattice_u2`, `:sublattice_u4`, every one of
+them a moment of `u_s − ū_c` — the site's displacement minus the centre of mass of
+its displacement-coupling component along that component's FLAT directions.
+Sublattices with no displacement axis report exactly zero, the `:sublattice_m`
+convention.
+
+**The subtraction happens inside the observable**, not by relying on the sampler's
+`_recenter!`. That runs at renormalization points while measurements fire every
+`measure_interval`, so at almost every measurement the frame has drifted since it was
+last removed and `mean|u|² = mean|u−ū|² + |ū|²` picks up the free random walk. The
+excess is linear in `renorm_interval` (measured 0.0041 / 0.081 / 0.400 at 10 / 200 /
+1000), always positive, and shrinking with system size — it would read as a
+finite-size effect. Only the flat directions are removed: a pinned direction's
+absolute frame is physical. A displacement *vector* mean is deliberately absent:
+`⟨u − ū⟩ ≡ 0` identically.
+
+`:u2` and `TempResult.disp_rms²` are then the same quantity measured twice: the
+observable is binned and carries an autocorrelation-aware error bar, the diagnostic
+is a phase average over renormalization points with none. Where they can be
+compared, they must agree — the Einstein-oscillator gate checks both against
+`3kT/(2a)` at once.
+
 Derived (`standard_evaluables`, jackknifed):
 
 - **Specific heat, per active site, in units of k_B** (`scope = :energy`):
@@ -79,10 +104,27 @@ Derived (`standard_evaluables`, jackknifed):
   (disordered, 3-component Gaussian). Chosen over `1 − U/3`-style variants because
   there is no convention factor to get wrong; `U(T)` crossings locate `T_c`
   identically.
+- **Displacement moment ratio**: `⟨u⁴⟩/⟨u²⟩²`. *Why a ratio*: for a harmonic model
+  every `σ_s² ∝ T`, so it is **temperature-independent** whatever the crystal — a
+  signature that needs no reference value and cannot be faked by a mis-set `kT`,
+  which makes it the continuous companion to the escape detector
+  (`updates-stationarity.md` U8) and to the harmonic screen (`harmonic_stability`).
+
+  *Why not 5/3*: `:u2` and `:u4` each average over sites BEFORE the ratio is taken,
+  so the harmonic level is `(5/3)·mean_s(σ_s⁴)/(mean_s σ_s²)² ≥ 5/3` by Jensen, with
+  equality only when every displacement-active site samples the same **isotropic**
+  Gaussian. Measured on a two-sublattice Einstein crystal (exactly harmonic, exactly
+  isotropic per site): 1.665 at `(a₁,a₂) = (2.5, 2.5)`, **2.255** at `(2.5, 10)`,
+  **3.028** at `(1, 20)` — against the Jensen predictions 1.667 / 2.267 / 3.031. Site
+  anisotropy shifts it too (`1 + 2 tr(Σ²)/(tr Σ)²`, which is 5/3 only for cubic site
+  symmetry). The clean 5/3 test is the **per-sublattice** ratio
+  `⟨u⁴⟩_a/⟨u²⟩_a²`, since translation-equivalent sites share a covariance and Jensen
+  collapses to equality — measured 1.66 in all three cases above. That is why both
+  sublattice moments are in the standard set.
 
 ## B4 — composability
 
-`Observable(name, ncomp, f(config, energy, H))` and
+`Observable(name, ncomp, f(v::MCView))` and
 `Evaluable(name, inputs, f(means::NamedTuple, kT, n); scope)` are plain structs the
 run drivers accept as vectors — nothing is hard-coded into the sweep (the
 SpinClusterMC pain point). `n` is the count `scope` selects (above). Evaluable inputs

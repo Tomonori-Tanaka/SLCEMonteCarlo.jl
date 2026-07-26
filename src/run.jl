@@ -139,12 +139,19 @@ Base.show(io::IO, p::TempResult) =
     MCResult
 
 Result of [`run_mc`](@ref): `points` (one [`TempResult`](@ref) per temperature, in
-run order), the chain's `final_config`, and the run `seed`. Prints as a summary
-table.
+run order), the chain's `final_config` and `final_disps`, and the run `seed`. Prints
+as a summary table.
+
+`final_disps` is the chain's last displacement configuration in the sampler's
+**centre-of-mass-free** frame (model length units) — empty on a pure-spin model. It
+is the warm start for a continuation run (`run_mc(H; init = r.final_config,
+disps = r.final_disps)`), which is why it leaves the sampler at all; it is one
+sample, not an average, so it is not a substitute for the `:u2` observable.
 """
 struct MCResult
     points::Vector{TempResult}
     final_config::SpinConfig
+    final_disps::Vector{SVector{3,Float64}}
     seed::UInt64
 end
 
@@ -158,6 +165,13 @@ function Base.show(io::IO, ::MIME"text/plain", r::MCResult)
     _print_points_table(io, r.points, length(r.final_config))
     return nothing
 end
+
+# The displacement configuration a finished chain hands back: a copy on a joint
+# model, empty on a pure-spin one (where the chain's all-zero vector describes
+# nothing — the same convention `MCView` applies, so a caller cannot tell the two
+# apart by accident and feed a meaningless warm start onward).
+_final_disps(H::TiledHamiltonian, st::ChainState)::Vector{SVector{3,Float64}} =
+    has_disp(H) ? copy(st.disps) : SVector{3,Float64}[]
 
 # The shared points table of MCResult / PTResult text/plain printing. The
 # displacement columns appear only on a joint run (they are NaN otherwise), and an
@@ -264,8 +278,9 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
         _compound_sweep!(st, H, β, scs, plan)
         sweep % plan.renorm_interval == 0 && _renormalize!(st, H, scs[1])
         if sweep % plan.measure_interval == 0
+            view = MCView(H, st.config, st.disps, st.energy)
             for acc in accs
-                _measure!(acc, st.config, st.energy, H)
+                _measure!(acc, view)
             end
         end
         _ck_mc!(ck, H, st, points, temp_index, :measure, sweep, accs)
@@ -302,7 +317,7 @@ function _mc_loop!(points::Vector{TempResult}, st::ChainState, H::TiledHamiltoni
         ck === nothing ||
             _write_ckpt_mc(ck, H, st, points, i + 1, :therm, 0, nothing)
     end
-    return MCResult(points, copy(st.config), plan.seed)
+    return MCResult(points, copy(st.config), _final_disps(H, st), plan.seed)
 end
 
 """

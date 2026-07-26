@@ -187,6 +187,27 @@ function _einstein_terms(a::Float64 = 2.5)
                           [MC.TermSlot(1, 1, 0, false)], [1.0])], L
 end
 
+# A HETEROGENEOUS Einstein crystal: two sublattices in wells of different stiffness,
+# `E = a₁|u₁|² + a₂|u₂|²`. Exactly harmonic and exactly isotropic per site — the only
+# thing that varies is the scale — which makes it the fixture that separates the two
+# fourth-moment claims. The GLOBAL ratio `⟨u⁴⟩/⟨u²⟩²` is `(5/3)·mean(σ⁴)/(mean σ²)²`,
+# strictly above 5/3 by Jensen whenever the stiffnesses differ (2.267 at 4× contrast);
+# the PER-SUBLATTICE ratio is 5/3 exactly, because translation-equivalent sites share a
+# covariance. The one-atom-per-cell `_einstein_terms` cannot tell the two apart.
+function _hetero_einstein_terms(a1::Float64 = 2.5, a2::Float64 = 10.0)
+    L = SLCE.RowLayout(2, 0, 1, [(1, 0)], [1])
+    z = SVector(0, 0, 0)
+    return [MC.ScaledTerm(a1, [1], [z], [MC.TermSlot(1, 1, 0, false)], [1.0]),
+            MC.ScaledTerm(a2, [2], [z], [MC.TermSlot(1, 1, 0, false)], [1.0])], L
+end
+
+# The harmonic truth for that fixture's global ratio, from the closed-form moments of
+# an isotropic Gaussian (`⟨|u|²⟩ = 3σ²`, `⟨|u|⁴⟩ = 15σ⁴`, `σ² = kT/2a`), averaged over
+# sites BEFORE the ratio is taken — which is the order the observables use.
+_hetero_ratio(a1, a2, kT) =
+    (5 / 3) * ((0.5 * (kT / (2a1))^2 + 0.5 * (kT / (2a2))^2) /
+               (0.5 * (kT / (2a1)) + 0.5 * (kT / (2a2)))^2)
+
 # Random displacements on the sites of `H` (small — the polynomial kernel is exact at
 # any amplitude, but a physical scale keeps the magnitudes comparable to the spin rows).
 _rand_disps(rng, H::MC.TiledHamiltonian; amp = 0.08) =
@@ -200,6 +221,13 @@ _tile_disps(H::MC.TiledHamiltonian, cell_disps) =
     [cell_disps[MC.site_atom(H, s)] for s = 1:H.n_sites]
 
 # Random unit spin from `rng` (Gaussian-normalized — uniform on S²).
+# An `MCView` the way the run drivers build one, for tests that call an observable
+# directly. `disps === nothing` means the clamped-ion state (and on a pure-spin
+# Hamiltonian the view's own constructor empties it either way).
+_view(H::MC.TiledHamiltonian, config::MC.SpinConfig, E::Real = 0.0; disps = nothing) =
+    MCView(H, config,
+           disps === nothing ? zeros(SVector{3,Float64}, n_sites(H)) : disps, E)
+
 _rand_spin(rng) = normalize(SVector{3,Float64}(randn(rng), randn(rng), randn(rng)))
 
 # Random configuration on the sites of `H`.

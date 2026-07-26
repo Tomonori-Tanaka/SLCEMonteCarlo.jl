@@ -177,7 +177,8 @@ L = 6
 H = TiledHamiltonian(model_afm; dims = (L, L, L))
 
 # qualified: Makie exports an unrelated `Observable` (reactive values)
-mstag = SLCEMonteCarlo.Observable(:mstag, 1, (cfg, E, H) -> begin
+mstag = SLCEMonteCarlo.Observable(:mstag, 1, v -> begin
+    cfg = v.config
     acc = zero(first(cfg))
     for i = 1:length(cfg)
         c = i - 1                                   # cell index (one atom per cell)

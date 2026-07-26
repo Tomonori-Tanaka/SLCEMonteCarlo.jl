@@ -58,6 +58,13 @@ find_ground_state
 GroundStateResult
 ```
 
+## Harmonic stability
+
+```@docs
+force_constant_matrix
+harmonic_stability
+```
+
 ## Chain internals
 
 ```@docs
@@ -86,6 +93,7 @@ to_host!
 ## Observables
 
 ```@docs
+MCView
 Observable
 Evaluable
 ObservableStat

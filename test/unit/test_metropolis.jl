@@ -3,7 +3,7 @@
 # Statistical tolerances mirror the proven SLCETools MC suite (fixed seeds).
 
 # ⟨e₁·e₂⟩ of the dimer's coupled pair, as a user observable.
-_corr12_obs() = Observable(:corr12, 1, (cfg, E, H) -> dot(cfg[1], cfg[2]))
+_corr12_obs() = Observable(:corr12, 1, v -> dot(v.config[1], v.config[2]))
 
 @testset "Metropolis / run_mc" begin
     Hd = TiledHamiltonian(_dimer_model())
@@ -39,13 +39,13 @@ _corr12_obs() = Observable(:corr12, 1, (cfg, E, H) -> dot(cfg[1], cfg[2]))
         folded[2] = 1.0
         term = MultipoleTerm(c0 / sqrt(4π), 1, [1], [SVector(0, 0, 0)], [1], folded)
         H1 = TiledHamiltonian(1, [term])
-        ez = Observable(:ez, 1, (cfg, E, H) -> cfg[1][3])
+        ez = Observable(:ez, 1, v -> v.config[1][3])
         for (i, βh) in enumerate([1.0, 2.0])
             kt = h / βh
             r = run_mc(H1; kT = kt, sweeps_therm = 500, sweeps_measure = 40_000,
                        measure_interval = 2, seed = 200 + i,
-                       observables = [Observable(:energy, 1, (c, E, H) -> E),
-                                      Observable(:energy2, 1, (c, E, H) -> E^2), ez],
+                       observables = [Observable(:energy, 1, v -> v.energy),
+                                      Observable(:energy2, 1, v -> v.energy^2), ez],
                        evaluables = Evaluable[])
             @test r.points[1].stats[:ez].mean[1] ≈ -_langevin(βh) atol = 0.03
         end

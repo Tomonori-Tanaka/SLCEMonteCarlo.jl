@@ -840,6 +840,24 @@ function _require_spin_only(H::TiledHamiltonian, what::AbstractString)
     return nothing
 end
 
+# The mirror guard, for the surfaces that are only meaningful WITH displacements: a
+# pure-spin model has no displacement Hessian, and returning an empty matrix would let
+# `eigmin` of nothing read as a clean stability verdict.
+function _require_disp(H::TiledHamiltonian, what::AbstractString)
+    # `n_disp_active`, not `has_disp`: the latter is a property of the row LAYOUT, and
+    # a joint basis whose displacement couplings all fitted to zero has displacement
+    # rows and not one displacement-active site. There the honest answer is a 0×0
+    # matrix — which is exactly what would let `eigmin` of nothing read as a clean
+    # stability verdict.
+    H.n_disp_active > 0 || throw(ArgumentError(
+        "$what needs a Hamiltonian with at least one displacement-active site; this " *
+        "one has $(has_disp(H) ? "displacement rows but no site whose energy depends " *
+        "on its displacement (every displacement coupling fitted to zero)" :
+        "no displacement rows at all and describes the clamped-ion (u = 0) energy " *
+        "only"), so there is no displacement curvature to report"))
+    return nothing
+end
+
 # Greedy proper coloring of the site-conflict graph, in site order (deterministic —
 # a function of the Hamiltonian alone). Two sites conflict when some instance
 # touches both, i.e. exactly when one's leave-one-out coefficients depend on the

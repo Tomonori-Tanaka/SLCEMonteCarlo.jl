@@ -131,7 +131,7 @@
         terms, L = _einstein_terms(2.5)
         H = MC.TiledHamiltonian(1, terms, L; dims = (2, 2, 2),
                                 fixed_reference = true)
-        obs = [Observable(:energy, 1, (c, E, h) -> E)]
+        obs = [Observable(:energy, 1, v -> v.energy)]
         kw = (; sweeps_therm = 120, sweeps_measure = 200, nbins = 4,
               renorm_interval = 40, step_u = 0.3, seed = 99, observables = obs,
               evaluables = Evaluable[])

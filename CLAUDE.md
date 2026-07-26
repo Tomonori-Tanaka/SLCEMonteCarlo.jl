@@ -203,6 +203,43 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   The public `model_fingerprint` facade over `_fingerprint` is pinned by dependent
   packages' checkpoint formats (SLCEDynamics) — changing the mixing changes
   every stored fingerprint (schema-version territory there too).
+- **`MCView` ↔ every observable ↔ SLCEDynamics' `_measure!`** (`observables.jl`,
+  `SLCEDynamics/src/run.jl`): an observable receives ONE argument, a view of the
+  sampled state, precisely so that adding a channel does not break every definition
+  ever written. Two rules make it safe: the view's inner constructor **empties**
+  `disps` on a Hamiltonian with no displacement channel (a pure-spin chain carries an
+  all-zero vector, and passing it through would make `sum(abs2, v.disps[s])` return a
+  confident 0.0 on a model that describes no displacements), and SLCEDynamics builds
+  its view with an empty `disps` for the same reason. Add a field to `MCView` and
+  every producer must decide explicitly what goes in it — a zero placeholder is how a
+  wrong number becomes a confident one.
+- **Displacement observables ↔ `_recenter!`'s cadence** (`observables.jl`
+  `_mean_u_moment` / `_sublattice_u_moment` / `_component_mean`, `state.jl`
+  `_recenter!`): the observables subtract the component centre of mass **themselves**,
+  with the same flat-direction projection `_recenter!` uses. Relying on the sampler's
+  frame instead biases `⟨u²⟩` by `⟨|ū|²⟩`, linear in `renorm_interval` (measurements
+  fire every `measure_interval`, re-centring every `renorm_interval`), always positive
+  and shrinking with system size — indistinguishable from a finite-size effect. If the
+  projection rule changes on one side it must change on both, or `⟨u2⟩` and
+  `TempResult.disp_rms²` stop being the same quantity. Gate: `test_joint.jl`
+  "displacement observables see the centre-of-mass-free frame" (three `renorm_interval`
+  spanning 10², plus agreement with `disp_rms²`).
+- **Displacement channel gates: `n_disp_active > 0`, never `has_disp`**
+  (`observables.jl`, `hamiltonian.jl` `_require_disp`): `has_disp` is a property of the
+  row LAYOUT, and a joint basis whose displacement couplings all fitted to zero has
+  displacement rows and not one site whose energy depends on its displacement. Gating
+  on the layout there measures `:u2 = 0.0` and returns a 0×0 Hessian — the confident
+  zero and the "clean" empty spectrum the design exists to prevent. The spin side has
+  always gated on `n_spin_active`; mirror it.
+- **`harmonic_stability`'s verdict tolerance ↔ the acoustic modes**
+  (`stability.jl`): a translation-invariant model has `3·n_disp_comps` EXACT zero
+  eigenvalues, and finite differences scatter each across zero at the `ε|E|/h²` floor,
+  so an untolerated `count(< 0, λ)` reports the documented proof of failure on a
+  healthy model about half the time, with a step-dependent count. `tol` is measured
+  from the residual of the certified-flat rigid-shift directions (exact answer zero ⇒
+  pure roundoff) and returned so the verdict is auditable. Change the stencil or the
+  step and the floor moves with it — which is the point of measuring rather than
+  hard-coding. Gate: the same count at three `step` spanning 10³.
 - **Observable conventions** (C/χ/U definitions) live in ONE place:
   `docs/specs/binning-observables.md`; `observables.jl` and the guide pages follow it.
   Since M4 there are **two site counts** and an `Evaluable` must declare which it

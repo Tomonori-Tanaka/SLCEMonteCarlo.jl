@@ -21,10 +21,6 @@ function _assert_same_result(a, b)
         @test pa.final_step == pb.final_step
         @test isequal(pa.final_step_u, pb.final_step_u)
         @test pa.max_drift == pb.max_drift
-        # The displacement state itself is not in the result (the chain's `disps` stay
-        # with the sampler until slice 3d), but these two are exact floats computed
-        # FROM it at the last renormalization — together with the energy statistics
-        # above they pin it as tightly as a direct comparison would.
         @test isequal(pa.disp_rms, pb.disp_rms)
         @test isequal(pa.disp_max, pb.disp_max)
         @test pa.escaped == pb.escaped
@@ -152,8 +148,8 @@ end
         terms, L = _einstein_terms(2.5)
         Hj = TiledHamiltonian(1, terms, L; dims = (2, 2, 1), fixed_reference = true)
         @test MC.has_disp(Hj)
-        obs = [Observable(:energy, 1, (c, E, h) -> E),
-               Observable(:energy2, 1, (c, E, h) -> E^2)]
+        obs = [Observable(:energy, 1, v -> v.energy),
+               Observable(:energy2, 1, v -> v.energy^2)]
         kw = (; kT = [0.4, 0.25], sweeps_therm = 300, sweeps_measure = 400,
               nbins = 8, renorm_interval = 50, step_u = 0.3, seed = 5,
               observables = obs, evaluables = Evaluable[])
@@ -163,6 +159,12 @@ end
         _assert_same_result(a, b)
         c = resume(path, Hj; observables = obs, evaluables = Evaluable[])
         _assert_same_result(a, c)
+        # the displacement STATE itself, not only the statistics computed from it:
+        # `_assert_same_result` compares floats derived at renormalization points, and
+        # a resume that rebuilt `disps` a hair differently would still pass those
+        @test a.final_config == b.final_config == c.final_config
+        @test a.final_disps == b.final_disps == c.final_disps
+        @test length(a.final_disps) == Hj.n_sites && any(!iszero, a.final_disps)
         # the run really did sample displacements — otherwise the gate above is vacuous
         @test all(p -> 0.0 < p.acceptance_disp <= 1.0, a.points)
         @test all(p -> p.disp_rms > 0.0 && p.final_step_u > 0.0, a.points)
@@ -174,7 +176,21 @@ end
                    exchange_interval = 20)
         run_pt(Hj; kw..., sweeps_therm = 200, sweeps_measure = 200,
                exchange_interval = 20, checkpoint = pp, checkpoint_interval = 90)
-        _assert_same_result(d, resume(pp, Hj; observables = obs, evaluables = Evaluable[]))
+        e = resume(pp, Hj; observables = obs, evaluables = Evaluable[])
+        _assert_same_result(d, e)
+        @test d.final_configs == e.final_configs
+        @test d.final_disps == e.final_disps
+        @test d.final_disps[1] != d.final_disps[2]     # not a shared reference
+
+        # the already-completed fast path (`resume` on a finished run) constructs the
+        # result on its own code path, so it needs its own joint gate — a job-array
+        # retry loop hits it every time the run finished before the retry did
+        done = joinpath(dir, "joint_done.jld2")
+        f = run_mc(Hj; kw..., checkpoint = done, checkpoint_interval = 50)
+        g = resume(done, Hj; observables = obs, evaluables = Evaluable[])
+        @test g.final_config == f.final_config
+        @test g.final_disps == f.final_disps
+        @test any(!iszero, g.final_disps)
     end
 
     @testset "schema and mismatch guards" begin
@@ -186,7 +202,7 @@ end
         @test_throws ErrorException resume(path, H2)
         # observable mismatch
         @test_throws ErrorException resume(path, H; observables = [
-            Observable(:energy, 1, (c, E, h) -> E)])
+            Observable(:energy, 1, v -> v.energy)])
         # missing file
         @test_throws ArgumentError resume(joinpath(dir, "nope.jld2"), H)
         # negative interval guard

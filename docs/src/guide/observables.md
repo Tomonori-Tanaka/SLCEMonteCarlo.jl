@@ -19,38 +19,75 @@ jackknifed over stored bins). The conventions below are stated authoritatively i
 | `:absm`, `:m2`, `:m4` | `|m|` and its powers |
 | `:sublattice_m` | per training-cell atom: the cell-averaged spin vector, flattened (`3·n_cell_atoms` components); inactive sublattices report exactly zero |
 
+and, on a **joint spin–lattice** model only:
+
+| name | what it is |
+|---|---|
+| `:u2` | the mean square displacement `Σₛ \|uₛ − ūc\|² / n_disp_active` |
+| `:u4` | its fourth-moment partner, `\|uₛ − ūc\|⁴` |
+| `:sublattice_u2`, `:sublattice_u4` | the same two per training-cell atom (`n_cell_atoms` components). `:sublattice_u2` is the isotropic Debye–Waller input, `B_a = 8π²⟨u²⟩_a/3` |
+
 Spin **directions** only — magnetic-moment magnitudes (μ_B) are not part of the
 fitted model; attach them downstream if needed. Inactive (non-magnetic) sites — no
 cluster instance touches them, e.g. a species with `lmax = 0` — are excluded
-throughout and per-site normalizations use `n_active` (see
-[`TiledHamiltonian`](@ref)); mask custom observables the same way via
-`H.site_active`.
+throughout; mask custom observables the same way via `H.site_active`.
 
-Derived (`standard_evaluables()`):
+**Two site counts.** Once displacements exist, `n_active` (active in *either*
+channel) and `n_spin_active` (magnetic) differ, and per-site normalizations must
+use the one that carries the quantity: energy-derived by `n_active`,
+magnetization-derived by `n_spin_active`. An `Evaluable` declares which through its
+`scope` field. On a model with **no** spin-active site the magnetization observables
+are omitted rather than reported as `NaN`.
 
-- `:specific_heat` — per site, in units of ``k_B``:
-  ``C/k_B = (⟨E²⟩ − ⟨E⟩²)/(n_{\mathrm{sites}}(k_BT)²)``.
-- `:susceptibility` — |m|-connected, per site:
-  ``χ = n_{\mathrm{sites}}(⟨m²⟩ − ⟨|m|⟩²)/k_BT``. On a finite system with
+Derived (`standard_evaluables(H)`):
+
+- `:specific_heat` — per active site, in units of ``k_B``:
+  ``C/k_B = (⟨E²⟩ − ⟨E⟩²)/(n_{\mathrm{active}}(k_BT)²)``. On a joint model this is
+  the **spin + lattice** heat capacity — the classical harmonic limit alone
+  contributes 3/2 per displacement-active site.
+- `:susceptibility` — |m|-connected, per spin-active site:
+  ``χ = n_{\mathrm{spin}}(⟨m²⟩ − ⟨|m|⟩²)/k_BT``. On a finite system with
   continuous symmetry ``⟨\boldsymbol m⟩ = 0`` exactly, so the textbook connected
   form degenerates and grows with system size below the transition; this form
   peaks at it (the finite-size-scaling standard).
 - `:binder` — ``U = ⟨m⁴⟩/⟨m²⟩²`` (→ 1 ordered, → 5/3 disordered for 3-component
   spins); `U(T)` crossings between system sizes locate ``T_c``.
+- `:u_moment_ratio` (joint models) — ``⟨u⁴⟩/⟨u²⟩²``, the anharmonicity screen.
+  **Read it against temperature, not against 5/3.** For a harmonic model every
+  ``σ_s² ∝ T``, so the ratio is *temperature-independent* whatever the crystal — that
+  is the signature. Its level is
+  ``(5/3)·\mathrm{mean}(σ⁴)/(\mathrm{mean}\,σ²)² ≥ 5/3`` by Jensen, equal to 5/3
+  only when every displacement-active site samples the same isotropic Gaussian; a
+  two-sublattice Einstein model with a 4× stiffness contrast measures 2.27 while being
+  exactly harmonic. The clean 5/3 test is **per sublattice** (translation-equivalent
+  sites share a covariance): `stats[:sublattice_u4].mean[a] /
+  stats[:sublattice_u2].mean[a]^2`.
 
 ## Composing your own
 
-```julia
-# a raw observable: f(config, energy, H) -> Real or an ncomp-vector
-corr12 = Observable(:corr12, 1, (cfg, E, H) -> dot(cfg[1], cfg[2]))
+An observable receives **one** argument, an [`MCView`](@ref) of the sampled state:
+`v.config`, `v.disps`, `v.energy`, `v.H`. One argument rather than a widening
+positional list, because the state grows with the model — displacements arrived in
+M4 — and a positional contract would break every observable ever written each time
+it did.
 
-# a derived quantity: f(means::NamedTuple, kT, n_active) -> Real,
-# over *scalar* raw observables named in `inputs`
+```julia
+# a raw observable: f(v::MCView) -> Real or an ncomp-vector
+corr12 = Observable(:corr12, 1, v -> dot(v.config[1], v.config[2]))
+
+# a derived quantity: f(means::NamedTuple, kT, n) -> Real, over *scalar* raw
+# observables named in `inputs`; `scope` picks which site count `n` is
 uovere = Evaluable(:u_over_e, [:m4, :m2], (m, kT, n) -> m.m4 / m.m2^2)
 
 r = run_mc(H; kT = 0.02, observables = vcat(standard_observables(H), corr12),
-           evaluables = vcat(standard_evaluables(), uovere))
+           evaluables = vcat(standard_evaluables(H), uovere))
 ```
+
+`v.disps` holds the displacements in the sampler's **centre-of-mass-free** frame,
+and is **empty** on a Hamiltonian with no displacement channel — so a displacement
+observable run against a pure-spin model throws instead of reporting a confident
+zero. It must be a gauge-invariant function of those displacements; see the
+displacement section below and `docs/specs/updates-stationarity.md` U7.
 
 ## A ferrimagnet order parameter
 
@@ -66,3 +103,49 @@ projs = [dot(subv[a], axis) for a = 1:H.n_cell_atoms]     # ferri: signs differ
 ```
 
 (In the Nd₂Fe₁₄B smoke test this gives Nd ≈ −0.5 vs Fe ≈ +0.7 at 250 K.)
+
+## Displacement observables
+
+On a joint model the displacements arrive in `v.disps`, in the **centre-of-mass-free
+frame** of each displacement-coupling component. That frame is not a convenience: it
+is the only one in which a displacement is a stationary quantity at all
+(`docs/specs/updates-stationarity.md` U7), so a custom displacement observable must
+be a **gauge-invariant** function of `v.disps` — anything built from an absolute
+position has no stationary distribution to average.
+
+```julia
+# per-sublattice anisotropic MSD tensor ⟨u_i u_j⟩ for atom 1 (the full
+# Debye-Waller input, of which :sublattice_u2 is the isotropic trace/3)
+msd1 = Observable(:msd1, 9, v -> begin
+    acc = zeros(3, 3)
+    n = 0
+    for s in eachindex(v.disps)
+        v.H.site_has_disp[s] && SLCEMonteCarlo.site_atom(v.H, s) == 1 || continue
+        u = v.disps[s]
+        acc .+= u * u'
+        n += 1
+    end
+    vec(acc ./ max(n, 1))
+end)
+
+# a spin-lattice cross-correlator: gauge-invariant in u, rotation-invariant in e
+sl = Observable(:sl, 1, v -> sum(dot(v.config[s], v.disps[s])^2
+                                 for s in eachindex(v.disps)) / length(v.disps))
+```
+
+For the closed-form checks: an isotropic harmonic well of stiffness `a` gives
+`⟨u²⟩ = 3kT/(2a)` and `⟨u⁴⟩ = 15(kT/2a)²`, so the **per-site** ratio is `5/3` at every
+temperature. Mind the order of averaging — `:u2` and `:u4` average over sites *before*
+the ratio is taken, so on a crystal with inequivalent sites the global ratio sits above
+5/3 by Jensen even when the model is exactly harmonic (see `:u_moment_ratio` above).
+
+!!! warning "Screen the harmonic part first"
+    A truncated expansion need not be bounded below in `u`, and a chain sampling an
+    unbounded well produces displacement numbers that mean nothing.
+    [`harmonic_stability`](@ref) reports the displacement Hessian's spectrum at a
+    given spin configuration **before** the run; an eigenvalue below `−tol` is a
+    proof of failure. A clean spectrum proves nothing (deciding global non-negativity
+    of a quartic form is NP-hard) — pair it with `:u_moment_ratio` and
+    `TempResult.escaped`. The tolerance is not cosmetic: a translation-invariant model
+    has `3·n_disp_comps` exact zero eigenvalues, and finite differences scatter each
+    of them across zero.
