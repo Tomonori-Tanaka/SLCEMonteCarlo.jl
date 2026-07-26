@@ -100,7 +100,7 @@ species_labels = ["Nd1", "Nd2", "Fe1", "Fe2", "Fe3", "Fe4", "Fe5", "Fe6", "B"]
 nbody = 2
 cutoff = inf     # every resolvable pair (Magesty's -1); bench args override
 lmax = [4, 4, 2, 2, 2, 2, 2, 2, 0]   # Nd l<=4, Fe l<=2, B non-magnetic
-isotropy = true
+soc = false
 
 [symmetry]
 backend = "spglib"

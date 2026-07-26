@@ -26,7 +26,7 @@ end
 
 function _dimer_model()
     b = SLCEBasis(_dimer_crystal(), BasisSpec(; nbody = 2, cutoff = 2.6,
-                                             lmax = [1], isotropy = true))
+                                             lmax = [1], soc = false))
     return SLCEModel(b, 0.0, vcat([-0.02], zeros(n_salcs(b) - 1)))  # < 0 ⇒ ferro
 end
 
@@ -37,7 +37,7 @@ function _stacked_chain_model()
     lat = Lattice(Matrix(4.0 * I(3)))
     cr = Crystal(lat, [0 0; 0 0; 0.0 0.5], [1, 1], ["Fe"])
     b = SLCEBasis(cr, BasisSpec(; nbody = 2, cutoff = 2.1, lmax = [1],
-                               isotropy = true))
+                               soc = false))
     return SLCEModel(b, 0.0, fill(-0.02, n_salcs(b))), cr
 end
 
@@ -56,7 +56,7 @@ function _biquadratic_model(seed)
     lat = Lattice(Matrix(3.0 * I(3)))
     cr = Crystal(lat, [0.2 -0.2; 0.0 0.0; 0.0 0.0], [1, 1], ["Fe"])
     b = SLCEBasis(cr, BasisSpec(; nbody = 2, cutoff = 1.5, lmax = [2],
-                               isotropy = false))
+                               soc = true))
     return SLCEModel(b, 0.0, 0.05 .* randn(MersenneTwister(seed), n_salcs(b)))
 end
 
@@ -71,7 +71,7 @@ function _stacked_anisotropic_model(backend; fill_coefs::Bool = false)
     lat = Lattice(Matrix(4.0 * I(3)))
     cr = Crystal(lat, [0 0; 0 0; 0.0 0.5], [1, 1], ["Fe"])
     b = SLCEBasis(cr, BasisSpec(; nbody = 2, cutoff = 2.1, lmax = [2],
-                               isotropy = false); backend = backend)
+                               soc = true); backend = backend)
     jphi = fill_coefs ? fill(0.03, n_salcs(b)) :
            0.05 .* randn(MersenneTwister(41), n_salcs(b))
     return SLCEModel(b, 0.0, jphi), cr
@@ -83,7 +83,7 @@ function _checkerboard_model()
     lat = Lattice([1.0 1.0 0; -1.0 1.0 0; 0 0 4.0])
     cr = Crystal(lat, [0 0.5; 0 0.5; 0.0 0.0], [1, 1], ["Fe"])
     b = SLCEBasis(cr, BasisSpec(; nbody = 2, cutoff = 1.1, lmax = [1],
-                               isotropy = true))
+                               soc = false))
     return SLCEModel(b, 0.0, fill(-0.02, n_salcs(b))), cr
 end
 

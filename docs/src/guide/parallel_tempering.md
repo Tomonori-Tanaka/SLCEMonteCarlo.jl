@@ -49,7 +49,7 @@ using LinearAlgebra, Random
 lat = Lattice(Matrix(3.0 * I(3)))
 cell = Crystal(lat, [0.2 -0.2; 0.0 0.0; 0.0 0.0], [1, 1], ["Fe"])
 basis = SLCEBasis(cell, BasisSpec(; nbody = 2, cutoff = 1.5, lmax = [2],
-                                 isotropy = false))
+                                 soc = true))
 model = SLCEModel(basis, 0.0, 0.05 .* randn(MersenneTwister(3), n_salcs(basis)))
 H = TiledHamiltonian(model; dims = (2, 2, 2))
 nothing # hide

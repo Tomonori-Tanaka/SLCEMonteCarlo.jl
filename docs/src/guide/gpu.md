@@ -66,7 +66,7 @@ using LinearAlgebra, Random
 
 lat = Lattice(Matrix(1.0 * I(3)))
 cell = Crystal(lat, reshape([0.0, 0.0, 0.0], 3, 1), [1], ["Fe"])
-spec = BasisSpec(; nbody = 2, cutoff = 1.1, lmax = [1], isotropy = true)
+spec = BasisSpec(; nbody = 2, cutoff = 1.1, lmax = [1], soc = false)
 basis = SLCEBasis(cell, spec; backend = SpglibBackend(), images = AllImages())
 model = SLCEModel(basis, 0.0, [-0.01])
 H = TiledHamiltonian(model; dims = (4, 4, 4))

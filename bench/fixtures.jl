@@ -48,14 +48,14 @@ function bcc_fe_model(; lmax::Integer = 1, cutoff::Real = 2.6, seed::Integer = 1
     lat = Lattice([a 0 0; 0 a 0; 0 0 a])
     cr = Crystal(lat, [0.0 0.5; 0.0 0.5; 0.0 0.5], [1, 1], ["Fe"])
     b = SLCEBasis(cr, BasisSpec(; nbody = 2, cutoff = cutoff, lmax = [lmax],
-                               isotropy = true); backend = SpglibBackend())
+                               soc = false); backend = SpglibBackend())
     jphi = 0.02 .* randn(MersenneTwister(seed), n_salcs(b))
     return SLCEModel(b, 0.0, jphi)
 end
 
 """
     nd2fe14b_model(; nbody = 2, cutoff = Inf, lmax_nd = 2, lmax_fe = 2,
-                   isotropy = true, seed = 13) -> SLCEModel
+                   soc = false, seed = 13) -> SLCEModel
 
 The heavy-kernel fixture: the 68-atom Nd₂Fe₁₄B cell (`assets/nd2fe14b.toml`
 structure), anisotropic multi-species basis (`lmax = [lmax_nd ×2, lmax_fe ×6, 0]` —
@@ -64,11 +64,11 @@ mirrors the real l02 production model. Coefficients: seeded `0.01·randn` eV.
 Builds in ~1 s (basis) — reuse the returned model across a script.
 """
 function nd2fe14b_model(; nbody::Integer = 2, cutoff::Real = Inf, lmax_nd::Integer = 2,
-                        lmax_fe::Integer = 2, isotropy::Bool = true, seed::Integer = 13)
+                        lmax_fe::Integer = 2, soc::Bool = false, seed::Integer = 13)
     inp = read_setup(joinpath(@__DIR__, "assets", "nd2fe14b.toml"))
     lmax = vcat(fill(Int(lmax_nd), 2), fill(Int(lmax_fe), 6), [0])
     spec = BasisSpec(; nbody = nbody, cutoff = cutoff, lmax = lmax,
-                     isotropy = isotropy)
+                     soc = soc)
     b = SLCEBasis(inp.crystal, spec; backend = SpglibBackend(), tol = inp.tol)
     jphi = 0.01 .* randn(MersenneTwister(seed), n_salcs(b))
     return SLCEModel(b, 0.0, jphi)
