@@ -237,23 +237,24 @@ using Test
         @test_throws ArgumentError total_energy(H, _rand_config(rng, H))
         @test_throws DimensionMismatch total_energy(H, _rand_config(rng, H),
                                                    _rand_disps(rng, H)[1:1])
-        # `ChainState` itself accepts a joint model since slice 3c/2 — what still
-        # refuses is the drivers, which schedule no displacement pass yet and would
-        # otherwise sample a *different* ensemble (u frozen at the clamped-ion state)
-        # without saying so.
-        @test_throws ArgumentError run_mc(H; kT = 0.1, sweeps_therm = 1,
-                                          sweeps_measure = 2, nbins = 2)
-        @test_throws ArgumentError run_pt(H; kT = [0.1, 0.2], sweeps_therm = 1,
-                                          sweeps_measure = 2, nbins = 2)
-        # `resume` reaches `_read_chain` directly, bypassing the driver guards, and
-        # schema v2 stores no displacement state — so the reader refuses on its own.
-        # The guard is its first statement, hence the unopened file argument.
-        @test_throws ArgumentError MC._read_chain(nothing, "chain", H)
-        # …and the writer refuses too, so a run that could never be resumed fails
-        # while it is still cheap rather than at the resume attempt
-        stj = MC.ChainState(H, _rand_config(rng, H), Xoshiro(1), 0.5;
-                            disps = _rand_disps(rng, H))
-        @test_throws ArgumentError MC._write_chain(nothing, "chain", stj)
+        # The drivers accept a joint model since slice 3c/3 (they schedule displacement
+        # passes). What they refuse is the *inverse* mistake — asking for displacement
+        # passes on a model that has no displacement rows, which would be a silent
+        # no-op sweep over an empty site list.
+        Hs = MC.TiledHamiltonian(_biquadratic_model(0); dims = (2, 2, 1))
+        @test_throws ArgumentError run_mc(Hs; kT = 0.1, sweeps_therm = 1,
+                                          sweeps_measure = 2, nbins = 2,
+                                          disp_per_metropolis = 1)
+        @test_throws ArgumentError run_pt(Hs; kT = [0.1, 0.2], sweeps_therm = 1,
+                                          sweeps_measure = 2, nbins = 2,
+                                          disp_per_metropolis = 2)
+        # …and starting a pure-spin chain at nonzero displacements, which the model
+        # cannot represent at all.
+        @test_throws ArgumentError run_mc(Hs; kT = 0.1, sweeps_therm = 1,
+                                          sweeps_measure = 2, nbins = 2,
+                                          disps = ones(3, Hs.n_sites))
+        # Ground-state search is still spin-only: it has no displacement move, so it
+        # would report the clamped-ion minimum as *the* minimum.
         @test_throws ArgumentError minimize_energy(H)
         @test_throws ArgumentError find_ground_state(H; kT = 0.01)
         @test_throws ArgumentError MC.energy_gradient(H, _rand_config(rng, H))
@@ -669,7 +670,8 @@ end
                                  fixed_reference = true)
         @test !Hm.translation_invariant
         @test Hm.n_disp_active == 2 && count(Hm.site_has_disp) == 2
-        st = MC.ChainState(Hm, _rand_config(MersenneTwister(21), Hm), Xoshiro(8), 0.5; step_u = 0.05)
+        st = MC.ChainState(Hm, _rand_config(MersenneTwister(21), Hm), Xoshiro(8), 0.5;
+                           step_u = 0.05)
         sc = MC.SweepScratch(Hm)
         for _ = 1:25
             MC.displacement_sweep!(st, Hm, 2.0, sc)
@@ -818,7 +820,8 @@ end
         pinned = findall(!, freec)
         flat = findall(freec)
         @test !isempty(pinned) && !isempty(flat)
-        st = MC.ChainState(Hm, _rand_config(MersenneTwister(21), Hm), Xoshiro(6), 0.5; step_u = 0.03)
+        st = MC.ChainState(Hm, _rand_config(MersenneTwister(21), Hm), Xoshiro(6), 0.5;
+                           step_u = 0.03)
         sc = MC.SweepScratch(Hm)
         for _ = 1:60
             MC.displacement_sweep!(st, Hm, 2.0, sc)
@@ -890,5 +893,218 @@ end
                                reshape([0.4, -0.2, 0.7], 3, 1))]
         @test_throws ArgumentError MC.TiledHamiltonian(2, gauge, L;
                                                        fixed_reference = true)
+    end
+end
+
+# The drivers' displacement pass scheduling and the second proposal width — M4 slice
+# 3c/3. Two things are being pinned:
+#   1. `disp_per_metropolis` resolves from the MODEL, not from a constant. The failure
+#      this prevents is silent: a joint model sampled at frozen `u` is a different
+#      ensemble that produces perfectly plausible spin numbers;
+#   2. the two proposal widths are adapted independently. `step` is an angle bounded by
+#      the sphere; `step_u` is a length with no such bound, so it gets its own counters
+#      and its own (runaway-guard) clamp.
+@testset "joint drivers: pass scheduling and the second proposal width" begin
+    terms, L = _einstein_terms(2.5)
+    Hj = MC.TiledHamiltonian(1, terms, L; dims = (2, 2, 1), fixed_reference = true)
+    Hs = TiledHamiltonian(_biquadratic_model(0); dims = (2, 2, 1))
+    obs = [Observable(:energy, 1, (c, E, h) -> E)]
+
+    @testset "the default resolves from the model" begin
+        @test MC._resolve_disp_passes(Hj, nothing) == 1
+        @test MC._resolve_disp_passes(Hs, nothing) == 0
+        @test MC._resolve_disp_passes(Hj, 3) == 3
+        @test MC._resolve_disp_passes(Hj, 0) == 0          # explicit freeze is allowed
+        @test MC._resolve_disp_passes(Hs, 0) == 0
+        # …but asking for displacement passes on a model that has no displacement rows
+        # is a mistake, not a no-op
+        @test_throws ArgumentError MC._resolve_disp_passes(Hs, 1)
+    end
+
+    @testset "a joint run samples displacements by default" begin
+        kw = (; kT = 0.4, sweeps_therm = 400, sweeps_measure = 800, nbins = 8,
+              renorm_interval = 20, step_u = 0.3, seed = 3, observables = obs,
+              evaluables = Evaluable[])
+        r = run_mc(Hj; kw...)
+        p = r.points[1]
+        @test 0.0 < p.acceptance_disp <= 1.0
+        @test p.disp_rms > 0.0 && p.disp_max >= p.disp_rms
+        @test p.disp_checks == 40
+        @test !p.escaped
+        # the Einstein well's analytic scale, reached through the driver. `disp_rms` is
+        # the PHASE AVERAGE √⟨|u|²⟩, so this is a real (if error-bar-free) comparison
+        # with 3kT/(2a) rather than a single snapshot's ±20 % scatter.
+        @test isapprox(p.disp_rms^2, 3 * 0.4 / (2 * 2.5); rtol = 0.1)
+        # …and the width really was adapted away from its start toward the target
+        @test p.final_step_u != 0.3
+        @test MC._STEP_U_MIN <= p.final_step_u <= MC._STEP_U_MAX
+
+        # explicitly freezing them is a different ensemble, and says so: no attempts,
+        # so no acceptance, and the chain never leaves the clamped-ion state
+        f = run_mc(Hj; kw..., disp_per_metropolis = 0)
+        @test isnan(f.points[1].acceptance_disp)
+        @test f.points[1].disp_rms == 0.0
+        @test f.points[1].final_step_u == 0.3          # nothing to adapt on
+    end
+
+    @testset "an unscreened phase is reported as unscreened, not as clean" begin
+        # `disp_rms` is measured at renormalization points only, so a measurement phase
+        # shorter than `renorm_interval` leaves the escape detector without a single
+        # observation. Two things must then be true: `escaped == false` must be
+        # accompanied by `disp_checks == 0` (it means NOT SCREENED, and the guide tells
+        # users to screen on `escaped`), and the table must still print as a joint run —
+        # otherwise the run looks exactly like a pure-spin one.
+        r = run_mc(Hj; kT = 0.4, sweeps_therm = 20, sweeps_measure = 30, nbins = 4,
+                   renorm_interval = 10_000, step_u = 0.3, seed = 4,
+                   observables = obs, evaluables = Evaluable[])
+        p = r.points[1]
+        @test p.disp_checks == 0
+        @test isnan(p.disp_rms) && isnan(p.disp_max)   # no check fired…
+        @test !isnan(p.acceptance_disp)                # …but attempts were made
+        @test !p.escaped                               # vacuously — hence disp_checks
+        io = IOBuffer()
+        show(io, MIME"text/plain"(), r)
+        out = String(take!(io))
+        @test occursin("acc_u", out)
+        @test !occursin("ESCAPED", out)
+    end
+
+    @testset "a cadence too coarse for the block test is announced up front" begin
+        # The block ladder needs `_escape_min_checks()` observations before three
+        # consecutive strikes are even reachable, so a run below that is screened by the
+        # absolute guard alone — which catches a fast escape and misses a diffusive one.
+        # Silence there would be the exact failure U8 exists to prevent.
+        need = MC._escape_min_checks()
+        @test need == 15                               # 1 + 2 + 4 + 8, ladder-derived
+        kw = (; kT = 0.4, sweeps_therm = 20, sweeps_measure = 100, nbins = 4,
+              step_u = 0.3, seed = 6, observables = obs, evaluables = Evaluable[])
+        @test_logs (:warn, r"escape detector's block test needs") match_mode = :any begin
+            run_mc(Hj; kw..., renorm_interval = 50)    # 2 checks ≪ 15
+        end
+        # …and an armed cadence is silent about it
+        @test_logs match_mode = :all min_level = Logging.Warn begin
+            run_mc(Hj; kw..., sweeps_measure = 400, renorm_interval = 20)   # 20 ≥ 15
+        end
+        # a pure-spin run never gets the warning: it has no displacement channel
+        @test_logs match_mode = :all min_level = Logging.Warn begin
+            run_mc(Hs; kT = 0.5, sweeps_therm = 20, sweeps_measure = 40, nbins = 4,
+                   renorm_interval = 10_000, seed = 6)
+        end
+    end
+
+    @testset "a temperature step re-anchors the escape detector" begin
+        # The detector's anchors are r.m.s. values and `rms ∝ √T`, so carrying a cold
+        # rung's anchor into a hot one manufactures growth that is pure thermodynamics.
+        # The Einstein oscillator is bounded BY CONSTRUCTION — any warning here is a
+        # false alarm, and the ladder spans a factor of 200 in T (≈ 14× in r.m.s., well
+        # past the 10× absolute guard).
+        @test_logs match_mode = :all min_level = Logging.Warn begin
+            r = run_mc(Hj; kT = [0.005, 1.0], sweeps_therm = 400, sweeps_measure = 400,
+                       nbins = 4, renorm_interval = 20, step_u = 0.05, seed = 8,
+                       observables = obs, evaluables = Evaluable[])
+            @test !any(p -> p.escaped, r.points)
+            # the two rungs really are far apart — otherwise the gate is vacuous
+            @test r.points[2].disp_rms > 5 * r.points[1].disp_rms
+            # each phase counts its own checks, none inherited
+            @test all(p -> p.disp_checks == 20, r.points)
+        end
+    end
+
+    @testset "more passes is still the same ensemble" begin
+        # any FIXED composition of π-stationary kernels is π-stationary, so 3 passes
+        # per Metropolis sweep must land on the same ⟨|u|²⟩ — only the correlation
+        # time changes
+        kw = (; kT = 0.4, sweeps_therm = 400, sweeps_measure = 800, nbins = 8,
+              renorm_interval = 20, step_u = 0.3, observables = obs,
+              evaluables = Evaluable[])
+        a = run_mc(Hj; kw..., seed = 11)
+        b = run_mc(Hj; kw..., seed = 11, disp_per_metropolis = 3)
+        @test isapprox(a.points[1].disp_rms^2, b.points[1].disp_rms^2; rtol = 0.2)
+        @test isapprox(a.points[1].stats[:energy].mean[1],
+                       b.points[1].stats[:energy].mean[1]; rtol = 0.1)
+    end
+
+    @testset "the two widths adapt on their own counters" begin
+        st = MC.ChainState(Hj, MC.SpinConfig([SVector(0.0, 0.0, 1.0)
+                                              for _ = 1:Hj.n_sites]),
+                           Xoshiro(2), 0.5; step_u = 0.05)
+        # accepting everything must GROW both widths; the windows are then cleared
+        st.acc_metro, st.att_metro = 100, 100
+        st.acc_disp, st.att_disp = 100, 100
+        s, su = MC._adapt_step!(st, 0.5)
+        @test s > 0.5 && su > 0.05
+        @test st.acc_metro == st.att_metro == st.acc_disp == st.att_disp == 0
+        # an empty window leaves its own width alone — and only its own
+        st.acc_disp, st.att_disp = 0, 100          # reject everything
+        s2, su2 = MC._adapt_step!(st, 0.5)
+        @test s2 == s                              # no metropolis attempts recorded
+        @test su2 < su
+        # the clamps are the two different kinds: radians for the rotation, a length
+        # for the shift — neither routed through the other
+        st.step, st.step_u = 1e3, 1e3
+        st.acc_metro, st.att_metro, st.acc_disp, st.att_disp = 100, 100, 100, 100
+        s3, su3 = MC._adapt_step!(st, 0.5)
+        @test s3 == Float64(π)
+        @test su3 == MC._STEP_U_MAX
+        st.step, st.step_u = 1e-9, 1e-9
+        st.acc_metro, st.att_metro, st.acc_disp, st.att_disp = 0, 100, 0, 100
+        s4, su4 = MC._adapt_step!(st, 0.5)
+        @test s4 == 1e-3
+        @test su4 == MC._STEP_U_MIN
+        # frozen: the measurement phase's kernel never moves
+        st.frozen = true
+        st.acc_metro, st.att_metro, st.acc_disp, st.att_disp = 100, 100, 100, 100
+        @test MC._adapt_step!(st, 0.5) === (s4, su4)
+    end
+
+    @testset "the standard observable set is joint-aware" begin
+        # Two things break the moment `run_mc` accepts a joint model with the DEFAULT
+        # observables, and both are silent:
+        #   1. `C` is built from the total energy, which on a joint model carries the
+        #      lattice heat capacity — normalizing it by the SPIN count is wrong by the
+        #      ratio of the two counts, and on a lattice-only model it is 0/0;
+        #   2. the magnetization observables are 0/0 there as well, and a table of NaNs
+        #      passes every finiteness check a user is likely to write.
+        @test Hj.n_spin_active == 0 && Hj.n_disp_active == Hj.n_sites
+        names = [o.name for o in standard_observables(Hj)]
+        @test names == [:energy, :energy2]                    # no 0/0 magnetization
+        @test [e.name for e in standard_evaluables(Hj)] == [:specific_heat]
+        # the scope declaration is what routes the count
+        sh = standard_evaluables()[1]
+        @test sh.name === :specific_heat && sh.scope === :energy
+        @test all(e -> e.scope === :spin, standard_evaluables()[2:end])
+        @test_throws ArgumentError Evaluable(:x, [:energy], (m, kT, n) -> 0.0;
+                                             scope = :lattice)
+        # …and the number that comes out is the classical harmonic one: an Einstein
+        # oscillator has C = (3/2) k_B per atom exactly, at any temperature
+        r = run_mc(Hj; kT = 0.4, sweeps_therm = 600, sweeps_measure = 4_000,
+                   nbins = 16, renorm_interval = 20, step_u = 0.3, seed = 12)
+        c = r.points[1].stats[:specific_heat]
+        @test isapprox(c.mean[1], 1.5; rtol = 0.15)
+        @test isfinite(c.err[1])
+        # pure spin is untouched: there the two counts coincide, so the scope split
+        # cannot have moved any pre-M4 number
+        @test Hs.n_active == Hs.n_spin_active
+        @test [o.name for o in standard_observables(Hs)] ==
+              [:energy, :energy2, :m, :absm, :m2, :m4, :sublattice_m]
+        @test standard_evaluables(Hs) == standard_evaluables() ||
+              [e.name for e in standard_evaluables(Hs)] ==
+              [e.name for e in standard_evaluables()]
+    end
+
+    @testset "a pure-spin run is bit-identical to the pre-M4 schedule" begin
+        # `disp_per_metropolis` resolves to 0 there, so `_compound_sweep!` never calls
+        # `displacement_sweep!` and the RNG consumption is exactly what it always was.
+        # The check that this is not vacuous: the same run with the pass explicitly
+        # requested is refused, not silently equal.
+        kw = (; kT = 0.5, sweeps_therm = 100, sweeps_measure = 200, nbins = 4,
+              seed = 17)
+        a = run_mc(Hs; kw...)
+        b = run_mc(Hs; kw..., disp_per_metropolis = 0)
+        @test a.final_config == b.final_config
+        @test a.points[1].stats[:energy].mean == b.points[1].stats[:energy].mean
+        @test isnan(a.points[1].acceptance_disp)
+        @test isnan(a.points[1].disp_rms) && isnan(a.points[1].final_step_u)
+        @test !a.points[1].escaped
     end
 end

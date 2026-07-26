@@ -64,6 +64,11 @@ function _swap_payload!(a::ChainState, b::ChainState)
     # the proposal widths stay with the lane.
     a.disps, b.disps = b.disps, a.disps
     a.com_removed, b.com_removed = b.com_removed, a.com_removed
+    # The escape-detector accumulators do NOT travel: like the acceptance counters they
+    # describe the lane, and a lane is a fixed temperature. The question the detector
+    # asks — does the r.m.s. displacement of this temperature's marginal stay flat —
+    # is answered by the lane's own series, not by following one replica up and down
+    # the ladder.
     a.zrows, b.zrows = b.zrows, a.zrows
     a.energy, b.energy = b.energy, a.energy
     return nothing
@@ -295,6 +300,7 @@ function _pt_run!(lanes::Vector{_PTLane}, H::TiledHamiltonian, plan::UpdatePlan,
         planned = fld(plan.sweeps_measure, plan.measure_interval)
         for lane in lanes
             _renormalize!(lane.st, H, lane.scs[1])
+            _warn_step_u_saturated(lane.st, H, plan)
             _freeze_and_reset!(lane.st)
             lane.accs = [ObsAccumulator(o, planned, plan.nbins)
                          for o in observables]
@@ -311,13 +317,14 @@ function _pt_run!(lanes::Vector{_PTLane}, H::TiledHamiltonian, plan::UpdatePlan,
                    exchange_rng, swap_att, swap_acc, nt, parity; done0 = mdone0,
                    ck = ck)
     R = length(lanes)
-    points = [let st = lane.st
-                  acc_m = st.att_metro == 0 ? NaN : st.acc_metro / st.att_metro
-                  acc_o = st.att_or == 0 ? NaN : st.acc_or / st.att_or
+    joint = has_disp(H)
+    points = [let st = lane.st, s = _chain_summary(st, joint)
                   TempResult(lane.kt, lane.kt / KB_EV,
                              _finalize_stats(lane.accs, evaluables, lane.kt,
-                                             H.n_spin_active),
-                             acc_m, acc_o, st.step, st.max_drift)
+                                             H.n_spin_active, H.n_active),
+                             s.acc_m, s.acc_o, s.acc_d, st.step, s.step_u,
+                             st.max_drift, s.disp_rms, s.disp_max, s.disp_checks,
+                             s.escaped)
               end
               for lane in lanes]
     swaps = [swap_att[i] == 0 ? NaN : swap_acc[i] / swap_att[i] for i = 1:(R - 1)]
@@ -354,9 +361,10 @@ boundaries (interval in sweeps, `0` ⇒ only at the thermalization→measurement
 boundary); continue with [`resume`](@ref) — bit-identical to an uninterrupted run.
 
 Everything else — `sweeps_therm`, `sweeps_measure`, `measure_interval`,
-`or_per_metropolis`, `step` / `adapt_target` / `adapt_interval` (adaptation is
-per-lane, thermalization-only), `renorm_interval`, `nbins`, `observables`,
-`evaluables`, `init` (every lane starts from it; default: independent random),
+`or_per_metropolis`, `disp_per_metropolis`, `step` / `step_u` / `adapt_target` /
+`adapt_interval` (adaptation is per-lane, thermalization-only), `renorm_interval`,
+`nbins`, `observables`, `evaluables`, `init` / `disps` (every lane starts from them;
+default: independent random spins at the clamped-ion displacements),
 `seed` — as in [`run_mc`](@ref). Lane `r`'s statistics land in `points[r]`
 (ladder order); adjacent-pair swap acceptances (diagnostic: aim for O(0.2–0.5),
 tighten the ladder where they collapse) in `swap_acceptance`.
@@ -366,12 +374,14 @@ function run_pt(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                 ntasks::Union{Nothing,Integer} = nothing,
                 sweeps_therm::Integer = 2_000, sweeps_measure::Integer = 10_000,
                 measure_interval::Integer = 1, or_per_metropolis::Integer = 0,
-                step::Real = 0.6, adapt_target::Real = 0.5,
+                disp_per_metropolis::Union{Nothing,Integer} = nothing,
+                step::Real = 0.6, step_u::Real = _DEFAULT_STEP_U,
+                adapt_target::Real = 0.5,
                 adapt_interval::Integer = 50, renorm_interval::Integer = 1_000,
                 nbins::Integer = 32,
                 observables::Vector{Observable} = standard_observables(H),
-                evaluables::Vector{Evaluable} = standard_evaluables(),
-                init = nothing, sweep_tasks::Integer = 1,
+                evaluables::Vector{Evaluable} = standard_evaluables(H),
+                init = nothing, disps = nothing, sweep_tasks::Integer = 1,
                 seed::Integer = rand(UInt64),
                 checkpoint::Union{Nothing,AbstractString} = nothing,
                 checkpoint_interval::Integer = 0)::PTResult
@@ -385,17 +395,17 @@ function run_pt(H::TiledHamiltonian; temperature = nothing, kT = nothing,
         "exchange_interval must be ≥ 1; got $exchange_interval"))
     nt = ntasks === nothing ? min(R, Threads.nthreads()) : Int(ntasks)
     nt >= 1 || throw(ArgumentError("ntasks must be ≥ 1; got $nt"))
+    ndisp = _resolve_disp_passes(H, disp_per_metropolis)
     plan = UpdatePlan(kts; sweeps_therm = sweeps_therm,
                       sweeps_measure = sweeps_measure,
                       measure_interval = measure_interval,
-                      or_per_metropolis = or_per_metropolis, step = step,
+                      or_per_metropolis = or_per_metropolis,
+                      disp_per_metropolis = ndisp, step = step, step_u = step_u,
                       adapt_target = adapt_target, adapt_interval = adapt_interval,
                       renorm_interval = renorm_interval, nbins = nbins,
                       carryover = false, sweep_tasks = sweep_tasks, seed = seed)
     _check_observables(observables)
-    # See `run_mc`: no displacement pass scheduling yet, so refuse rather than sample
-    # a joint model at frozen u.
-    _require_spin_only(H, "run_pt")
+    _warn_escape_cadence(H, plan)
     nt * sweep_tasks > Threads.nthreads() && @warn(
         "ntasks · sweep_tasks = $(nt * sweep_tasks) exceeds the " *
         "$(Threads.nthreads()) available threads; the run stays correct and " *
@@ -411,7 +421,8 @@ function run_pt(H::TiledHamiltonian; temperature = nothing, kT = nothing,
     exchange_rng = Xoshiro(rand(master, UInt64), rand(master, UInt64),
                            rand(master, UInt64), rand(master, UInt64))
     lanes = [_PTLane(ChainState(H, _initial_config(H, init, lane_rngs[r]),
-                                lane_rngs[r], plan.step0),
+                                lane_rngs[r], plan.step0; disps = disps,
+                                step_u = plan.step_u0),
                      [SweepScratch(H) for _ = 1:plan.sweep_tasks], kts[r],
                      1.0 / kts[r], ObsAccumulator[], 0)
              for r = 1:R]

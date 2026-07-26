@@ -115,8 +115,11 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   simultaneous spin+displacement move on one site misses `Δz·Δr`); the pair/triplet
   fast paths hoist columns only when every axis of the site yields the same column
   tuple (`_hoisted_columns` compares them — canonical axis order does NOT guarantee
-  same-site axes are adjacent). Gates: `test_joint.jl` throughout; every spin-only
-  entry point must keep calling `_require_spin_only` until slice 3c lands.
+  same-site axes are adjacent). Gates: `test_joint.jl` throughout. The MC drivers took
+  the displacement channel in slice 3c/3; what still calls `_require_spin_only` is
+  everything with no displacement move of its own — `minimize_energy` /
+  `find_ground_state`, the gradient entry points, and the GPU kernels — and each must
+  keep doing so, or it reports a clamped-ion answer as the answer.
 - **The displacement channel of the sampler: `ChainState.disps` ↔ `SweepScratch` ↔
   `_attempt_disp!` ↔ `_recenter!` ↔ `_renormalize!` ↔ `_swap_payload!` ↔ the checkpoint
   schema** (`state.jl`, `updates.jl`, `pt.jl`, `checkpoint.jl`,
@@ -136,9 +139,12 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   (4) `disps` and `com_removed` are part of the replica-exchange **payload** (a swap
   moves a whole physical state, frame included), unlike the RNG streams and the
   proposal widths, which stay with the lane;
-  (5) checkpoint schema v2 stores no displacement state, so `_read_chain` refuses a
-  joint Hamiltonian; `run_mc`/`run_pt` refuse one too until the pass scheduling lands.
-  Delete a guard and a joint model silently samples the clamped-ion ensemble;
+  (5) the drivers must SCHEDULE the displacement pass: `disp_per_metropolis` resolves
+  from the model (`nothing` ⇒ 1 joint / 0 pure-spin) via `_resolve_disp_passes`, and
+  a constant default of 0 would make a joint model silently sample the clamped-ion
+  ensemble — plausible spin numbers for the wrong distribution. Checkpoint schema v3
+  carries `disps`/`com_removed`/`step_u`/the six counters/the escape accumulators, so
+  a resume must stay bit-identical on a joint model too;
   (6) **every restriction of the displacement state space must be gauge-invariant**
   (a function of `u_s − ū_c`, not of `u_s`). `_recenter!` is stationarity-preserving
   because the chain is a skew product whose quotient marginal is Markov — an argument
@@ -152,7 +158,9 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   are both silent by construction there (U8).
   Gates: `test_joint.jl` "joint displacement sampling" (exact ΔE against a
   from-scratch recomputation, serial ≡ parallel bitwise, re-centring energy-neutral
-  and per component, pure-spin no-op consuming no randomness).
+  and per component, pure-spin no-op consuming no randomness), "joint drivers: pass
+  scheduling and the second proposal width", and `test_checkpoint.jl` "joint:
+  displacement state survives a resume bit-exactly".
 - **Upstream BREAKING spec keywords ↔ this package's fixtures/benches/docs/assets**:
   `SLCE`'s `BasisSpec` keywords are consumed in `test/unit/fixtures.jl`,
   `bench/fixtures.jl`, `bench/assets/*.toml` (`[interaction]`) and every
@@ -190,18 +198,23 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   `predict_torque` cross-check (`τ = G × e`); an `lm_index` reorder upstream
   breaks them together with the OR axis (previous bullet).
 - **Checkpoint writer ↔ reader ↔ schema doc** (`checkpoint.jl`,
-  `docs/specs/checkpoint-schema.md`): plain-data JLD2 schema v2, Xoshiro capture via
+  `docs/specs/checkpoint-schema.md`): plain-data JLD2 schema v3, Xoshiro capture via
   `fieldnames`, accumulator state. Gate: bit-identical resume (`test_checkpoint.jl`).
   The public `model_fingerprint` facade over `_fingerprint` is pinned by dependent
   packages' checkpoint formats (SLCEDynamics) — changing the mixing changes
   every stored fingerprint (schema-version territory there too).
 - **Observable conventions** (C/χ/U definitions) live in ONE place:
   `docs/specs/binning-observables.md`; `observables.jl` and the guide pages follow it.
+  Since M4 there are **two site counts** and an `Evaluable` must declare which it
+  needs (`scope = :energy` ⇒ `n_active`, `:spin` ⇒ `n_spin_active`). They coincide on
+  every pure-spin model, so a wrong `scope` is invisible until a joint model runs —
+  and then it is a plausible finite number, not a failure. Gate: an Einstein
+  oscillator's `C = 1.5 k_B` per atom.
 - **Coloring ↔ sweeps ↔ stationarity spec** (`hamiltonian.jl` `_color_sites` /
   `color_ptr`/`color_sites`, `updates.jl`, `docs/specs/updates-stationarity.md`
   U1): the sweeps assume every color class is instance-disjoint (exactly
   independent single-site kernels) and bit-determinism for any `sweep_tasks` rests
-  on per-site RNG streams (`ChainState.site_rngs`, checkpoint schema v2) + the
+  on per-site RNG streams (`ChainState.site_rngs`, checkpoint schema v3) + the
   fixed-order ΔE reduction (`_reduce_dE`). Touch the coloring, the sweep loops, or
   the reduction and re-run `test/unit/test_parallel.jl` (serial ≡ parallel `==`).
 - **Device tesseral row ↔ host `_zlm_row!` ↔ upstream recursions**

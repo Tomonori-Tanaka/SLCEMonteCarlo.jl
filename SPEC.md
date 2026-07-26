@@ -23,7 +23,7 @@ ferrimagnetic Nd-vs-Fe order at 250 K.
 | `src/minimize.jl` | `minimize_energy` (on-sphere BB descent), `find_ground_state` (multi-start anneal + polish), `GroundStateResult` |
 | `src/run.jl` | `run_mc` (single T + annealing), `TempResult`, `MCResult` |
 | `src/pt.jl` | `run_pt` (replica exchange over threads), `PTResult` |
-| `src/checkpoint.jl` | JLD2 schema v2, `resume` |
+| `src/checkpoint.jl` | JLD2 schema v3, `resume` |
 | `src/geometry.jl` | `supercell_crystal`, `to_matrix`/`from_matrix` |
 | `src/reduce.jl` | `reduce_cell`/`ReducedCell` — verified re-expression of a supercell-fitted model in a user-chosen smaller cell |
 
@@ -72,7 +72,7 @@ packages' dynamics; bitwise-gated against its lane reference, G7).
 - `docs/specs/updates-stationarity.md` — Metropolis/OR stationarity, adaptive-step freeze
 - `docs/specs/binning-observables.md` — C/χ/U conventions (authoritative), log-binning, jackknife
 - `docs/specs/pt-threads-determinism.md` — lane/RNG discipline, bit-reproducibility
-- `docs/specs/checkpoint-schema.md` — JLD2 schema v2
+- `docs/specs/checkpoint-schema.md` — JLD2 schema v3
 - `docs/specs/cell-reduction.md` — verified reduction to a user-chosen smaller cell
 - `docs/specs/ground-state-search.md` — on-sphere descent, thermal cycling, multi-start determinism
 - `docs/specs/gpu-feasibility.md` — GPU-port assessment: strategy, measured baseline, go/no-go

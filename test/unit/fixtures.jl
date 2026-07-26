@@ -5,6 +5,7 @@ using SLCEMonteCarlo
 using SLCE
 using Spglib: Spglib          # activates SLCE's SpglibBackend extension
 using LinearAlgebra
+using Logging: Logging        # `@test_logs min_level = Logging.Warn`
 using Random
 using StaticArrays
 using Statistics: mean, std

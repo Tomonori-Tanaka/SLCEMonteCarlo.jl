@@ -3,8 +3,8 @@
 
 # Initial width of the Gaussian displacement proposal, in the model's LENGTH units
 # (Å for DFT-fitted models) — a hundredth of a typical bond length, small enough to
-# be accepted from a clamped-ion start. (Not adapted yet — `_adapt_step!` touches only
-# the radian `step`; the displacement adaptation lands with the driver pass scheduling.)
+# be accepted from a clamped-ion start; `_adapt_step!` then takes it to the target
+# acceptance during thermalization, on its own counters and its own (length) clamp.
 # Deliberately not derived from `step` (radians): the two proposals have different
 # dimensions and there is no scale in the Hamiltonian that converts one to the other.
 const _DEFAULT_STEP_U = 0.01
@@ -56,10 +56,11 @@ mutable struct ChainState
     com_removed::Vector{SVector{3,Float64}}
     # escape detector (`_check_escape!`), all measured at renormalization points in the
     # centre-of-mass-free frame
-    disp_rms::Float64                # latest r.m.s. displacement
-    disp_max::Float64                # largest single displacement seen
+    disp_rms::Float64                # latest r.m.s. displacement (a SNAPSHOT)
+    disp_max::Float64                # largest single displacement over the phase
     disp_rms0::Float64               # the first one, for the absolute growth guard
-    disp_checks::Int                 # renormalizations counted
+    disp_checks::Int                 # renormalizations counted in this phase
+    disp_ms_sum::Float64             # Σ rms² over the whole PHASE (⟨|u|²⟩ estimator)
     disp_blk_sum::Float64            # Σ rms² over the block being accumulated
     disp_blk_n::Int
     disp_blk_cap::Int                # its target length (doubles up to _ESCAPE_WINDOW)
@@ -84,7 +85,7 @@ function ChainState(H::TiledHamiltonian, config::SpinConfig, rng::Xoshiro,
     return ChainState(config, u, zrows, _total_energy(H, zrows), rng, site_rngs,
                       Float64(step), Float64(step_u), false, 0, 0, 0, 0, 0, 0, 0.0,
                       zeros(SVector{3,Float64}, H.n_disp_comps),
-                      0.0, 0.0, 0.0, 0, 0.0, 0, 1, 0.0, 0, false)
+                      0.0, 0.0, 0.0, 0, 0.0, 0.0, 0, 1, 0.0, 0, false)
 end
 
 Base.show(io::IO, st::ChainState) =
@@ -195,6 +196,7 @@ function _reset_config!(st::ChainState, H::TiledHamiltonian, config::SpinConfig,
         copyto!(st.disps, _initial_disps(H, disps))
     end
     fill!(st.com_removed, zero(SVector{3,Float64}))
+    _reset_escape!(st)     # a fresh chain is a fresh phase for the detector
     plm = Vector{Float64}(undef, max(0, H.lmax + 1))
     rbuf = Vector{Float64}(undef, max(0, (H.disp_lmax + 1)^2))
     joint = has_disp(H)
@@ -226,14 +228,28 @@ function _freeze_and_reset!(st::ChainState)::ChainState
     st.acc_disp = 0
     st.att_disp = 0
     st.max_drift = 0.0
-    # The escape detector reports the measurement phase only, like `max_drift`: the
-    # growth of a chain still equilibrating from the clamped-ion start is not evidence
-    # of anything, and re-anchoring here is what makes the flat-versus-growing test a
-    # statement about the phase that produces the numbers.
+    _reset_escape!(st)
+    return st
+end
+
+# Re-anchor the escape detector on the phase that is about to start.
+#
+# EVERY phase boundary must call this, not just the thermalization→measurement one:
+# the test is "is the r.m.s. displacement of THIS phase flat", and its anchors
+# (`disp_rms0`, `disp_ref_ms`) are r.m.s. values at the phase's own temperature. A
+# stale anchor from a colder temperature makes a bounded model false-alarm — `rms ∝
+# √T`, so a ladder spanning a factor of 200 in `T` produces a 14× growth that is pure
+# thermodynamics and trips the 10× absolute guard, with a warning text that asserts the
+# model is unnormalizable. The three call sites are `_freeze_and_reset!` (the
+# measurement boundary), the start of each temperature's thermalization, and
+# `_reset_config!` (the `carryover = false` restart); they are one function so they
+# cannot drift apart.
+function _reset_escape!(st::ChainState)::ChainState
     st.disp_rms = 0.0
     st.disp_max = 0.0
     st.disp_rms0 = 0.0
     st.disp_checks = 0
+    st.disp_ms_sum = 0.0
     st.disp_blk_sum = 0.0
     st.disp_blk_n = 0
     st.disp_blk_cap = 1
@@ -393,6 +409,11 @@ function _check_escape!(st::ChainState, H::TiledHamiltonian)::ChainState
     st.disp_rms = rms
     st.disp_max = max(st.disp_max, sqrt(m2))
     st.disp_checks += 1
+    st.disp_ms_sum += rms * rms      # phase total, never reset by the block ladder
+    # Anchored on the first NONZERO r.m.s., not on the first check: a joint chain
+    # started at the clamped-ion `u = 0` and sampled with `disp_per_metropolis = 0`
+    # stays at exactly zero for ever, and a zero anchor would make the ratio test
+    # divide by zero rather than simply never fire.
     st.disp_rms0 <= 0.0 && rms > 0.0 && (st.disp_rms0 = rms)
     st.disp_rms0 > 0.0 && rms > _ESCAPE_ABSOLUTE * st.disp_rms0 &&
         _escape_warn!(st, "has grown by more than $(_ESCAPE_ABSOLUTE)× since the start " *

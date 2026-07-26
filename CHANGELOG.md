@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — the drivers take the displacement channel (M4 slice 3c, part 3)
+
+- **`run_mc` / `run_pt` now sample joint spin–lattice models.** The
+  `_require_spin_only` guard they carried through slice 3c/2 is gone; a compound
+  sweep is one Metropolis spin sweep, then `or_per_metropolis` overrelaxation
+  sweeps, then `disp_per_metropolis` displacement sweeps. Any fixed composition of
+  π-stationary kernels is π-stationary, so the counts are efficiency knobs rather
+  than physics. Decision record: `docs/specs/updates-stationarity.md` U9.
+- **`disp_per_metropolis = nothing`** resolves from the model — `1` on a joint
+  model, `0` on a pure-spin one. A constant default of `0` would sample a joint
+  model at its clamped-ion displacements, a different ensemble, with nothing saying
+  so. Explicitly requesting `0` on a joint model selects that clamped-ion ensemble
+  deliberately; requesting a nonzero count on a pure-spin model is an error, not a
+  no-op. Pure-spin runs are therefore bit-identical to the pre-M4 sampler (the
+  displacement sweep is never entered, so no randomness is consumed).
+- **`step_u` gained its own adaptation** (`run_mc`/`run_pt` keyword, default
+  `0.01`). `_adapt_step!` now drives both proposal widths, each on its own
+  acceptance counters and its own clamp, and returns both. `step`'s clamp is the
+  radian range `(1e-3, π)`; `step_u`'s `(1e-6, 1.0)` is a runaway guard on a
+  length — on an unbounded-below model every displacement proposal is downhill, so
+  an unclamped adaptation would grow the width geometrically and make an escape
+  look like a well-tuned chain.
+- **`run_mc`/`run_pt` gained `disps`** — the chain's initial displacements (a
+  `3 × n_sites` matrix or a vector of 3-vectors, copied verbatim), defaulting to the
+  clamped-ion state.
+
+### Fixed — what lifting the spin-only guard exposed
+
+- **`:specific_heat` was normalized by the wrong site count on a joint model.**
+  `_finalize_stats` handed every evaluable `H.n_spin_active`, which was invisible
+  while the two counts coincided (they do on every pure-spin model). On a joint
+  model the total energy carries the lattice heat capacity — ≈ 1.5 `k_B` per
+  displacement-active site — and on a displacement-only model the count is zero.
+  `Evaluable` now declares a `scope` (`:energy` → `n_active`, `:spin` →
+  `n_spin_active`, default `:spin`) and `standard_evaluables()` marks
+  `:specific_heat` as `:energy`. Gate: an Einstein oscillator's `C = 1.5 k_B` per
+  atom, exactly, at any temperature. Convention doc:
+  `docs/specs/binning-observables.md` B3.
+- **The default observable set produced a table of `NaN`s on a displacement-only
+  model** (every magnetization observable is `0/0` there). `standard_observables(H)`
+  now omits them, and the new `standard_evaluables(H)` — what the drivers default to
+  — drops the evaluables that read them.
+- **The escape detector was re-anchored only at the thermalization→measurement
+  boundary**, so a temperature ladder carried the previous rung's anchor. Its
+  anchors are r.m.s. values and `rms ∝ √T`, so a *bounded* model on
+  `kT = [0.005, 1.0]` false-alarmed with a warning asserting the model is
+  unnormalizable. `_reset_escape!` is now called at every phase boundary — the
+  freeze, each temperature's thermalization entry, and `_reset_config!`.
+- **The block test could not fire at the package defaults.** Three consecutive
+  strikes need 15 renormalization checks in a phase; `sweeps_measure = 10_000` with
+  `renorm_interval = 1_000` gives 10, leaving only the absolute 10× guard — which
+  catches a fast escape and misses a diffusive one. Joint runs below the bar are now
+  warned **up front**, and `TempResult.disp_checks` records what the phase got, so
+  `escaped == false` can be told apart from *not screened*.
+- **A saturated `step_u` clamp was silent** — which is the failure mode the clamp
+  exists to prevent, since on an unbounded model the width pins at the ceiling during
+  thermalization. Both bounds now warn at the freeze boundary, with the acceptance as
+  the discriminator (ceiling + high acceptance ⇒ runaway; floor + low ⇒ frozen
+  channel).
+
+### Changed
+
+- **BREAKING — `TempResult` gained six fields**: `acceptance_disp`, `final_step_u`,
+  `disp_rms`, `disp_max`, `disp_checks`, and `escaped`. `disp_rms` is the phase
+  **average** `√⟨|u|²⟩` (not a snapshot) and `disp_max` an extreme value over the same
+  phase; `disp_checks` is how many observations both rest on, and whether `escaped`
+  means anything. The `MCResult`/`PTResult` summary tables print the displacement
+  columns on a joint run and flag escaped points inline. All are `NaN`/`0`/`false` on
+  a pure-spin model.
+- **BREAKING — `Evaluable` gained a `scope` keyword** (see Fixed above) and
+  `standard_evaluables(H)` was added.
+- **BREAKING — checkpoint schema v2 → v3**: the chain's `disps`, `com_removed`,
+  `step_u`, six acceptance counters and the escape-detector accumulators, plus
+  `plan/disp_per_metropolis` and `plan/step_u0`. `_read_chain` / `_write_chain` no
+  longer refuse a joint Hamiltonian; a joint resume is gated bit-identical for MC
+  and PT alike. v2 files are rejected by the version check (pre-release breaking
+  change). Schema doc: `docs/specs/checkpoint-schema.md`.
+
 ### Added — the displacement sampler (M4 slice 3c, part 2)
 
 - **`displacement_sweep!(st, H, β, sc)`** — one single-site displacement Metropolis

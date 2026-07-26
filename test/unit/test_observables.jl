@@ -43,7 +43,8 @@
             end
         end
         kT = 0.05
-        stats = MC._finalize_stats(accs, standard_evaluables(), kT, H.n_active)
+        stats = MC._finalize_stats(accs, standard_evaluables(), kT, H.n_active,
+                                   H.n_active)
         @test stats[:energy].count == planned
         @test length(stats[:m].mean) == 3
         @test length(stats[:sublattice_m].mean) == 12
@@ -75,16 +76,16 @@
         for _ = 1:64
             MC._measure!(accs[1], config, 0.0, H)
         end
-        stats = MC._finalize_stats(accs, [myev], 1.0, n_sites(H))
+        stats = MC._finalize_stats(accs, [myev], 1.0, n_sites(H), n_sites(H))
         @test stats[:sub1z_sq].mean[1] ≈ 1.0 atol = 1e-12
 
         # guards: missing / non-scalar inputs
         bad = Evaluable(:nope, [:missing_obs], (m, kT, n) -> 0.0)
-        @test_throws ArgumentError MC._finalize_stats(accs, [bad], 1.0, 8)
+        @test_throws ArgumentError MC._finalize_stats(accs, [bad], 1.0, 8, 8)
         vec_obs = Observable(:vec3, 3, (cfg, E, H) -> SVector(1.0, 2.0, 3.0))
         vaccs = [MC.ObsAccumulator(vec_obs, 8, 4)]
         badv = Evaluable(:nope2, [:vec3], (m, kT, n) -> 0.0)
-        @test_throws ArgumentError MC._finalize_stats(vaccs, [badv], 1.0, 8)
+        @test_throws ArgumentError MC._finalize_stats(vaccs, [badv], 1.0, 8, 8)
 
         # a wrongly-declared component count is caught at measurement time
         wrong = Observable(:oops, 2, (cfg, E, H) -> 1.0)
@@ -106,7 +107,7 @@
             end
         end
         stats = MC._finalize_stats(accs, standard_evaluables()[1:1], 0.1,
-                                   n_sites(H))
+                                   n_sites(H), n_sites(H))
         @test stats[:specific_heat].count == 5              # bins actually used
         @test isfinite(stats[:specific_heat].mean[1])
         # and with < 2 bins the evaluable is NaN-guarded
@@ -114,7 +115,8 @@
         for acc in acc1
             MC._measure!(acc, config, 1.0, H)
         end
-        s1 = MC._finalize_stats(acc1, standard_evaluables()[1:1], 0.1, n_sites(H))
+        s1 = MC._finalize_stats(acc1, standard_evaluables()[1:1], 0.1, n_sites(H),
+                                n_sites(H))
         @test isnan(s1[:specific_heat].mean[1])
     end
 end

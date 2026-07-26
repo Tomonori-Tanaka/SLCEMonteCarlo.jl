@@ -42,19 +42,35 @@ exactly zero for inactive sublattices (a frozen random unit vector would look li
 perfect order). The `f(config, energy, H)` signature hands custom observables
 `H.site_active` for the same masking.
 
-Raw set (`standard_observables`): `:energy`, `:energy2` (total, model units, `j0`
-excluded), `:m` (3-vector `Σ_active e / n_active`), `:absm`, `:m2`, `:m4`,
+**Two counts, once displacements exist.** `n_active` counts sites active in
+**either** channel; `n_spin_active` counts the magnetic ones. They coincide on every
+pure-spin model — every member site of an instance carries an axis, and on a pure-spin
+model that axis is a spin — so the distinction was invisible before M4. On a joint
+spin–lattice model it is not: the total energy carries a lattice contribution
+(≈ 1.5 `k_B` per displacement-active site) that no magnetic site accounts for, and a
+displacement-only model has `n_spin_active == 0`. **Energy-derived** quantities
+therefore normalize by `n_active`, **magnetization-derived** ones by `n_spin_active`;
+an `Evaluable` declares which it needs through its `scope` field (`:energy` /
+`:spin`, default `:spin`).
+
+Raw set (`standard_observables(H)`): `:energy`, `:energy2` (total, model units, `j0`
+excluded), `:m` (3-vector `Σ_spin_active e / n_spin_active`), `:absm`, `:m2`, `:m4`,
 `:sublattice_m` (per training-cell atom, cell-averaged 3-vector, flattened).
-Directions only — moment magnitudes (μ_B) are not part of the fitted model.
+Directions only — moment magnitudes (μ_B) are not part of the fitted model. On a model
+with `n_spin_active == 0` the magnetization observables are **omitted** rather than
+measured: every one is `0/0`, and a column of `NaN`s passes every finiteness check a
+caller is likely to write. `standard_evaluables(H)` drops the ones that read them.
 
 Derived (`standard_evaluables`, jackknifed):
 
-- **Specific heat, per active site, in units of k_B**:
+- **Specific heat, per active site, in units of k_B** (`scope = :energy`):
   `C/k_B = (⟨E²⟩ − ⟨E⟩²) / (n_active (k_BT)²)`.
   *Why*: intensive (comparable across `dims`); k_B units avoid eV/K clutter and are
-  the lattice-MC standard.
-- **Susceptibility, |m|-connected, per active site**:
-  `χ = n_active (⟨m²⟩ − ⟨|m|⟩²) / k_BT`.
+  the lattice-MC standard. On a joint model this is the **spin + lattice** heat
+  capacity — the classical harmonic limit alone contributes 3/2 per
+  displacement-active site, which is also the gate (`_einstein_terms`).
+- **Susceptibility, |m|-connected, per spin-active site** (`scope = :spin`):
+  `χ = n_spin_active (⟨m²⟩ − ⟨|m|⟩²) / k_BT`.
   *Why*: on a finite system with continuous symmetry `⟨m⟩ = 0` exactly, so the
   textbook connected form degenerates to `n⟨m²⟩/kT`, which grows ∝ N below T_c
   instead of peaking; the |m|-connected form peaks at the transition in both phases
@@ -67,7 +83,8 @@ Derived (`standard_evaluables`, jackknifed):
 ## B4 — composability
 
 `Observable(name, ncomp, f(config, energy, H))` and
-`Evaluable(name, inputs, f(means::NamedTuple, kT, n_active))` are plain structs the
+`Evaluable(name, inputs, f(means::NamedTuple, kT, n); scope)` are plain structs the
 run drivers accept as vectors — nothing is hard-coded into the sweep (the
-SpinClusterMC pain point). Evaluable inputs must be scalar observables (validated).
+SpinClusterMC pain point). `n` is the count `scope` selects (above). Evaluable inputs
+must be scalar observables (validated).
 Ferrimagnetic order parameters compose from `:sublattice_m` components.

@@ -123,6 +123,38 @@
         @test c.points[1].stats[:energy].mean == full.points[1].stats[:energy].mean
     end
 
+    @testset "joint drivers: sweep_tasks / ntasks bit-identical end-to-end" begin
+        # P6 for the compound sweep that now carries a displacement pass. The sweep
+        # kernel's own serial ≡ parallel gate is in test_joint.jl; this is the driver
+        # level, where the pass scheduling, the second proposal width's adaptation and
+        # (for PT) the payload swap all participate.
+        terms, L = _einstein_terms(2.5)
+        H = MC.TiledHamiltonian(1, terms, L; dims = (2, 2, 2),
+                                fixed_reference = true)
+        obs = [Observable(:energy, 1, (c, E, h) -> E)]
+        kw = (; sweeps_therm = 120, sweeps_measure = 200, nbins = 4,
+              renorm_interval = 40, step_u = 0.3, seed = 99, observables = obs,
+              evaluables = Evaluable[])
+        a = run_mc(H; kT = 0.4, kw..., sweep_tasks = 1)
+        b = run_mc(H; kT = 0.4, kw..., sweep_tasks = 4)
+        @test a.points[1].stats[:energy].mean == b.points[1].stats[:energy].mean
+        @test a.points[1].disp_rms == b.points[1].disp_rms
+        @test a.points[1].acceptance_disp == b.points[1].acceptance_disp
+        @test a.points[1].final_step_u == b.points[1].final_step_u
+        p = run_pt(H; kT = [0.4, 0.3, 0.2], kw..., exchange_interval = 10,
+                   ntasks = 1)
+        q = run_pt(H; kT = [0.4, 0.3, 0.2], kw..., exchange_interval = 10,
+                   ntasks = 3, sweep_tasks = 2)
+        @test p.swap_acceptance == q.swap_acceptance
+        for i = 1:3
+            @test p.points[i].stats[:energy].mean == q.points[i].stats[:energy].mean
+            @test p.points[i].disp_rms == q.points[i].disp_rms
+            @test p.points[i].acceptance_disp == q.points[i].acceptance_disp
+        end
+        # the run really did move the displacements — otherwise this gate is vacuous
+        @test p.points[1].disp_rms > 0.0
+    end
+
     @testset "validation" begin
         H = TiledHamiltonian(_dimer_model())
         @test_throws ArgumentError run_mc(H; kT = 0.1, sweeps_therm = 1,

@@ -13,10 +13,21 @@ function _assert_same_result(a, b)
             @test isequal(pa.stats[k].tau_int, pb.stats[k].tau_int)
             @test pa.stats[k].count == pb.stats[k].count
         end
-        @test pa.acceptance_metropolis == pb.acceptance_metropolis
+        # `isequal`, not `==`: an acceptance is NaN where the move type had no attempt
+        # (a displacement-only model has no spin-active site, and vice versa)
+        @test isequal(pa.acceptance_metropolis, pb.acceptance_metropolis)
         @test isequal(pa.acceptance_or, pb.acceptance_or)
+        @test isequal(pa.acceptance_disp, pb.acceptance_disp)
         @test pa.final_step == pb.final_step
+        @test isequal(pa.final_step_u, pb.final_step_u)
         @test pa.max_drift == pb.max_drift
+        # The displacement state itself is not in the result (the chain's `disps` stay
+        # with the sampler until slice 3d), but these two are exact floats computed
+        # FROM it at the last renormalization — together with the energy statistics
+        # above they pin it as tightly as a direct comparison would.
+        @test isequal(pa.disp_rms, pb.disp_rms)
+        @test isequal(pa.disp_max, pb.disp_max)
+        @test pa.escaped == pb.escaped
     end
 end
 
@@ -132,6 +143,38 @@ end
         d = resume(pp, H)
         @test d.final_configs == c.final_configs
         @test d.swap_acceptance == c.swap_acceptance
+    end
+
+    @testset "joint: displacement state survives a resume bit-exactly" begin
+        # Schema v3's reason for existing. The Einstein oscillator is used rather than
+        # the joint fixture because it is BOUNDED: an escaping chain would reach the
+        # same (wrong) numbers on both paths and prove nothing about the format.
+        terms, L = _einstein_terms(2.5)
+        Hj = TiledHamiltonian(1, terms, L; dims = (2, 2, 1), fixed_reference = true)
+        @test MC.has_disp(Hj)
+        obs = [Observable(:energy, 1, (c, E, h) -> E),
+               Observable(:energy2, 1, (c, E, h) -> E^2)]
+        kw = (; kT = [0.4, 0.25], sweeps_therm = 300, sweeps_measure = 400,
+              nbins = 8, renorm_interval = 50, step_u = 0.3, seed = 5,
+              observables = obs, evaluables = Evaluable[])
+        path = joinpath(dir, "joint.jld2")
+        a = run_mc(Hj; kw...)
+        b = run_mc(Hj; kw..., checkpoint = path, checkpoint_interval = 170)
+        _assert_same_result(a, b)
+        c = resume(path, Hj; observables = obs, evaluables = Evaluable[])
+        _assert_same_result(a, c)
+        # the run really did sample displacements — otherwise the gate above is vacuous
+        @test all(p -> 0.0 < p.acceptance_disp <= 1.0, a.points)
+        @test all(p -> p.disp_rms > 0.0 && p.final_step_u > 0.0, a.points)
+        @test !any(p -> p.escaped, a.points)
+        # PT too: the payload swap moves displacements between lanes, so a resumed
+        # ladder must land every lane on the frame its replica was pinned to
+        pp = joinpath(dir, "joint_pt.jld2")
+        d = run_pt(Hj; kw..., sweeps_therm = 200, sweeps_measure = 200,
+                   exchange_interval = 20)
+        run_pt(Hj; kw..., sweeps_therm = 200, sweeps_measure = 200,
+               exchange_interval = 20, checkpoint = pp, checkpoint_interval = 90)
+        _assert_same_result(d, resume(pp, Hj; observables = obs, evaluables = Evaluable[]))
     end
 
     @testset "schema and mismatch guards" begin

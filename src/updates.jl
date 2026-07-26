@@ -398,17 +398,40 @@ function displacement_sweep!(st::ChainState, H::TiledHamiltonian, β::Float64,
     return nacc[]
 end
 
-# Multiplicative step adaptation toward the target acceptance, on the current
+# Bounds of the displacement proposal width, in the model's LENGTH units. Unlike the
+# rotation's `(1e-3, π)` these are not the extent of the coordinate — displacements are
+# unbounded — so they are a runaway guard, not a range: on an unbounded-below model
+# every displacement proposal is downhill and the acceptance sits near 1, so the
+# adaptation would grow `step_u` geometrically for the whole thermalization and the
+# escape would look like a "successfully adapted" chain. The ceiling is a bond length
+# (Å for a DFT-fitted model), far above any physical thermal amplitude — a chain that
+# reaches it is already reporting through `_check_escape!`.
+const _STEP_U_MIN = 1e-6
+const _STEP_U_MAX = 1.0
+
+# Multiplicative proposal-width adaptation toward the target acceptance, on the current
 # counter window (then resets it). Thermalization only — once `st.frozen` the
 # transition kernel must stay fixed (a history-dependent step is a bias source and
 # breaks bit-reproducible resume), so this is a no-op.
-function _adapt_step!(st::ChainState, target::Float64)::Float64
-    st.frozen && return st.step
+#
+# The two widths are adapted SEPARATELY on their own counters and with their own clamps.
+# They are not interchangeable and never route through each other: `step` is an angle in
+# radians, bounded by the geometry of the sphere; `step_u` is a length in the model's
+# units, with no such bound. Returns both.
+function _adapt_step!(st::ChainState, target::Float64)::Tuple{Float64,Float64}
+    st.frozen && return (st.step, st.step_u)
     if st.att_metro > 0
         a = st.acc_metro / st.att_metro
         st.step = clamp(st.step * exp(0.5 * (a - target)), 1e-3, Float64(π))
     end
+    if st.att_disp > 0
+        a = st.acc_disp / st.att_disp
+        st.step_u = clamp(st.step_u * exp(0.5 * (a - target)), _STEP_U_MIN,
+                          _STEP_U_MAX)
+    end
     st.acc_metro = 0
     st.att_metro = 0
-    return st.step
+    st.acc_disp = 0
+    st.att_disp = 0
+    return (st.step, st.step_u)
 end

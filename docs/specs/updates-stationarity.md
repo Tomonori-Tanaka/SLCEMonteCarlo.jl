@@ -243,17 +243,42 @@ preserves close contacts.
 
 **The detector.** `_check_escape!` runs inside `_renormalize!` — single-threaded,
 fixed-order, deterministically scheduled, hence P6-safe — and compares the
-centre-of-mass-free r.m.s. displacement against its value one *doubling* of the
-observation window ago. A stationary chain holds that ratio at 1.0; free diffusion of a
-flat direction gives `√2 ≈ 1.41`; the measured escape grows `rms ∝ M^1.6`, i.e. `≈ 3.0`
-per doubling. The threshold is 1.7 with two consecutive strikes required, so a chain
-equilibrating from the clamped-ion start does not trip it. Both error rates are gated:
-on an Einstein oscillator (analytic control, below) zero strikes; on the unbounded
-fixture the warning fires well inside the run. Note the false-positive rate is set by
-the effective number of degrees of freedom carrying `⟨|u|²⟩`, **not** by the site count
-— a single dominant soft mode has `ν ≈ 1` at any system size — which is why the blocks
-are averaged and capped rather than doubled indefinitely, and why three strikes are
-required.
+block-averaged mean square of the centre-of-mass-free r.m.s. displacement against the
+previous block's. A stationary chain holds that ratio at 1.0; free diffusion of a flat
+direction gives `√2 ≈ 1.41`; the measured escape grows `rms ∝ M^1.6`, i.e. `≈ 3.0` per
+doubling. The threshold is 1.7 with **three** consecutive strikes required, so a chain
+equilibrating from the clamped-ion start does not trip it, plus an absolute guard at
+10× the first measurement of the phase (growth slower than `2^0.766` per block would
+otherwise accumulate for ever without raising a strike). Blocks double up to
+`_ESCAPE_WINDOW = 16` and then stay that length: with an unbounded doubling ladder the
+comparisons fall at checks 1, 2, 4, 8, …, so an escape starting after a quarter of the
+run never gets two consecutive comparisons — and a *spin-driven* escape (the model
+becomes unbounded only once the spins order) is exactly that case. Both error rates are
+gated: on an Einstein oscillator (analytic control, below) zero strikes over 120 checks;
+on the unbounded fixture the warning fires well inside the run. The false-positive rate
+is set by the effective number of degrees of freedom carrying `⟨|u|²⟩`, **not** by the
+site count — a single dominant soft mode has `ν ≈ 1` at any system size — which is why
+the blocks are averaged rather than compared point-to-point.
+
+**Every phase boundary re-anchors it** (`_reset_escape!`, called from
+`_freeze_and_reset!`, from the start of each temperature's thermalization, and from
+`_reset_config!`). The anchors are r.m.s. values and `rms ∝ √T`, so a ladder that
+carries a cold rung's anchor into a hot one manufactures growth that is pure
+thermodynamics: on the *bounded* Einstein control, `kT = [0.005, 1.0]` produces a 14×
+apparent growth and trips the 10× guard — a false alarm whose text asserts the model is
+unnormalizable. The accumulators survive a checkpoint (schema v3), so a chain written
+often enough still accumulates its strikes, and the verdict reaches the caller as
+`TempResult.escaped` — a warning alone would be lost in a batch log.
+
+**Its power is bounded by the check count, and a run below that is told so.** Blocks
+complete at cumulative checks 1, 3, 7, 15, …, and the first block has no predecessor,
+so `_ESCAPE_STRIKES` consecutive strikes need `_escape_min_checks() = 15` checks in the
+phase. The package defaults (`sweeps_measure = 10_000`, `renorm_interval = 1_000`) give
+10 — below that bar, which would leave only the absolute guard live (catching a fast
+`M^{1.6}` escape and missing a diffusive `M^{0.5}` one, which grows just 3.2× over a
+default measurement phase). `_warn_escape_cadence` says so **up front**, before the run
+is spent, and `TempResult.disp_checks` records what the phase actually got:
+`escaped == false` with too few checks means *not screened*, not *clean*.
 
 **Known limitation.** The one-site gauge refusal catches a lone pure-gauge site. It does
 not catch a site inside a larger component whose coefficient slice is identically zero:
@@ -287,3 +312,52 @@ deliberately; recorded here so the omission is a decision and not an oversight.
 displacement axis. `exp(−βa|u|²)` is an isotropic Gaussian, so `⟨|u|²⟩ = 3kT/(2a)`
 exactly — the displacement sampler's only gate against an external truth rather than
 against its own bookkeeping (measured agreement: 0.54 %).
+
+## U9 — scheduling the displacement pass, and the second proposal width
+
+Status: landed (M4 slice 3c/3). Gates: `test/unit/test_joint.jl` "joint drivers:
+pass scheduling and the second proposal width", `test/unit/test_checkpoint.jl`
+"joint: displacement state survives a resume bit-exactly".
+
+**The composition.** `_compound_sweep!` runs one Metropolis spin sweep, then
+`or_per_metropolis` overrelaxation sweeps, then `disp_per_metropolis` displacement
+sweeps. Each is a Metropolis kernel for the same joint `exp(−βE)`, and any **fixed**
+composition of π-stationary kernels is π-stationary, so the two ratios are efficiency
+knobs and not physics. What is not free is making the schedule depend on the chain's
+history — that is why the counts live in the immutable `UpdatePlan` and not in an
+adaptive rule.
+
+**The default is resolved from the model, not from a constant.** `nothing` ⇒ `1` on a
+joint model and `0` on a pure-spin one. A plain integer default of `0` would be the
+silent-wrong-ensemble trap: a joint model sampled at frozen `u` produces perfectly
+plausible spin statistics for a *different* ensemble, with nothing anywhere saying so.
+The inverse — a nonzero count on a model with no displacement rows — is refused rather
+than treated as a no-op, because it means the caller believes they are sampling
+displacements that this Hamiltonian does not have. Explicitly asking for `0` on a joint
+model is allowed: that is the clamped-ion ensemble, deliberately chosen.
+
+Since `disp_per_metropolis` is 0 on every pure-spin run and `displacement_sweep!` is
+then never entered, the pure-spin RNG consumption — and hence the whole trajectory —
+is bit-identical to the pre-M4 sampler.
+
+**Two widths, never one.** `step` is an angle in radians, bounded by the geometry of
+the sphere (`clamp` to `(1e-3, π)`); `step_u` is a length in the model's units with no
+such bound. They are adapted separately, each on its own acceptance counters, and
+neither is ever routed through the other's clamp — there is no scale in the Hamiltonian
+that converts one to the other. `step_u`'s clamp `(1e-6, 1.0)` is a **runaway guard**,
+not a range: on an unbounded-below model every displacement proposal is downhill, so
+the acceptance sits near 1 and the adaptation would grow the width geometrically for
+the whole thermalization (0.01 → the ceiling in ~14 adaptations), making an escape look
+like a successfully adapted chain. Both widths freeze at the measurement boundary (U6)
+and are reported as `TempResult.final_step` / `final_step_u`.
+
+**A saturated width is announced, because the clamp itself is a silencer.** A clamp
+that quietly absorbs a runaway is the failure U8 is about, so
+`_warn_step_u_saturated` reports at the thermalization boundary whenever `step_u`
+finished pinned at a bound, using the acceptance as the discriminator: at the ceiling
+with an acceptance above target the chain is descending, not equilibrating; at the
+floor with one below it the displacement channel is effectively frozen (and the ΔE is
+being read off a near-cancellation of two nearly equal rows). The ceiling is an
+ångström-scale literal, which is an explicit assumption about the model's length units
+— for a model fitted in other units, set `step_u` accordingly and read the warning as
+the unit check it is.

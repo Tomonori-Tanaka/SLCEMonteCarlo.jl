@@ -9,7 +9,7 @@
 # stored counters, so a resumed run is bit-identical to an uninterrupted one.
 # Writes go to a temp file, then an atomic `mv`. Checkpoint writing consumes no RNG.
 
-const _CKPT_SCHEMA_VERSION = 2
+const _CKPT_SCHEMA_VERSION = 3
 
 # The run-side checkpoint writer: the target path, the write cadence, and the
 # run-description needed to make the file self-contained.
@@ -136,48 +136,71 @@ _config_from_matrix(m::Matrix{Float64})::SpinConfig =
     SpinConfig([SVector{3,Float64}(m[1, s], m[2, s], m[3, s])
                 for s = 1:size(m, 2)])
 
+# A `Vector{SVector{3,Float64}}` as a plain 3 × n matrix (and back). Written for
+# `n == 0` too — a pure-spin chain has no displacement components, and a 3×0 array is
+# the honest encoding of that.
+_vec3_matrix(v::Vector{SVector{3,Float64}})::Matrix{Float64} =
+    [x[row] for row = 1:3, x in v]
+
+_vec3_from_matrix(m::Matrix{Float64})::Vector{SVector{3,Float64}} =
+    [SVector{3,Float64}(m[1, i], m[2, i], m[3, i]) for i = 1:size(m, 2)]
+
 function _write_chain(f, g::String, st::ChainState)
-    # The reader refuses a joint Hamiltonian; refuse at the WRITE end too, so a run
-    # that cannot be resumed fails while it is still cheap to fix rather than at the
-    # resume attempt, after the trajectory is gone.
-    (isempty(st.com_removed) && all(iszero, st.disps)) || throw(ArgumentError(
-        "checkpoint schema v$(_CKPT_SCHEMA_VERSION) stores no displacement state, but " *
-        "this chain carries displacements; it could be written but never resumed"))
     f["$g/config"] = _config_matrix(st.config)
+    f["$g/disps"] = _vec3_matrix(st.disps)
+    f["$g/com_removed"] = _vec3_matrix(st.com_removed)
     f["$g/energy"] = st.energy
     f["$g/rng"] = _rng_words(st.rng)
     f["$g/site_rngs"] = reduce(hcat, [_rng_words(r) for r in st.site_rngs])
     f["$g/step"] = st.step
+    f["$g/step_u"] = st.step_u
     f["$g/frozen"] = st.frozen
-    f["$g/counters"] = Int[st.acc_metro, st.att_metro, st.acc_or, st.att_or]
+    f["$g/counters"] = Int[st.acc_metro, st.att_metro, st.acc_or, st.att_or,
+                           st.acc_disp, st.att_disp]
     f["$g/max_drift"] = st.max_drift
+    # The escape detector's accumulators. They steer no random decision, so a resume
+    # is bit-identical with or without them — but dropping them would restart the
+    # block ladder at every checkpoint, and a chain checkpointed often enough would
+    # never accumulate the consecutive strikes that report an escape.
+    f["$g/escape_f"] = Float64[st.disp_rms, st.disp_max, st.disp_rms0,
+                               st.disp_ms_sum, st.disp_blk_sum, st.disp_ref_ms]
+    f["$g/escape_i"] = Int[st.disp_checks, st.disp_blk_n, st.disp_blk_cap,
+                           st.escape_strikes]
+    f["$g/escape_warned"] = st.escape_warned
     return nothing
 end
 
 function _read_chain(f, g::String, H::TiledHamiltonian)::ChainState
-    # Schema v2 stores no displacement state. Nothing joint can reach the
-    # checkpointer yet (`run_mc`/`run_pt` refuse a displacement Hamiltonian until the
-    # pass scheduling lands), but say so rather than silently resuming at u = 0.
-    _require_spin_only(H, "checkpoint resume (schema v$(_CKPT_SCHEMA_VERSION))")
     config = _config_from_matrix(f["$g/config"])
     length(config) == H.n_sites || error(
         "checkpoint config has $(length(config)) sites; the Hamiltonian has " *
         "$(H.n_sites)")
-    zrows = _zrows(H, config)         # pure function of config — bit-reproducible
+    disps = _vec3_from_matrix(f["$g/disps"])
+    length(disps) == H.n_sites || error(
+        "checkpoint has $(length(disps)) displacements; the Hamiltonian has " *
+        "$(H.n_sites) sites")
+    com = _vec3_from_matrix(f["$g/com_removed"])
+    length(com) == H.n_disp_comps || error(
+        "checkpoint has $(length(com)) re-centring records; the Hamiltonian has " *
+        "$(H.n_disp_comps) displacement-coupling components")
+    # Pure function of (config, disps) — bit-reproducible, so the rows are rebuilt
+    # rather than stored (the energy is NOT: it is the incremental one, restored
+    # verbatim, drift and all).
+    zrows = has_disp(H) ? _zrows(H, config, disps) : _zrows(H, config)
     cnt = f["$g/counters"]
     srw = f["$g/site_rngs"]::Matrix{UInt64}
     size(srw, 2) == H.n_sites || error(
         "checkpoint has $(size(srw, 2)) site RNG streams; the Hamiltonian has " *
         "$(H.n_sites) sites")
     site_rngs = [_rng_from_words(srw[:, s]) for s = 1:H.n_sites]
-    # Pure-spin by the guard above: no displacements, no components to re-centre, and
-    # the displacement proposal width is never read.
-    return ChainState(config, zeros(SVector{3,Float64}, H.n_sites), zrows,
-                      f["$g/energy"], _rng_from_words(f["$g/rng"]), site_rngs,
-                      f["$g/step"], _DEFAULT_STEP_U, f["$g/frozen"], cnt[1], cnt[2],
-                      cnt[3], cnt[4], 0, 0, f["$g/max_drift"],
-                      SVector{3,Float64}[], 0.0, 0.0, 0.0, 0, 0.0, 0, 1, 0.0,
-                      0, false)
+    ef = f["$g/escape_f"]
+    ei = f["$g/escape_i"]
+    return ChainState(config, disps, zrows, f["$g/energy"],
+                      _rng_from_words(f["$g/rng"]), site_rngs, f["$g/step"],
+                      f["$g/step_u"], f["$g/frozen"], cnt[1], cnt[2], cnt[3], cnt[4],
+                      cnt[5], cnt[6], f["$g/max_drift"], com,
+                      ef[1], ef[2], ef[3], ei[1], ef[4], ef[5], ei[2], ei[3], ef[6],
+                      ei[4], f["$g/escape_warned"])
 end
 
 function _write_accs(f, g::String, accs::Vector{ObsAccumulator})
@@ -219,8 +242,14 @@ function _write_point(f, g::String, p::TempResult)
     f["$g/kT"] = p.kT
     f["$g/acceptance_metropolis"] = p.acceptance_metropolis
     f["$g/acceptance_or"] = p.acceptance_or
+    f["$g/acceptance_disp"] = p.acceptance_disp
     f["$g/final_step"] = p.final_step
+    f["$g/final_step_u"] = p.final_step_u
     f["$g/max_drift"] = p.max_drift
+    f["$g/disp_rms"] = p.disp_rms
+    f["$g/disp_max"] = p.disp_max
+    f["$g/disp_checks"] = p.disp_checks
+    f["$g/escaped"] = p.escaped
     f["$g/stat_names"] = String[String(k) for k in keys(p.stats)]
     for (k, s) in p.stats
         f["$g/stats/$k/mean"] = s.mean
@@ -240,7 +269,10 @@ function _read_point(f, g::String)::TempResult
     end
     kt = f["$g/kT"]
     return TempResult(kt, kt / KB_EV, stats, f["$g/acceptance_metropolis"],
-                      f["$g/acceptance_or"], f["$g/final_step"], f["$g/max_drift"])
+                      f["$g/acceptance_or"], f["$g/acceptance_disp"],
+                      f["$g/final_step"], f["$g/final_step_u"], f["$g/max_drift"],
+                      f["$g/disp_rms"], f["$g/disp_max"], f["$g/disp_checks"],
+                      f["$g/escaped"])
 end
 
 function _write_header(f, ck::_Checkpointer)
@@ -257,7 +289,9 @@ function _write_header(f, ck::_Checkpointer)
     f["plan/sweeps_measure"] = p.sweeps_measure
     f["plan/measure_interval"] = p.measure_interval
     f["plan/or_per_metropolis"] = p.or_per_metropolis
+    f["plan/disp_per_metropolis"] = p.disp_per_metropolis
     f["plan/step0"] = p.step0
+    f["plan/step_u0"] = p.step_u0
     f["plan/adapt_target"] = p.adapt_target
     f["plan/adapt_interval"] = p.adapt_interval
     f["plan/renorm_interval"] = p.renorm_interval
@@ -275,7 +309,9 @@ function _read_plan(f)::UpdatePlan
                       sweeps_measure = f["plan/sweeps_measure"],
                       measure_interval = f["plan/measure_interval"],
                       or_per_metropolis = f["plan/or_per_metropolis"],
-                      step = f["plan/step0"], adapt_target = f["plan/adapt_target"],
+                      disp_per_metropolis = f["plan/disp_per_metropolis"],
+                      step = f["plan/step0"], step_u = f["plan/step_u0"],
+                      adapt_target = f["plan/adapt_target"],
                       adapt_interval = f["plan/adapt_interval"],
                       renorm_interval = f["plan/renorm_interval"],
                       nbins = f["plan/nbins"], carryover = f["plan/carryover"],
@@ -366,7 +402,7 @@ end
 """
     resume(path, H::TiledHamiltonian;
            observables = standard_observables(H),
-           evaluables = standard_evaluables(),
+           evaluables = standard_evaluables(H),
            checkpoint = path, checkpoint_interval = nothing)
         -> MCResult | PTResult
 
@@ -381,7 +417,7 @@ overrides).
 """
 function resume(path::AbstractString, H::TiledHamiltonian;
                 observables::Vector{Observable} = standard_observables(H),
-                evaluables::Vector{Evaluable} = standard_evaluables(),
+                evaluables::Vector{Evaluable} = standard_evaluables(H),
                 checkpoint::Union{Nothing,AbstractString} = path,
                 checkpoint_interval::Union{Nothing,Integer} = nothing)
     isfile(path) || throw(ArgumentError("no checkpoint file at $path"))
