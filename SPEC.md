@@ -26,7 +26,7 @@ ferrimagnetic Nd-vs-Fe order at 250 K.
 | `src/pt.jl` | `run_pt` (replica exchange over threads), `PTResult` |
 | `src/checkpoint.jl` | JLD2 schema v3, `resume` |
 | `src/geometry.jl` | `supercell_crystal`, `to_matrix`/`from_matrix` |
-| `src/reduce.jl` | `reduce_cell`/`ReducedCell` — verified re-expression of a supercell-fitted model in a user-chosen smaller cell |
+| `src/reduce.jl` | `reduce_cell`/`ReducedCell{T}` — verified re-expression of a supercell-fitted model (pure-spin `MultipoleTerm` or joint `DecoratedTerm`) in a user-chosen smaller cell |
 
 ## Dependency boundary
 

@@ -169,6 +169,71 @@ function _joint_model(seed = 5; asr::Bool = true)
     return SLCEModel(b, 0.37, jphi), cr
 end
 
+# A joint spin–lattice model whose 2-atom training cell genuinely IS a 2× z-stack of a
+# 1-atom cell — the joint counterpart of `_stacked_chain_model`, and the fixture the
+# `DecoratedTerm` arm of `reduce_cell` needs. The spglib backend sees the half-cell
+# translation, so the SALC orbits are translation-closed and ANY coefficient vector
+# keeps the periodicity; `asr = true` (as in `_joint_model`) then projects onto the
+# acoustic-sum-rule null space so `TiledHamiltonian` accepts the result.
+function _stacked_joint_model(seed = 7)
+    lat = Lattice(Matrix(4.0 * I(3)))
+    cr = Crystal(lat, [0 0; 0 0; 0.0 0.5], [1, 1], ["Fe"])
+    spec = BasisSpec(cr; lmax = 1, pmax = 2, sectors = [
+        Sector(spin = (nbody = 1:2,), cutoff = 2.1),
+        Sector(spin = [1, 1], disp = (degree = 2,), nbody = 2, cutoff = 2.1),
+        Sector(disp = (degree = 2,), nbody = 1:2, cutoff = 2.1)])
+    b = SLCEBasis(cr, spec; backend = SpglibBackend())
+    # same expected warning as `_joint_model`: a few displacement partners of this
+    # small cell fall outside the cutoff, so their columns are structurally zeroed
+    Z = (@test_logs (:warn,) match_mode = :any SLCE.build_asr(b)).Z
+    return SLCEModel(b, 0.0, 0.4 .* (Z * randn(MersenneTwister(seed), size(Z, 2)))), cr
+end
+
+# The general (channel-decorated) counterpart of `_chain_terms`, hand-built on a 1-atom
+# cell so every field of the reduced output can be compared verbatim. Three terms, one
+# per scale case: a pure-spin +x pair `(4π)^1`, a MIXED +x pair (spin on the anchor,
+# displacement on the neighbour) `(4π)^(1/2)`, and a lattice-only well `(4π)^0`. The
+# last two are exactly where the pure-spin-era `(4π)^(body/2)` shortcut would invent a
+# factor from nothing. Not translation-invariant (the well pins the reference), hence
+# `fixed_reference = true` at every tiling.
+function _mixed_chain_terms()
+    L = SLCE.RowLayout(8, 1, 4, [(0, 1), (1, 0)], [4, 7])
+    sp(site) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
+    dp(site, k, l) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.DISP, k, l))
+    z = SVector(0, 0, 0)
+    x = SVector(1, 0, 0)
+    pair = zeros(3, 3)
+    pair[1, 1] = pair[2, 2] = pair[3, 3] = 1.0
+    cross = zeros(3, 3)
+    cross[2, 3] = 0.6
+    cross[1, 1] = -0.25
+    return [DecoratedTerm(-0.03, (4π)^1, 2, [1, 1], [z, x], [sp(1), sp(2)], pair),
+            DecoratedTerm(0.11, (4π)^0.5, 2, [1, 1], [z, x], [sp(1), dp(2, 0, 1)],
+                          cross),
+            DecoratedTerm(1.7, 1.0, 1, [1], [z], [dp(1, 1, 0)], [1.0])], L
+end
+
+# A 3-body mixed-channel chain `(0, +x, +2x)` on a 1-atom cell: two spin axes and one
+# displacement axis, on three DIFFERENT sites, with a deliberately non-symmetric rank-3
+# tensor. Its whole reason to exist is that a ≤ 2-body cluster's site permutation is
+# always an involution — `invperm(p) == p` — so no other fixture in the suite can tell
+# the two relabel directions apart. Unfolded onto a 3× cell and canonicalized, two of
+# the three translation copies come back as genuine 3-cycles.
+function _threebody_mixed_terms()
+    L = SLCE.RowLayout(7, 1, 4, [(0, 1)], [4])
+    sp(site) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
+    dp(site) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.DISP, 0, 1))
+    z = SVector(0, 0, 0)
+    x = SVector(1, 0, 0)
+    folded = zeros(3, 3, 3)
+    folded[1, 2, 3] = 1.0
+    folded[2, 3, 1] = -0.4
+    folded[3, 1, 1] = 0.25
+    folded[2, 2, 2] = 0.7
+    return [DecoratedTerm(0.05, (4π)^1.0, 3, [1, 1, 1], [z, x, 2 * x],
+                          [sp(1), sp(2), dp(3)], folded)], L
+end
+
 # An Einstein oscillator: one atom per cell in an isotropic harmonic well `E = a|u|²`,
 # hand-built as a single rank-1 displacement axis with `(k, l) = (1, 0)` — the factor is
 # `|u|^{2} R_{0,0}(u)` and `R_{0,0} ≡ 1`. Deliberately NOT translation-invariant (the
@@ -220,7 +285,6 @@ _disp_matrix(disps) = reduce(hcat, [Vector(u) for u in disps])
 _tile_disps(H::MC.TiledHamiltonian, cell_disps) =
     [cell_disps[MC.site_atom(H, s)] for s = 1:H.n_sites]
 
-# Random unit spin from `rng` (Gaussian-normalized — uniform on S²).
 # An `MCView` the way the run drivers build one, for tests that call an observable
 # directly. `disps === nothing` means the clamped-ion state (and on a pure-spin
 # Hamiltonian the view's own constructor empties it either way).
@@ -228,6 +292,7 @@ _view(H::MC.TiledHamiltonian, config::MC.SpinConfig, E::Real = 0.0; disps = noth
     MCView(H, config,
            disps === nothing ? zeros(SVector{3,Float64}, n_sites(H)) : disps, E)
 
+# Random unit spin from `rng` (Gaussian-normalized — uniform on S²).
 _rand_spin(rng) = normalize(SVector{3,Float64}(randn(rng), randn(rng), randn(rng)))
 
 # Random configuration on the sites of `H`.

@@ -176,17 +176,33 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   upstream breaks the OR axis. Gate: pure-l=1 OR proposals have `ΔE ≡ 0` and
   acceptance 1 (`test_overrelaxation.jl`).
 - **`reduce.jl` ↔ `hamiltonian.jl` tiling ↔ `geometry.jl` ordering ↔ SLCE's
-  canonical members**: `reduce_cell` emits raw-coefficient `MultipoleTerm`s (the
-  `(4π)^(body/2)` scale still happens once, in the `TiledHamiltonian` ctor),
+  canonical members**: `reduce_cell` emits raw-coefficient terms (the `(4π)`
+  scale still happens once, in the `TiledHamiltonian` ctor),
   anchored `shifts[1] = 0`, and a reduced `Crystal` whose atom order matches
   `site_index` so `supercell_crystal(red.crystal, dims)` pairs with
   `TiledHamiltonian(red; dims)`. Translation copies are grouped in **canonical
-  site order** (sorted `(reduced atom, shift)`, re-anchored, `ls`/`folded`
-  permuted along) because canonical model terms carry one summand per instance,
-  anchored wherever sorting put it; the census accepts `q·|det M|` copies for
-  `q` identical summands per instance. The invariance and verification contract
-  lives in `docs/specs/cell-reduction.md`. Gates: `test_reduce.jl` (exact
-  canonical-form recovery, energy identity via site permutation).
+  site order** (sorted `(reduced atom, shift)`, re-anchored, axis labels and
+  `folded` permuted along) because canonical model terms carry one summand per
+  instance, anchored wherever sorting put it; the census requires the same `q`
+  copies **in every coset** (labelled by `mod.(adj(M)·σ₁, nc)`, a complete
+  integer invariant) — a total divisible by `|det M|` is not enough, since a
+  class living in one coset satisfies it and would be emitted into every reduced
+  cell. `ReducedCell{T}` mirrors the
+  term surface it was fed: a joint model reduces as `DecoratedTerm`, where the
+  site sort **also** relabels each slot's site and re-sorts the slots into
+  canonical `(channel, site, k, l)` order (`folded` axes carried by
+  `permutedims`), the reduction carries the model's `RowLayout`, and `scale` is
+  taken from the representative **verbatim** — never re-derived from the cluster
+  shape, which is exactly SLCE design-record §13 risk 3. `reduce_cell(model, …)`
+  picks the arm by the same `isempty(row_layout(model).disp_factors)` test
+  `TiledHamiltonian(model)` uses, so the pure-spin path stays byte-identical.
+  The invariance and verification contract lives in
+  `docs/specs/cell-reduction.md`. Gates: `test_reduce.jl` (exact canonical-form
+  recovery, energy identity via site permutation, the `(4π)^(n_spin_slots/2)`
+  pin on a hand-built mixed-channel list, a **3-body** 3-cycle case — the only
+  shape that can tell `invperm(perm)` from `perm`, since every ≤ 2-body site
+  permutation is an involution — and a pinned non-vacuity count that the
+  slot-permutation path actually fires).
 - **`energy.jl` `_site_grad` ↔ `site_gradient` ↔ `energy_gradient!` ↔
   `minimize.jl` `_gradient!`**: one per-site gradient kernel (`_site_grad`) backs
   the public all-site `energy_gradient!` (the field/torque entry point for

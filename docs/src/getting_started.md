@@ -60,8 +60,10 @@ out = supercell_crystal(red.crystal, (6, 6, 6))     # matching geometry for I/O
 
 The chosen cell need not be primitive (a bcc *conventional* cube under a
 primitive-compatible model is fine), and non-diagonal relations between the two
-cells are supported. Details and the verification contract:
-`docs/specs/cell-reduction.md`.
+cells are supported. Joint spin–lattice models reduce too — the reduced cell then
+carries the model's row layout, so `TiledHamiltonian(red; dims)` is a joint
+Hamiltonian and `total_energy(H, config, disps)` applies as usual. Details and the
+verification contract: `docs/specs/cell-reduction.md`.
 
 ## An annealing run and a parallel-tempering run
 

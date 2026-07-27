@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — cell reduction for joint models (M4 slice 3e)
+
+- **`reduce_cell` accepts joint spin–lattice models.** The verified re-expression of a
+  supercell-fitted Hamiltonian in a user-chosen smaller cell — the mechanism that
+  decouples the finite-size-scaling grid from the fitting cell — was pure-spin only:
+  it read the model through `multipole_terms`, which now refuses a basis with a
+  displacement sector. It reduces through `SLCE.DecoratedTerm` instead, so a joint
+  model can be tiled at any reduced-cell multiple, and
+  `reduce_cell(crystal, terms, layout, sub_lattice)` takes a hand-built decorated list.
+- **`ReducedCell{T}`** is now parameterized on the term type and carries a `layout`
+  field: `ReducedCell{MultipoleTerm}` with `layout === nothing` (the row numbering is
+  derived from the terms, exactly as before M4), `ReducedCell{DecoratedTerm}` with the
+  model's `SLCE.RowLayout` — a slot's `(channel, k, l)` can only be placed by the
+  numbering the model itself defines. `TiledHamiltonian(red; dims)` dispatches on that
+  and now forwards `fixed_reference`.
+- **What generalizes, and what does not.** A pure-spin term's tensor axis *is* its
+  site; a decorated term's is a slot, several may share a site, and `folded`'s axes are
+  slots. The canonical anchored form therefore applies the site sort to `atoms`/`shifts`
+  and — through `invperm` — to every slot's site, then re-sorts the slots into canonical
+  `(channel, site, k, l)` order with `folded` carried by `permutedims`. The physics is
+  unchanged: a lattice translation moves no displacement vector and rotates no spin, so
+  orbit members still share `coef`, `scale` and the aligned `folded` exactly.
+- **`scale` is carried verbatim, never re-derived.** Deriving it from `length(atoms)`
+  is precisely the silent mis-scaling `DecoratedTerm.scale` exists to prevent — on the
+  fixture, two of three hand-built terms have a `scale` that `(4π)^(body/2)` gets
+  wrong. Every copy on one anchored key must declare the identical value, reported as
+  its own error (two spellings of one number — `sqrt(4π)` vs `(4π)^0.5` — are 1 ulp
+  apart and would otherwise surface as a periodicity failure). Deliberately not
+  checked: whether the declared value follows the rule at all, since
+  `TiledHamiltonian` treats the field as declared data too.
+
+### Fixed — the periodicity census was weaker than its own contract
+
+- **`reduce_cell` now verifies the translation copies per coset, not in total.** The
+  census demanded `count % |det M| == 0`, which a class living in a *single* coset
+  satisfies: four copies of one term all anchored in the same coset of a `|det M| = 4`
+  reduction passed, and were emitted as one representative — that is, as a term sitting
+  in *every* reduced cell. A different Hamiltonian, silently. It now requires the same
+  count `q` in **each** coset, with the coset read off the absolute anchor by exact
+  integer arithmetic (`mod.(adj(M)·σ₁, |det M|)`, a complete invariant of `σ + Mℤ³`).
+  Not reachable from a fitted model's own term list; reachable by stitching two lists
+  together — and "verified, never assumed" is the entire claim of this function.
+- Degenerate hand-built terms now raise `ArgumentError` instead of escaping as a
+  `BoundsError` (a body-0 term) or a `DimensionMismatch` (a `folded` extent that
+  disagrees with its axis's `l`).
+- Gated by: exact field-for-field recovery of a hand-built mixed-channel chain through
+  unfold → reduce, with the `(4π)^(n_spin_slots/2)` pin re-derived from each term's own
+  slot list; a **3-body** mixed chain whose translation copies are genuine 3-cycles —
+  the only shape that can distinguish `invperm(perm)` from `perm`, every ≤ 2-body site
+  permutation being an involution, which is why the rest of the suite (all 2-body)
+  cannot gate the new relabel; a non-diagonal `M` carrying a displacement axis; a fitted
+  joint model reduced 2× against `predict_energy` and a non-commensurate tiling, plus an
+  **odd** reduced-cell count; a pinned non-vacuity count (exactly 29 of that model's 62
+  terms need both permutations); and the refusals — broken coefficient, lopsided cosets,
+  scale disagreement, body vs `atoms`, `folded` rank and extent, out-of-cluster slot
+  site, and the `ReducedCell` constructor's own two invariants.
+
 ### Added — displacement observables and the harmonic screen (M4 slice 3d)
 
 - **`MCView`** — the single argument every [`Observable`](@ref) now receives

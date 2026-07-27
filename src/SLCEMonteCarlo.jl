@@ -17,9 +17,12 @@ numerically with
 [`find_ground_state`](@ref) (multi-start annealing + polish).
 
 The fitted model is read **only** through `SLCE`'s public introspection surface
-(`multipole_terms`, `n_atoms`, `intercept`, `SLCE.Harmonics`); the per-term
-`(4π)^(body/2)` scale is applied exactly once, in the [`TiledHamiltonian`](@ref)
-constructor. Temperatures are absolute, under exactly one of two keywords:
+(`decorated_terms`, `row_layout`, `restrict`, `multipole_terms`, `n_atoms`,
+`intercept`, `SLCE.Harmonics`); the per-term scale — the general
+`(4π)^(n_spin_slots/2)` a `DecoratedTerm` carries as a field, which reduces to
+`(4π)^(body/2)` on the frozen pure-spin surface — is applied exactly once, in the
+[`TiledHamiltonian`](@ref) constructor, and is never re-derived from the cluster shape.
+Temperatures are absolute, under exactly one of two keywords:
 `temperature` [kelvin, converted with [`KB_EV`](@ref)] or `kT` [model energy units].
 """
 module SLCEMonteCarlo
