@@ -535,3 +535,36 @@ The cross-backend agreement is the gate G3(b) actually promises — Box–Muller
 accept test go through backend libm, so bitwise identity is not available there. That
 the acceptance rates match to three digits says the two trajectories stay very close
 in practice regardless.
+
+**Production-scale pure-spin bit-identity across the M4 refactor — PASSED**
+(2026-07-27, kugui `i1accs` job 867872, same A100 and toolchain as above). The
+stash/restore comparisons run during the slices establish bit-identity on the small
+CI fixtures under the CPU backend; this closes the two gaps at once — production
+scale and the CUDA backend. One job ran the same script twice on one device, first
+against a worktree at the last pre-slice-3b commit (`c53d6cc`) and then against
+`d95b00d`, both developing the *current* SLCE, and hashed the trajectory (`config`,
+`zrows`, `energy`) after 10 sweeps of the l044 model tiled to 8³ (70680 multipole
+terms, 34816 sites of which 32768 active, 38 colors, `nlm` 9, β = 20):
+
+| | pre-M4 `c53d6cc` | HEAD `d95b00d` |
+|---|---|---|
+| `E0` | 4.3539259991380765 | 4.3539259991380765 |
+| per-sweep accepts | `[27819, 26643, 25983, 25502, 25166, 24775, 24620, 24389, 24023, 23827]` | identical, all ten |
+| accept total | 252747 / 327680 | 252747 / 327680 |
+| final energy | −943.00514527549615 | −943.00514527549615 |
+| trajectory hash | 477324721773528940 | 477324721773528940 |
+| drift | 2.501e-10 (ok) | 2.501e-10 (ok) |
+| ms/sweep | 362.85 | 361.85 |
+
+`E0` matching to the last digit is the narrower claim worth stating separately: the
+current `TiledHamiltonian(model; dims)` routes a pure-spin layout through
+`multipole_terms(restrict(model, :spin))` where pre-M4 called `multipole_terms(model)`
+directly, so this is the evidence that `restrict` is a true no-op on a basis that is
+already pure spin. The hash then covers everything downstream — the channel-split
+color schedule, the widened `Val(NROWS)` trial-row buffer with its zero-filled
+displacement half, and `_entry_walk_partial`'s row range in the degenerate
+`lo:hi = 1:nlm` case. The script is deliberately written against pre-M4 API only
+(`TiledHamiltonian(model; dims)` with no `fixed_reference`, no `GPUChainState.disps`)
+so one file runs unchanged on both trees; it is a one-off validation artifact and is
+not committed. Timing says the joint plumbing costs the pure-spin path nothing
+measurable.
