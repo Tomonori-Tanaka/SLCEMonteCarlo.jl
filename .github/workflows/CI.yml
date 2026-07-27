@@ -59,6 +59,53 @@ jobs:
           TEST_MODE: all
           JULIA_NUM_THREADS: "4"
 
+  downstream:
+    name: downstream — SLCEDynamics.jl
+    runs-on: ubuntu-latest
+    steps:
+      # The mirror of SLCE.jl's `downstream` job, and the direction that actually
+      # matters for this package. SLCE's job runs its dependents when SLCE changes;
+      # nothing ran them when THIS package changed — and the incident that motivated
+      # the whole arrangement (SLCEDynamics' main broken against the `MCView`
+      # contract for days) originated here, on the MonteCarlo side. A job that only
+      # covers the upstream direction would have missed it.
+      #
+      # SLCEDynamics is the only dependent: SLCETools depends on SLCE alone, so its
+      # absence here is deliberate, not an oversight.
+      #
+      # A deliberate breaking change turns this red until the SLCEDynamics commit
+      # lands. That red is the signal — do not delete the job for a green tick.
+      - uses: actions/checkout@v4
+        with:
+          path: SLCEMonteCarlo.jl
+      - uses: actions/checkout@v4
+        with:
+          repository: Tomonori-Tanaka/SLCE.jl
+          path: SLCE.jl
+      - uses: actions/checkout@v4
+        with:
+          repository: Tomonori-Tanaka/SLCEDynamics.jl
+          path: SLCEDynamics.jl
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - uses: julia-actions/cache@v2
+      - name: Develop the path dependencies and instantiate
+        run: |
+          julia --project=SLCEDynamics.jl -e '
+            using Pkg
+            Pkg.develop([PackageSpec(path = "SLCE.jl"),
+                         PackageSpec(path = "SLCEMonteCarlo.jl")])
+            Pkg.instantiate()'
+      # Default TEST_MODE on Linux only: this is the compatibility smoke, and
+      # SLCEDynamics' own CI carries the full TEST_MODE=all matrix across both
+      # operating systems. Threads still pinned — its determinism gates lean on this
+      # package's any-task-count bit-identity contract, vacuous at one thread.
+      - name: Run SLCEDynamics' suite against this commit
+        run: julia --project=SLCEDynamics.jl -e 'using Pkg; Pkg.test()'
+        env:
+          JULIA_NUM_THREADS: "4"
+
   docs:
     name: documentation build
     runs-on: ubuntu-latest
