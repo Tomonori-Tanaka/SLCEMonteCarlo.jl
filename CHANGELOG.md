@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — device displacement rows (M4 slice 3f/1)
+
+- **`_solid_row_device!` / `_disp_rows_device!`** (`src/gpu/disp_device.jl`) — the
+  displacement-channel counterpart of the device tesseral row, the first piece of the
+  GPU port of the displacement channel. Unlike the tesseral case this is a
+  near-verbatim copy rather than an operation-order transcription: the upstream
+  `SLCE.SolidHarmonics._solid_harmonics_impl!` is already pure scalar arithmetic with
+  no throws and no allocation, so only the gradient half and the `lmax` validation are
+  dropped and `lmax` is lifted to a `Val` for static stack buffers.
+- **The bitwise scope shrinks, deliberately** (decision record G8). The solid-harmonic
+  row is gated bitwise against upstream. The `|u|^{2k}` prefactor is not: `r2 =
+  dot(u, u)` is a mul-add chain whose last bit depends on LLVM's FP-contraction
+  decision, which differs between a host function that *calls* the harmonic batch and
+  a device function that *inlines* it (as a kernel requires) — ~22 % of random `u`, one
+  ulp, amplified by the exponent; reordering and an explicit `muladd` transcription
+  both fail to remove it. A single shared `r2` would fix it but is an upstream
+  `SLCE.site_rows!` convention change, and bitwise identity here buys **test
+  sharpness, not accuracy**: one ulp is relative 1e-16 against MC statistical errors of
+  ~1e-3, and the gates that catch bugs (kernel ≡ keyed reference, serial ≡ parallel)
+  are device-vs-device and stay bitwise. What is lost is G4's "the renormalization host
+  round-trip is seam-free" on `k ≥ 1` blocks, already covered by the drift gate.
+- Gated by: bitwise equality with `SLCE.SolidHarmonics.solid_harmonics!` over
+  `lmax = 0:6` × (`u = 0`, axes, eight decades of magnitude, 2000 seeded), both
+  directly and through a KA-CPU kernel; `_disp_rows_device!` bitwise on every `k = 0`
+  row and within `kmax + 1` ulp elsewhere, over three layouts spanning the `(k, l)`
+  block structure; the `u = 0` exactness of the polynomial form; `_disp_layout_tables`
+  against the layout it flattens; and a pure-spin layout as a no-op.
+
 ### Added — cell reduction for joint models (M4 slice 3e)
 
 - **`reduce_cell` accepts joint spin–lattice models.** The verified re-expression of a

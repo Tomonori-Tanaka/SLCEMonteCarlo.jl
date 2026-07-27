@@ -18,6 +18,18 @@ end
     @inbounds MC._grad_zlm_row_device!(view(out, :, i), dirs[i], Val(LMAX))
 end
 
+@kernel function _test_solid_kernel!(out, us, ::Val{LMAX}) where {LMAX}
+    i = @index(Global, Linear)
+    @inbounds MC._solid_row_device!(view(out, :, i), us[i], Val(LMAX))
+end
+
+@kernel function _test_disprow_kernel!(out, buf, us, @Const(fk), @Const(fl),
+                                       @Const(fs), ::Val{DLMAX}) where {DLMAX}
+    i = @index(Global, Linear)
+    @inbounds MC._disp_rows_device!(view(out, :, i), view(buf, :, i), us[i], fk, fl,
+                                    fs, Val(DLMAX))
+end
+
 # Fresh (H, ChainState, GPU pair) on the CPU backend with a seeded random config.
 function _gpu_setup(H; seed_cfg = 7, seed_dev = UInt64(0xc0ffee), step = 0.6)
     rng = Xoshiro(seed_cfg)
@@ -124,6 +136,141 @@ end
         end
         @test ok_kernel
     end
+end
+
+@testset "gpu: device solid-harmonic row ≡ SolidHarmonics (bitwise)" begin
+    # Displacements, NOT directions: the solid harmonics are homogeneous polynomials
+    # with no normalization, so magnitude is part of the input space. u = 0 is in the
+    # set because that is where the whole polynomial form earns its keep (a `Z_lm`-style
+    # kernel would divide by |u| there).
+    rng = Xoshiro(4242)
+    us = SVector{3,Float64}[SVector(0.0, 0.0, 0.0),
+                            SVector(0.0, 0.0, 0.3), SVector(0.0, 0.0, -0.3),
+                            SVector(0.25, 0.0, 0.0), SVector(0.0, -0.25, 0.0),
+                            SVector(1e-9, 0.0, 0.0), SVector(0.0, 0.0, 12.0)]
+    for _ = 1:2000
+        amp = exp(4 * randn(rng) - 2)          # magnitudes over ~8 decades
+        push!(us, amp .* SVector{3,Float64}(randn(rng), randn(rng), randn(rng)))
+    end
+
+    for lmax = 0:6
+        n = (lmax + 1)^2
+        ref = zeros(n)
+        got = zeros(n)
+        ok_direct = true
+        for u in us
+            SLCE.SolidHarmonics.solid_harmonics!(ref, lmax, u)
+            MC._solid_row_device_dyn!(got, u, lmax)
+            ok_direct &= got == ref
+        end
+        @test ok_direct
+
+        # …and through an actual KA-CPU kernel
+        out = zeros(n, length(us))
+        kern = _test_solid_kernel!(CPU())
+        kern(out, us, Val(lmax); ndrange = length(us))
+        KernelAbstractions.synchronize(CPU())
+        ok_kernel = true
+        for (i, u) in enumerate(us)
+            SLCE.SolidHarmonics.solid_harmonics!(ref, lmax, u)
+            ok_kernel &= view(out, :, i) == ref
+        end
+        @test ok_kernel
+    end
+    @test_throws ArgumentError MC._solid_row_device_dyn!(zeros(64), us[2], 7)
+
+    # u = 0: R_00 = 1 and every l ≥ 1 row exactly zero (the polynomial form's point)
+    z0 = zeros(9)
+    MC._solid_row_device_dyn!(z0, SVector(0.0, 0.0, 0.0), 2)
+    @test z0[1] == 1.0 && all(iszero, view(z0, 2:9))
+end
+
+@testset "gpu: device displacement rows ≡ host _disp_rows! (bitwise)" begin
+    # Three layouts spanning the k/l block structure: the k = 0 dipole alone, the
+    # `pmax = 2` set (a radial trace channel next to l = 1, 2), and a k = 2 block —
+    # the one whose `r2^k` prefactor is a genuine libm `pow` (the determinism-scope
+    # boundary documented in disp_device.jl).
+    layouts = [SLCE.RowLayout(7, 1, 4, [(0, 1)], [4]),
+               SLCE.RowLayout(13, 1, 4, [(0, 1), (0, 2), (1, 0)], [4, 7, 12]),
+               SLCE.RowLayout(13, 1, 4, [(0, 1), (1, 2), (2, 0)], [4, 7, 12])]
+    rng = Xoshiro(909)
+    us = SVector{3,Float64}[SVector(0.0, 0.0, 0.0), SVector(0.4, 0.0, 0.0)]
+    for _ = 1:500
+        push!(us, 0.5 .* SVector{3,Float64}(randn(rng), randn(rng), randn(rng)))
+    end
+
+    for L in layouts
+        dlmax = maximum(l for (_, l) in L.disp_factors)
+        fk, fl, fs = MC._disp_layout_tables(L)
+        @test fk == Int32[k for (k, _) in L.disp_factors]
+        @test fl == Int32[l for (_, l) in L.disp_factors]
+        @test fs == Int32.(L.disp_starts)
+        # the host reference reads its layout off a TiledHamiltonian, so borrow one
+        # whose layout is exactly `L` (a single well-formed term is enough — the row
+        # filler only ever reads `H.layout` and `H.disp_lmax`)
+        H = MC.TiledHamiltonian(1, [MC.ScaledTerm(1.0, [1], [SVector(0, 0, 0)],
+                                                  [MC.TermSlot(1, Int(fs[1]),
+                                                               Int(fl[1]), false)],
+                                                  ones(2 * Int(fl[1]) + 1))], L;
+                                fixed_reference = true)
+        @test H.layout == L && H.disp_lmax == dlmax
+
+        # Rows of a k = 0 block carry no `|u|^{2k}` prefactor and are bitwise; a
+        # k ≥ 1 block's prefactor is `r2^k`, and `r2` is where the two sides can
+        # disagree in the last ulp — see the DETERMINISM SCOPE note in
+        # disp_device.jl: the host computes it in a function where the harmonic
+        # batch is a separate call, the device inlines the batch, and LLVM's
+        # FP-contraction/CSE decisions then differ. Measured on this machine:
+        # ~22 % of random `u` differ by exactly 1 ulp in those rows.
+        k0rows = Int[]
+        for (i, (k, l)) in pairs(L.disp_factors), m = -l:l
+            k == 0 && push!(k0rows, L.disp_starts[i] + m + l + 1)
+        end
+        ref = zeros(L.nrows)
+        got = zeros(L.nrows)
+        rbuf = zeros((dlmax + 1)^2)
+        gbuf = zeros((dlmax + 1)^2)
+        ok_exact = true
+        worst = 0.0
+        for u in us
+            fill!(ref, 0.0)
+            fill!(got, 0.0)
+            MC._disp_rows!(ref, H, u, rbuf)
+            MC._disp_rows_device_dyn!(got, gbuf, u, fk, fl, fs, dlmax)
+            ok_exact &= view(got, k0rows) == view(ref, k0rows)
+            for r = 1:L.nrows
+                d = abs(got[r] - ref[r])
+                d == 0.0 && continue
+                worst = max(worst, d / eps(abs(ref[r])))
+            end
+        end
+        @test ok_exact                          # every k = 0 row, bitwise
+        # k ≥ 1 rows: one ulp in `r2`, amplified by the exponent (`r2^k` multiplies
+        # the relative error by k), plus the product's own rounding
+        kmax = maximum(k for (k, _) in L.disp_factors)
+        @test worst <= kmax + 1
+        @test any(!iszero, got)                 # not vacuously all-zero
+
+        out = zeros(L.nrows, length(us))
+        buf = zeros((dlmax + 1)^2, length(us))
+        kern = _test_disprow_kernel!(CPU())
+        kern(out, buf, us, fk, fl, fs, Val(dlmax); ndrange = length(us))
+        KernelAbstractions.synchronize(CPU())
+        ok_kernel = true
+        for (i, u) in enumerate(us)
+            fill!(ref, 0.0)
+            MC._disp_rows!(ref, H, u, rbuf)
+            ok_kernel &= view(out, k0rows, i) == view(ref, k0rows)
+        end
+        @test ok_kernel
+    end
+
+    # A pure-spin layout has no displacement blocks and the filler is a no-op.
+    fk0, fl0, fs0 = MC._disp_layout_tables(MC._spin_row_layout(2))
+    @test isempty(fk0) && isempty(fl0) && isempty(fs0)
+    rows0 = fill(7.0, 9)
+    MC._disp_rows_device_dyn!(rows0, zeros(1), SVector(0.1, 0.2, 0.3), fk0, fl0, fs0, 0)
+    @test all(==(7.0), rows0)
 end
 
 @testset "gpu: direct-ΔE entry walk vs site_coeffs!+delta_energy" begin

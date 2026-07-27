@@ -278,6 +278,17 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   functions (a normalization, a recursion reorder, an SLCE `Harmonics`
   edit) breaks the dense bitwise gate in `test/unit/test_gpu.jl` — update the
   device file together with it.
+- **Device displacement rows ↔ host `_disp_rows!` ↔ `SLCE.SolidHarmonics`**
+  (`src/gpu/disp_device.jl`, G8): `_solid_row_device!` copies
+  `_solid_harmonics_impl!` (already device-safe scalar arithmetic — only the
+  gradient half is dropped) and IS gated bitwise; `_disp_rows_device!` adds the
+  `|u|^{2k}` prefactor and is bitwise only on `k = 0` rows. The `k ≥ 1` gap is
+  one ulp of `r2 = dot(u, u)`, whose FMA contraction differs between a host
+  function that calls the harmonic batch and a device function that inlines it —
+  an accepted scope reduction (G8), NOT a bug to fix by touching upstream
+  `SLCE.site_rows!`. Bug-catching bitwise-ness is preserved because kernel and
+  keyed reference both call the SAME device row. Change the upstream recurrences
+  or `_disp_rows!`'s block loop → update this file and the ulp bound together.
 - **GPU kernel ↔ keyed reference ↔ slot map ↔ workgroup-size pin**
   (`src/gpu/gpu_sweep.jl`, `src/gpu/philox.jl`, `docs/specs/gpu-prototype.md`
   G2–G4): `_metro_kernel!` and `_metropolis_sweep_keyed_ref!` implement ONE

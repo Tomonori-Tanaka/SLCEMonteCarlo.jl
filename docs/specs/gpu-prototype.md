@@ -262,3 +262,42 @@ all-site, tangent-projected `G[s] = ∂E/∂e_s`, the device twin of the host
   compile-time MethodError (`a9ff0e4`); the KA-CPU gates cannot see this class
   (their `@index` returns Int) — device-only smoke stays mandatory after any
   kernel-adjacent change.
+
+## G8 — phase 3: the displacement channel (`src/gpu/disp_device.jl`, M4 slice 3f)
+
+**Device rows (3f/1).** `_solid_row_device!` replicates
+`SLCE.SolidHarmonics.solid_harmonics!`; `_disp_rows_device!` then applies the
+layout's `(k, l)` blocks with the `|u|^{2k}` prefactor, the device twin of
+`_disp_rows!`. Unlike the tesseral case this is a near-verbatim copy rather than an
+operation-order transcription: the upstream core (`_solid_harmonics_impl!`) is
+already pure scalar arithmetic with no throws and no allocation, so only the
+gradient half and the `lmax` validation are dropped and `lmax` is lifted to a `Val`.
+`lmax ≤ 6`, as on the spin side.
+
+**The bitwise scope shrinks here, deliberately.** `_solid_row_device!` is
+`+ - * / sqrt` and is gated bitwise. `_disp_rows_device!`'s `k ≥ 1` blocks are NOT
+bitwise-identical to the host: `r2 = dot(u, u)` is a mul-add chain whose last bit
+depends on whether LLVM contracts it into an FMA, and that decision differs between
+the host (harmonic batch = a separate call) and the device (batch inlined, as a
+kernel requires, which puts a second `x²+y²+z²` in the same scope to be
+canonicalized/CSEd against). Measured: ~22 % of random `u`, exactly 1 ulp of `r2`,
+amplified by the exponent. Neither reordering the two computations nor transcribing
+`dot` as an explicit `muladd` chain removes it. `r2^k` adds a second, smaller effect
+at `k ≥ 2` (`Float64 ^ Int` routes through libm `pow`, not `power_by_squaring`).
+
+**Decision: accept it; do not chase it.** A single shared `r2` would fix it, but
+`r2` is computed independently in `SLCE.site_rows!` (the upstream authority) and in
+`_disp_rows!`, so the fix is an upstream convention change that moves SLCE's numerics
+by an ulp. Not worth it, because bitwise identity here buys **test sharpness, not
+accuracy**: 1 ulp is relative 1e-16 against MC statistical errors of ~1e-3, and the
+gates that actually catch bugs — kernel ≡ keyed reference, serial ≡ parallel — are
+**device-vs-device** and stay bitwise (the reference calls the same
+`_disp_rows_device!`). What is genuinely lost is the G4 claim that the
+renormalization host round-trip is seam-free: on a `k ≥ 1` block it injects a 1-ulp
+perturbation, which the existing incremental-energy drift gate already covers.
+
+Gates (`test/unit/test_gpu.jl`): `_solid_row_device!` bitwise vs upstream over
+lmax 0:6 × (u = 0, axes, 8 decades of magnitude, 2000 seeded), directly and through
+a KA-CPU kernel; `_disp_rows_device!` bitwise on every `k = 0` row and within
+`kmax + 1` ulp elsewhere, over three layouts spanning the `(k, l)` block structure;
+`_disp_layout_tables` against the layout it flattens; the pure-spin layout as a no-op.
