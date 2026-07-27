@@ -296,6 +296,28 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   skips, lane-ordered fold, accept rule). Touch any of them — or the Philox slot
   layout, or the pinned default ws — and the other side plus the G-record move
   together; gate: the full-sweep bitwise section of `test/unit/test_gpu.jl`.
+- **Device channel plumbing ↔ the host sweeps' skips and row ranges**
+  (`src/gpu/gpu_hamiltonian.jl`, `src/gpu/gpu_sweep.jl`, `src/updates.jl`, G8):
+  `_entry_walk_partial`'s `lo:hi` selects the same entries as
+  `delta_energy(c, zold, znew, lo, hi)` (energy.jl) but takes the moved block ALONE,
+  indexed relatively (`znew_block[tgt - lo + 1]`), where `delta_energy` indexes a
+  full-length buffer absolutely — handing the walk a full-length row with
+  `lo = nlm + 1` reads the spin block as displacement rows, silently. `_channel_colors`'
+  `spin_sites`/`disp_sites` are the `site_has_spin`/`site_has_disp` skips of
+  `metropolis_sweep!`/`displacement_sweep!` moved to launch time. Change a host
+  skip predicate or a move's row block and the device schedule/range must move
+  with it. `_table_arrays` is the single field list both `GPUTiledHamiltonian`
+  (device) and `_host_tables` (reference/tests) build from — add a `_GPUTables`
+  field there, not in either constructor. Gates: the joint sections of
+  `test/unit/test_gpu.jl`, including the pure-spin `spin_sites == H.color_sites`
+  identity that keeps every pre-M4 bitwise gate meaningful.
+  Since the shared `GPUTiledHamiltonian` constructor no longer rejects joint models,
+  **each** gradient entry point carries `_require_spin_only` itself —
+  `GPUGradientScratch`, `gpu_zlm_rows!`, BOTH `gpu_energy_gradient!` overloads,
+  `_gpu_gradient_rows!`, `_gradient_lane_ref!`. Neither `gsc` nor a neighbouring
+  guard substitutes: a scratch from the spin restriction of the same model has the
+  matching shape, and `refresh_zrows = false` skips `gpu_zlm_rows!`. Add a gradient
+  entry point → add the guard AND its `@test_throws`.
 - **Device gradient ↔ lane reference ↔ upstream grad recursions**
   (`src/gpu/grad_device.jl`, `src/gpu/gpu_gradient.jl`, G7): `_grad_kernel!`
   and `_gradient_lane_ref!` implement ONE arithmetic contract (the gradient-row

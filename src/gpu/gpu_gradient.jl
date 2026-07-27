@@ -37,9 +37,17 @@ struct GPUGradientScratch{MF<:AbstractMatrix{Float64}}
     zrows::MF
 end
 
-GPUGradientScratch(gH::GPUTiledHamiltonian) =
-    GPUGradientScratch(KernelAbstractions.allocate(gH.backend, Float64,
-                                                   gH.host.nlm, gH.host.n_sites))
+function GPUGradientScratch(gH::GPUTiledHamiltonian)
+    # The whole gradient path is spin-only — `_entry_walk_grad` has no row range and
+    # `∇` is taken with respect to the spin direction alone — while
+    # `GPUTiledHamiltonian` itself now accepts joint models for the sweep path. Throw
+    # at the first entry point rather than silently differentiating a joint energy as
+    # if the displacement rows were not there.
+    _require_spin_only(gH.host, "the GPU gradient path")
+    return GPUGradientScratch(KernelAbstractions.allocate(gH.backend, Float64,
+                                                          gH.host.nlm,
+                                                          gH.host.n_sites))
+end
 
 # One thread per site: rebuild the site's tesseral row from its spin (the value
 # row is bitwise-identical to the host `_zlm_row!` by the G4 row identity, so a
@@ -62,6 +70,7 @@ mode, where every spin moved). Bitwise-identical to the host `_zrows`.
 function gpu_zlm_rows!(gsc::GPUGradientScratch, gH::GPUTiledHamiltonian, dconfig;
                        workgroupsize::Integer = 128, synchronize::Bool = true)
     H = gH.host
+    _require_spin_only(H, "the GPU gradient path")
     n = H.n_sites
     length(dconfig) == n || throw(DimensionMismatch(
         "config has $(length(dconfig)) sites; the Hamiltonian has $n"))
@@ -187,6 +196,10 @@ only when the rows are already `Z(dconfig)` (the MC invariant — see the
 queue order still serializes subsequent launches) — for callers chaining the
 gradient into a longer per-step launch sequence.
 
+**Spin-only**: the gradient is taken with respect to the spin directions alone, so
+a joint (displacement-carrying) `gH` throws — under either `refresh_zrows`, and
+regardless of `gsc`, whose shape a spin restriction of the same model would match.
+
 Bitwise reproducible for fixed (backend, `workgroupsize`); the arithmetic
 contract is pinned by `_gradient_lane_ref!` (test tier).
 """
@@ -198,6 +211,14 @@ function gpu_energy_gradient!(dG::AbstractVector{SVector{3,Float64}},
                               refresh_zrows::Bool = true,
                               synchronize::Bool = true)
     H = gH.host
+    # Unconditionally, NOT via the `gpu_zlm_rows!` call below: that one is skipped on
+    # the documented `refresh_zrows = false` fast path, and `gsc` cannot carry the
+    # guard either (a scratch built from the spin restriction of this very model has
+    # the matching `(nlm, n_sites)` shape). Without this line that combination walks
+    # the joint program table — whose `sent_tgt` reaches past `nlm` — against a
+    # spin-sized `grow`, i.e. an `@inbounds` out-of-bounds read that returns garbage
+    # instead of throwing.
+    _require_spin_only(H, "the GPU gradient path")
     n = H.n_sites
     length(dG) == n || throw(DimensionMismatch(
         "G has $(length(dG)) sites; the Hamiltonian has $n"))
@@ -233,6 +254,10 @@ function _gpu_gradient_rows!(dG, gH::GPUTiledHamiltonian, dconfig, zrows;
                              workgroupsize::Integer = 128,
                              synchronize::Bool = true)
     H = gH.host
+    # The one gradient entry point that takes no `GPUGradientScratch` (the chain-state
+    # overload reads the sweep's own row matrix), so the spin-only guard has to sit
+    # here too.
+    _require_spin_only(H, "the GPU gradient path")
     ws = Int(workgroupsize)
     ispow2(ws) || throw(ArgumentError("workgroupsize must be a power of two (got $ws)"))
     kern = _grad_kernel!(gH.backend, ws)
@@ -258,11 +283,7 @@ function _gradient_lane_ref!(G::Vector{SVector{3,Float64}}, H::TiledHamiltonian,
     # point: it sizes its buffers from `H.nlm`/`H.lmax` and would silently drop a
     # displacement channel rather than throw.
     _require_spin_only(H, "_gradient_lane_ref!")
-    tb = _GPUTables(H.site_ptr, H.site_inst, H.inst_ptr, H.inst_sites,
-                    H.progs.site_prog, H.progs.sprog_ptr, H.progs.sent_w,
-                    H.progs.sent_tgt, H.progs.sfac_ptr, H.progs.sfac_row,
-                    H.progs.sfac_slot, H.progs.site_col, H.progs.site_col2,
-                    H.progs.pent_row, H.progs.pent_row2, H.color_sites)
+    tb = _host_tables(H)
     grow = Vector{Float64}(undef, 3 * H.nlm)
     partials = Vector{SVector{3,Float64}}(undef, ws)
     for s = 1:H.n_sites

@@ -21,6 +21,16 @@ underneath them, and it is deliberately narrow:
   adaptive-step schedule (the proposal `step` is whatever the uploaded
   `ChainState` carries — thermalize/adapt on the host first, or set it
   explicitly).
+- **Spin moves only, so far.** A joint spin–lattice Hamiltonian
+  ([`SLCEMonteCarlo.has_disp`](@ref)) uploads and sweeps correctly, but the device
+  moves the spins alone, so the chain samples the conditional ``\pi(\hat e \mid u)``
+  at the uploaded lattice — a different ensemble from the joint one, and every
+  displacement observable off it is conditional on a lattice nobody equilibrated.
+  [`gpu_run_sweeps!`](@ref) therefore **throws** on a joint Hamiltonian unless you
+  pass `fixed_lattice = true`. For a joint chain today, interleave the host
+  [`SLCEMonteCarlo.displacement_sweep!`](@ref) around
+  [`gpu_metropolis_sweep!`](@ref) (the primitive does not judge the ensemble), or
+  use the CPU drivers.
 - **Measurement happens on the host.** [`to_host!`](@ref) downloads the
   configuration (and the running energy) into a `ChainState`; observables,
   binning, and `Evaluable`s then use the ordinary CPU machinery.
@@ -108,3 +118,11 @@ The device all-site gradient — `SLCEMonteCarlo.gpu_energy_gradient!` with
 `SLCEMonteCarlo.gpu_zlm_rows!` — is the seam consumed by `SLCEDynamics.jl`'s
 GPU dynamics. It stays **public, unexported** (call it qualified): it is an
 inter-package contract, not an end-user surface.
+
+This tier is **spin-only**: the gradient is taken with respect to the spin
+directions alone, so every one of its entry points — the scratch constructor, the row
+builder, and both `gpu_energy_gradient!` methods, under either `refresh_zrows` —
+throws on a joint Hamiltonian, unlike the sweep tier, which accepts one. Restrict the
+model first
+(`SLCE.restrict(model, :spin)`, the exact clamped-ion Hamiltonian) if a joint fit
+is what you have.

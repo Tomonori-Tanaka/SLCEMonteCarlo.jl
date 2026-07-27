@@ -840,6 +840,20 @@ function _require_spin_only(H::TiledHamiltonian, what::AbstractString)
     return nothing
 end
 
+# The spin-channel analogue of `_require_disp`, for the surfaces that need something to
+# sweep. `n_spin_active`, not `has_spin`: a lattice-only sector (or a joint basis whose
+# spin couplings all fitted to zero) leaves a Hamiltonian with no spin-active site, and
+# a spin sweep over it completes "successfully" having attempted nothing — reporting a
+# 0/0 acceptance and a bit-for-bit unchanged state, which reads as a clean run.
+function _require_spin_sites(H::TiledHamiltonian, what::AbstractString)
+    H.n_spin_active > 0 || throw(ArgumentError(
+        "$what needs a Hamiltonian with at least one spin-active site; this one has " *
+        "$(H.lmax < 0 ? "no spin rows at all (a lattice-only model)" :
+          "spin rows but no site whose energy depends on its direction (every spin " *
+          "coupling fitted to zero)"), so the sweep would attempt no move at all"))
+    return nothing
+end
+
 # The mirror guard, for the surfaces that are only meaningful WITH displacements: a
 # pure-spin model has no displacement Hessian, and returning an empty matrix would let
 # `eigmin` of nothing read as a clean stability verdict.

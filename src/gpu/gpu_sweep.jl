@@ -18,7 +18,11 @@
 # `_entry_walk_partial`, the lane-ordered partial fold, and the accept rule. The
 # full-sweep bitwise gate in test/unit/test_gpu.jl compares them on the CPU
 # backend; change either side (or the slot map, or the skip predicates) and the
-# other side plus the G-record move with it.
+# other side plus the G-record move with it. The walk's `lo:hi` row range selects the
+# same entries as `delta_energy(c, zold, znew, lo, hi)` (energy.jl) but indexes its
+# trial row BLOCK-RELATIVE where `delta_energy` indexes a full-length buffer
+# absolutely — see the walk's own note; the channel schedules are `_channel_colors`
+# (gpu_hamiltonian.jl), the host sweeps' `site_has_spin` / `site_has_disp` skips.
 
 """
     _keyed_proposal(seed, site, sweep, e, step) -> (e2, u_acc)
@@ -45,9 +49,28 @@ end
 # the bitwise contract: adding an exact 0.0 could flip a −0.0 partial), with the
 # ΔE dot product folded in per entry. `tb` is a `_GPUTables` of device arrays
 # (inside the kernel) or of host arrays (the keyed reference) — same code path.
+#
+# `lo:hi` is the moved channel's ROW RANGE: a single-channel move rewrites one block of
+# the site's row table, the rows it did not touch contribute `c_k · 0`, and entries
+# targeting another block are skipped rather than read — which keeps the untouched
+# rows out of the arithmetic instead of merely multiplying them by zero. It selects the
+# same entries as `delta_energy(c, zold, znew, lo, hi)` (energy.jl).
+#
+# BUT THE BUFFER CONVENTION DIFFERS FROM `delta_energy`, deliberately, so read this
+# before writing the displacement kernel. `delta_energy` indexes a FULL-LENGTH `znew`
+# absolutely (`znew[k]`, k = lo:hi) — that is how `_attempt_disp!` calls it, with
+# `sc.znew` of length `H.nrows`. This walk takes `znew_block`, the moved block ALONE,
+# indexed relatively (`znew_block[tgt - lo + 1]`), because a kernel's trial row is
+# `@localmem` sized to exactly one block. `length(znew_block) == hi - lo + 1` is the
+# contract; it is not checked, since the check cannot compile on a device. Handing this
+# a full-length buffer with `lo = nlm + 1` would silently read the SPIN block as if it
+# were displacement rows, with no shape error to catch it.
+#
+# On a pure-spin Hamiltonian `lo:hi` is the whole table, the two conventions coincide,
+# every entry passes, and the walk is the pre-M4 one bit for bit.
 @inline function _entry_walk_partial(tb::_GPUTables, zrows::AbstractMatrix{Float64},
-                                     znew::AbstractVector{Float64}, s::Int,
-                                     lane::Int, ws::Int)::Float64
+                                     znew_block::AbstractVector{Float64}, s::Int,
+                                     lane::Int, ws::Int, lo::Int, hi::Int)::Float64
     a = 0.0
     @inbounds for j = (Int(tb.site_ptr[s]) + lane - 1):ws:(Int(tb.site_ptr[s + 1]) - 1)
         pid = Int(tb.site_prog[j])
@@ -57,7 +80,8 @@ end
                 z = zrows[Int(tb.pent_row[e]), col]
                 z == 0.0 && continue
                 tgt = Int(tb.sent_tgt[e])
-                a += tb.sent_w[e] * z * (znew[tgt] - zrows[tgt, s])
+                (lo <= tgt <= hi) || continue
+                a += tb.sent_w[e] * z * (znew_block[tgt - lo + 1] - zrows[tgt, s])
             end
         elseif col < 0
             col2 = Int(tb.site_col2[j])
@@ -65,7 +89,8 @@ end
                 p = zrows[Int(tb.pent_row[e]), -col] * zrows[Int(tb.pent_row2[e]), col2]
                 p == 0.0 && continue
                 tgt = Int(tb.sent_tgt[e])
-                a += tb.sent_w[e] * p * (znew[tgt] - zrows[tgt, s])
+                (lo <= tgt <= hi) || continue
+                a += tb.sent_w[e] * p * (znew_block[tgt - lo + 1] - zrows[tgt, s])
             end
         else
             off = Int(tb.inst_ptr[Int(tb.site_inst[j])]) - 1
@@ -77,18 +102,26 @@ end
                 end
                 p == 0.0 && continue
                 tgt = Int(tb.sent_tgt[e])
-                a += tb.sent_w[e] * p * (znew[tgt] - zrows[tgt, s])
+                (lo <= tgt <= hi) || continue
+                a += tb.sent_w[e] * p * (znew_block[tgt - lo + 1] - zrows[tgt, s])
             end
         end
     end
     return a
 end
 
-# The fused kernel: one workgroup per site of the launched color slice. Lane 1
-# owns the proposal, the trial tesseral row, the lane-ordered ΔE fold, the accept
-# decision, and every state write; the entry walk runs on all lanes. Everything
-# lane 1 needs across a `@synchronize` lives in `@localmem` (KA's CPU backend
-# does not carry private variables across synchronization points).
+# The fused kernel: one workgroup per site of the launched color slice — of the SPIN
+# schedule `tb.spin_sites`, so a joint model's displacement-only sites are never
+# visited (host parity: `metropolis_sweep!` skips on `site_has_spin`). Lane 1 owns the
+# proposal, the trial tesseral row, the lane-ordered ΔE fold, the accept decision, and
+# every state write; the entry walk runs on all lanes. Everything lane 1 needs across a
+# `@synchronize` lives in `@localmem` (KA's CPU backend does not carry private
+# variables across synchronization points).
+#
+# `(LMAX + 1)²` IS `H.nlm` (`RowLayout.disp_offset`), so it is both the trial row's
+# length and the walk's row range `1:nlm`: the write-back and the ΔE touch the SPIN
+# block only, and the site's displacement rows stay exactly as they are — they are
+# constant factors already folded into the entry weights.
 @kernel function _metro_kernel!(config, zrows, dE, acc, @Const(tb), color_lo::Int,
                                 β::Float64, step::Float64, seed::UInt64,
                                 sweep::Int32, ::Val{LMAX}) where {LMAX}
@@ -104,7 +137,7 @@ end
     lane = @index(Local, Linear)
     g = @index(Group, Linear)
     @inbounds if lane == 1
-        s = Int(tb.color_sites[color_lo + g - 1])
+        s = Int(tb.spin_sites[color_lo + g - 1])
         e2, u_acc = _keyed_proposal(seed, Int32(s), sweep, config[s], step)
         _zlm_row_device!(znew, e2, Val(LMAX))
         stash[1] = e2[1]
@@ -117,18 +150,19 @@ end
     lane = @index(Local, Linear)
     g = @index(Group, Linear)
     @inbounds begin
-        s = Int(tb.color_sites[color_lo + g - 1])
+        s = Int(tb.spin_sites[color_lo + g - 1])
         # Int(lane): the CUDA backend's @index returns Int32 (the CPU backend's
         # returns Int) and the walk's signature is Int-typed
         partials[lane] = _entry_walk_partial(tb, zrows, znew, s, Int(lane),
-                                             prod(@groupsize()))
+                                             prod(@groupsize()), 1,
+                                             (LMAX + 1) * (LMAX + 1))
     end
     @synchronize
 
     lane = @index(Local, Linear)
     g = @index(Group, Linear)
     @inbounds if lane == 1
-        s = Int(tb.color_sites[color_lo + g - 1])
+        s = Int(tb.spin_sites[color_lo + g - 1])
         ΔE = 0.0
         for t = 1:prod(@groupsize())                 # lane-ordered fold (G4)
             ΔE += partials[t]
@@ -148,16 +182,23 @@ end
     gpu_metropolis_sweep!(gst::GPUChainState, gH::GPUTiledHamiltonian, β::Float64;
                           workgroupsize::Integer = 128) -> Int
 
-One compound Metropolis sweep on the device — every active site once, in
+One compound Metropolis sweep on the device — every **spin-active** site once, in
 color-serial launches (launches on one backend queue are ordered; a single
 `synchronize` follows the color loop). Returns the number of accepted moves.
 The per-site ΔE staging is copied back and folded on the host in the fixed
 color order of `_reduce_dE` (deterministic). `workgroupsize` must be a power of
 two and is part of the determinism scope — the pinned default is 128 (G3/G4).
+
+On a joint Hamiltonian this is the SPIN half of the sweep: the displacements and
+their basis rows are read but never written, and sites with no spin axis are not
+visited at all. It is the primitive, so it does not judge the ensemble — a caller
+interleaving host [`displacement_sweep!`](@ref)s is doing the right thing; the
+`fixed_lattice` opt-in lives on the [`gpu_run_sweeps!`](@ref) driver.
 """
 function gpu_metropolis_sweep!(gst::GPUChainState, gH::GPUTiledHamiltonian,
                                β::Float64; workgroupsize::Integer = 128)::Int
     H = gH.host
+    _require_spin_sites(H, "gpu_metropolis_sweep!")
     ws = Int(workgroupsize)
     ispow2(ws) || throw(ArgumentError("workgroupsize must be a power of two (got $ws)"))
     gst.sweep_index < typemax(Int32) - 1 ||
@@ -167,8 +208,8 @@ function gpu_metropolis_sweep!(gst::GPUChainState, gH::GPUTiledHamiltonian,
     fill!(gst.acc, Int32(0))
     kern = _metro_kernel!(gH.backend, ws)
     for c = 1:H.n_colors
-        lo = Int(H.color_ptr[c])
-        n = Int(H.color_ptr[c + 1]) - lo
+        lo = Int(gH.spin_ptr[c])
+        n = Int(gH.spin_ptr[c + 1]) - lo
         n == 0 && continue
         # invokelatest: a launch barrier only for static analysis — with an
         # abstract-Backend signature the GPU half of the kernel-invocation union
@@ -192,19 +233,48 @@ end
 """
     gpu_run_sweeps!(gst::GPUChainState, gH::GPUTiledHamiltonian, st::ChainState,
                     β::Float64, nsweeps::Integer; renorm_interval::Integer = 1_000,
-                    workgroupsize::Integer = 128) -> GPUChainState
+                    workgroupsize::Integer = 128,
+                    fixed_lattice::Bool = false) -> GPUChainState
 
-Run `nsweeps` device sweeps, renormalizing on the host every `renorm_interval`
-sweeps (download → `_renormalize!` — drift check and energy re-anchor — →
-re-upload; `renorm_interval ≤ 0` disables). The renormalized rows re-upload
-seamlessly: `normalize` is IEEE-exact arithmetic and the host `_zlm_row!` is
-bitwise-identical to the device row by design (G4). Downloads the final state
-into `st` before returning (without a trailing renormalization).
+Run `nsweeps` device Metropolis sweeps, renormalizing on the host every
+`renorm_interval` sweeps (download → `_renormalize!` — drift check, displacement
+re-centring, and energy re-anchor — → re-upload; `renorm_interval ≤ 0` disables).
+The renormalized spin rows re-upload seamlessly: `normalize` is IEEE-exact
+arithmetic and the host `_zlm_row!` is bitwise-identical to the device row by design
+(G4). Downloads the final state into `st` before returning (without a trailing
+renormalization).
+
+On a joint Hamiltonian these are **spin sweeps only** — the device displacement
+sweep is the next slice (G8 phase 3) — so the chain samples the conditional
+`π(ê | u)` at the uploaded lattice, not the joint distribution. That is a different
+ensemble, and every displacement observable off such a run is conditional on a
+lattice nobody equilibrated. Pass `fixed_lattice = true` to say you mean it;
+otherwise a joint `gH` throws. (For a joint chain today: drive
+[`gpu_metropolis_sweep!`](@ref) yourself and interleave host
+[`displacement_sweep!`](@ref)s, or use the CPU drivers.)
+
+"Fixed" is up to the centre-of-mass gauge: with `renorm_interval > 0`,
+`_renormalize!` re-centres each displacement-coupling component, so `st.disps`
+changes by a rigid per-component shift. It is a gauge choice, not a different
+lattice — the physical displacement is `disps[s] + com_removed[c]` and the energy is
+unaffected — but a caller who diffs `st.disps` should know.
 """
 function gpu_run_sweeps!(gst::GPUChainState, gH::GPUTiledHamiltonian,
                          st::ChainState, β::Float64, nsweeps::Integer;
                          renorm_interval::Integer = 1_000,
-                         workgroupsize::Integer = 128)::GPUChainState
+                         workgroupsize::Integer = 128,
+                         fixed_lattice::Bool = false)::GPUChainState
+    # No default that samples the wrong ensemble in silence — the same rule
+    # `_resolve_disp_passes` (run.jl) enforces on the host drivers. There the right
+    # thing can be the default (the host HAS a displacement sweep); here it cannot
+    # yet, so the caller acknowledges instead.
+    has_disp(gH.host) && !fixed_lattice && throw(ArgumentError(
+        "this Hamiltonian carries displacement rows $(gH.host.layout.disp_factors), " *
+        "but the device sweep moves the spins only: the chain would sample " *
+        "π(ê | u) at the uploaded lattice, not the joint distribution. Pass " *
+        "`fixed_lattice = true` if that conditional is what you want; for a joint " *
+        "chain, interleave host `displacement_sweep!`s around " *
+        "`gpu_metropolis_sweep!`, or use `run_mc`/`run_pt`"))
     for i = 1:nsweeps
         gpu_metropolis_sweep!(gst, gH, β; workgroupsize = workgroupsize)
         if renorm_interval > 0 && i % renorm_interval == 0
@@ -229,26 +299,19 @@ function _metropolis_sweep_keyed_ref!(config::SpinConfig, zrows::Matrix{Float64}
                                       H::TiledHamiltonian, β::Float64,
                                       step::Float64, seed::UInt64, sweep::Int32,
                                       ws::Int)::Int
-    # Test-only reference, but it sizes its buffers from `H.nlm`/`H.lmax` and would
-    # silently drop a displacement channel rather than throw.
-    _require_spin_only(H, "_metropolis_sweep_keyed_ref!")
-    tb = _GPUTables(H.site_ptr, H.site_inst, H.inst_ptr, H.inst_sites,
-                    H.progs.site_prog, H.progs.sprog_ptr, H.progs.sent_w,
-                    H.progs.sent_tgt, H.progs.sfac_ptr, H.progs.sfac_row,
-                    H.progs.sfac_slot, H.progs.site_col, H.progs.site_col2,
-                    H.progs.pent_row, H.progs.pent_row2, H.color_sites)
+    tb = _host_tables(H)
     nlm = H.nlm
     znew = Vector{Float64}(undef, nlm)
     partials = Vector{Float64}(undef, ws)
     fill!(dE, 0.0)
     fill!(acc, Int32(0))
     nacc = 0
-    for q in eachindex(H.color_sites)
-        s = Int(H.color_sites[q])
+    for q in eachindex(tb.spin_sites)
+        s = Int(tb.spin_sites[q])
         e2, u_acc = _keyed_proposal(seed, Int32(s), sweep, config[s], step)
         _zlm_row_device_dyn!(znew, e2, H.lmax)
         for lane = 1:ws
-            partials[lane] = _entry_walk_partial(tb, zrows, znew, s, lane, ws)
+            partials[lane] = _entry_walk_partial(tb, zrows, znew, s, lane, ws, 1, nlm)
         end
         ΔE = 0.0
         for t = 1:ws
@@ -256,7 +319,7 @@ function _metropolis_sweep_keyed_ref!(config::SpinConfig, zrows::Matrix{Float64}
         end
         if ΔE <= 0.0 || u_acc < exp(-β * ΔE)
             config[s] = e2
-            copyto!(view(zrows, :, s), znew)
+            copyto!(view(zrows, 1:nlm, s), znew)
             dE[s] = ΔE
             acc[s] = Int32(1)
             nacc += 1

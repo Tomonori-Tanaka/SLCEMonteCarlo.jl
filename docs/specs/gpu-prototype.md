@@ -301,3 +301,100 @@ lmax 0:6 × (u = 0, axes, 8 decades of magnitude, 2000 seeded), directly and thr
 a KA-CPU kernel; `_disp_rows_device!` bitwise on every `k = 0` row and within
 `kmax + 1` ulp elsewhere, over three layouts spanning the `(k, l)` block structure;
 `_disp_layout_tables` against the layout it flattens; the pure-spin layout as a no-op.
+
+**Joint device tables and the joint-safe spin sweep (3f/2).** `GPUTiledHamiltonian`
+no longer requires a pure-spin `H`. Three changes make the existing Metropolis
+kernel correct on a joint model, and each is a device form of something the host
+already does:
+
+1. **Full row table.** `GPUChainState.zrows` is `nrows × n_sites` (was `nlm ×
+   n_sites`) and the state carries `disps` and `step_u`; `to_host!`/`_from_host!`
+   round-trip the displacements with the rest.
+2. **Row range.** `_entry_walk_partial` takes `lo:hi` and selects the same entries as
+   `delta_energy(c, zold, znew, lo, hi)` (energy.jl). A single-channel move rewrites
+   one block, the rows it did not touch contribute `c_k · 0`. The spin kernel passes
+   `1:(LMAX+1)²`, which **is** `H.nlm` (`RowLayout.disp_offset` — now asserted in the
+   constructor, since a caller-supplied padded `RowLayout` would otherwise truncate
+   the device ΔE), so the write-back and the ΔE stay inside the spin block and the
+   site's own displacement rows are read as the constant factors they are. On a
+   pure-spin `H` every entry is in range and the walk is the pre-M4 one bit for bit.
+
+   **The buffer convention differs from `delta_energy`, deliberately.**
+   `delta_energy` indexes a full-length `znew` absolutely (that is how
+   `_attempt_disp!` calls it, with `sc.znew` of length `H.nrows`); the walk takes the
+   moved block alone, indexed relatively (`znew_block[tgt - lo + 1]`), because a
+   kernel's trial row is `@localmem` sized to exactly one block. They coincide at
+   `lo = 1`. `length(znew_block) == hi - lo + 1` is the contract and cannot be
+   checked on a device — **3f/3 hazard**: a displacement kernel written by analogy
+   that hands the walk a full-length row with `lo = nlm+1` would read the spin block
+   as displacement rows, silently and with no shape error.
+3. **Per-channel schedules.** `_channel_colors` slices the one coloring by
+   `site_has_spin` / `site_has_disp` into `spin_sites`/`disp_sites` (device) with
+   `spin_ptr`/`disp_ptr` launch ranges (host) — the host sweeps' skip predicates,
+   moved to launch time. A joint model can have a site active in one channel only (a
+   force-constant-only ligand carries no moment), and a sweep that visited it anyway
+   would be always-accepted noise that biases the acceptance statistics. On a
+   pure-spin `H` the two predicates coincide with `site_active`, so `spin_sites ==
+   H.color_sites` and `spin_ptr == H.color_ptr` **verbatim** — the pre-M4 launch
+   schedule, unchanged.
+
+The **gradient** path stays spin-only: `_entry_walk_grad` has no row range and the
+derivative is with respect to the spin direction alone. The guard therefore moved
+from the shared constructor onto **every** gradient entry point —
+`GPUGradientScratch`, `gpu_zlm_rows!`, both `gpu_energy_gradient!` overloads, and
+`_gradient_lane_ref!` — and each needs its own: `gsc` is no evidence about the
+Hamiltonian it is handed with (a scratch built from the spin restriction of the same
+model has the matching `(nlm, n_sites)` shape and passes the dimension check), and
+the documented `refresh_zrows = false` fast path skips `gpu_zlm_rows!` entirely. An
+unguarded call walks the joint program table — whose `sent_tgt` reaches past `nlm` —
+against a spin-sized gradient row, an `@inbounds` out-of-bounds read that returns
+garbage rather than throwing. Each of the five is gated separately.
+
+**The driver refuses the wrong ensemble.** On a joint model the device moves the spins
+only, so the chain samples `π(ê | u)` at the uploaded lattice, not the joint
+distribution — a different ensemble, and displacement observables off it are
+conditional on a lattice nobody equilibrated. `gpu_run_sweeps!` throws unless the
+caller passes `fixed_lattice = true`. This is the device analogue of
+`_resolve_disp_passes` (run.jl), which likewise refuses to let `disp_per_metropolis`
+default to 0 on a joint model; the difference is that the host CAN default to the
+right thing and here we cannot yet, so the caller acknowledges instead. Prose in a
+docstring is not the same instrument. `gpu_metropolis_sweep!` stays unjudged — it is
+the primitive, and interleaving host `displacement_sweep!`s around it is how a joint
+chain is driven until 3f/3.
+
+Two further guards fell out of the same review:
+
+- `_require_spin_sites` (hamiltonian.jl, the spin mirror of `_require_disp`) rejects
+  `n_spin_active == 0`. A lattice-only model was accepted by the constructor, produced
+  an empty `spin_sites`, and completed a "successful" run that attempted nothing —
+  a `0/0` acceptance over a bit-for-bit unchanged state. That the `lmax == -1`
+  degenerate case never reached `Val(H.lmax)` was luck of the empty-launch guard, not
+  design.
+- `H.nlm == (H.lmax+1)^2` is asserted in the constructor (see item 2 above).
+
+"Fixed lattice" is exact only up to the centre-of-mass gauge: with
+`renorm_interval > 0` the host `_renormalize!` re-centres each displacement-coupling
+component, so `st.disps` moves by a rigid per-component shift recorded in
+`com_removed`. The energy is unaffected (measured drift 0.0) — it is a gauge choice,
+not a different lattice — but the docstring says so, and the drift testset now pins
+both halves: `disps + com_removed` reproduces the upload exactly, and with
+renormalization off `disps` is bit-identical.
+
+Gates (`test/unit/test_gpu.jl`, joint fixtures = the hand-built
+`_channel_split_terms` and a fitted `_joint_model`): the pure-spin schedule identity
+above, asserted field by field; the channel lists against the host predicates, with
+`n_spin_active < n_active` on the split fixture so the split is not vacuous; the
+restricted walk vs `site_coeffs!` + `delta_energy(…, 1, nlm)`, with two non-vacuity
+counters (spin sites whose programs target displacement rows at all, and sites whose
+skipped rows carry nonzero coefficients); the five-sweep kernel ≡ keyed reference
+bitwise, plus — independently of both — displacements, displacement rows, and
+spin-inactive directions bitwise unchanged; the drift gate with renormalization off
+and on, including the gauge claim above; the `fixed_lattice` and empty-sweep refusals
+(and that a pure-spin `H` needs no opt-in); the padded-`RowLayout` rejection; and
+`ArgumentError` from every gradient entry point on a joint `H`, under both
+`refresh_zrows` values and with a scratch whose shape matches.
+
+Two whole-slice checks outside the suite: a stash/restore comparison of pure-spin
+device trajectories (4 fixtures × ws ∈ {4, 32}, hashed over config/rows/energy) came
+back identical to `5471379`, and SLCEDynamics.jl — which consumes the gradient tier —
+passes its 3493 assertions unchanged.

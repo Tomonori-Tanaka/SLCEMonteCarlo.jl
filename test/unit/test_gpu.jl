@@ -30,13 +30,28 @@ end
                                     fs, Val(DLMAX))
 end
 
-# Fresh (H, ChainState, GPU pair) on the CPU backend with a seeded random config.
-function _gpu_setup(H; seed_cfg = 7, seed_dev = UInt64(0xc0ffee), step = 0.6)
+# Fresh (H, ChainState, GPU pair) on the CPU backend with a seeded random config —
+# and, on a joint Hamiltonian, seeded random displacements (`with_disps`; the
+# clamped-ion start would leave every `|u|^{2k}` factor at 0 and hide the channel).
+function _gpu_setup(H; seed_cfg = 7, seed_dev = UInt64(0xc0ffee), step = 0.6,
+                    with_disps = false)
     rng = Xoshiro(seed_cfg)
-    st = MC.ChainState(H, _rand_config(rng, H), rng, step)
+    cfg = _rand_config(rng, H)
+    st = with_disps ? MC.ChainState(H, cfg, rng, step; disps = _rand_disps(rng, H)) :
+         MC.ChainState(H, cfg, rng, step)
     gH = MC.GPUTiledHamiltonian(CPU(), H)
     gst = MC.GPUChainState(gH, st; seed = seed_dev)
     return st, gH, gst
+end
+
+# The joint Hamiltonians the M4 device path is gated on: the hand-built channel split
+# (atom 1 in both channels, atom 2 displacement-only — the only fixture where the two
+# sweep schedules differ) and a fitted joint model where every site carries both.
+function _joint_gpu_cases()
+    tms, L = _channel_split_terms()
+    return [("channel split", MC.TiledHamiltonian(2, tms, L; dims = (4, 2, 1),
+                                                  fixed_reference = true)),
+            ("fitted joint", TiledHamiltonian(_joint_model(5)[1]; dims = (2, 2, 2)))]
 end
 
 # Reference-side sweep loop: accumulates the energy in the driver's exact
@@ -288,11 +303,7 @@ end
     rng = Xoshiro(31)
     for (name, H) in models
         st = MC.ChainState(H, _rand_config(rng, H), rng, 0.6)
-        tb = MC._GPUTables(H.site_ptr, H.site_inst, H.inst_ptr, H.inst_sites,
-                           H.progs.site_prog, H.progs.sprog_ptr, H.progs.sent_w,
-                           H.progs.sent_tgt, H.progs.sfac_ptr, H.progs.sfac_row,
-                           H.progs.sfac_slot, H.progs.site_col, H.progs.site_col2,
-                           H.progs.pent_row, H.progs.pent_row2, H.color_sites)
+        tb = MC._host_tables(H)
         c = zeros(H.nlm)
         znew = zeros(H.nlm)
         plm = Vector{Float64}(undef, H.lmax + 1)
@@ -305,7 +316,8 @@ end
             for ws in (4, 32)
                 ΔE_walk = 0.0
                 for lane = 1:ws
-                    ΔE_walk += MC._entry_walk_partial(tb, st.zrows, znew, s, lane, ws)
+                    ΔE_walk += MC._entry_walk_partial(tb, st.zrows, znew, s, lane, ws,
+                                                      1, H.nlm)
                 end
                 @test abs(ΔE_walk - ΔE_cpu) <= 1e-12 * max(scale, 1e-30)
             end
@@ -386,6 +398,242 @@ end
     MC.gpu_run_sweeps!(gst, gH, st, 1 / 0.05, 200; renorm_interval = 0)
     E = total_energy(H, st.config)
     @test abs(gst.energy - E) <= 1e-8 * max(1.0, abs(E))
+end
+
+# --- the joint (spin + displacement) device path, G8 phase 2 --------------------
+
+@testset "gpu: channel color schedules" begin
+    # On a pure-spin Hamiltonian the spin schedule IS the coloring, verbatim — which is
+    # what leaves every pre-M4 launch, and with it every bitwise gate above, unchanged.
+    for H in (TiledHamiltonian(_dimer_model()),
+              TiledHamiltonian(_biquadratic_model(3); dims = (2, 2, 2)))
+        gH = MC.GPUTiledHamiltonian(CPU(), H)
+        @test gH.spin_ptr == H.color_ptr
+        @test gH.dev.spin_sites == H.color_sites
+        @test isempty(gH.dev.disp_sites)
+        @test all(==(Int32(1)), gH.disp_ptr)
+        @test isempty(gH.dev.fac_k) && isempty(gH.dev.fac_start)
+    end
+    for (name, H) in _joint_gpu_cases()
+        gH = MC.GPUTiledHamiltonian(CPU(), H)
+        spin = Int.(gH.dev.spin_sites)
+        disp = Int.(gH.dev.disp_sites)
+        @test spin == [s for s in Int.(H.color_sites) if H.site_has_spin[s]]
+        @test disp == [s for s in Int.(H.color_sites) if H.site_has_disp[s]]
+        @test length(spin) == H.n_spin_active
+        @test length(disp) == H.n_disp_active
+        @test Int(gH.spin_ptr[end]) == length(spin) + 1
+        @test Int(gH.disp_ptr[end]) == length(disp) + 1
+        for c = 1:H.n_colors                      # ascending within each class
+            @test issorted(spin[Int(gH.spin_ptr[c]):(Int(gH.spin_ptr[c + 1]) - 1)])
+            @test issorted(disp[Int(gH.disp_ptr[c]):(Int(gH.disp_ptr[c + 1]) - 1)])
+        end
+        @test Int.(gH.dev.fac_k) == [k for (k, _) in H.layout.disp_factors]
+        @test Int.(gH.dev.fac_l) == [l for (_, l) in H.layout.disp_factors]
+        @test Int.(gH.dev.fac_start) == H.layout.disp_starts
+    end
+    # Non-vacuity: without a Hamiltonian whose two schedules genuinely differ, the whole
+    # split is untested — a sweep over the full coloring would pass everything above.
+    Hsplit = _joint_gpu_cases()[1][2]
+    @test Hsplit.n_spin_active < Hsplit.n_active
+    @test Hsplit.n_disp_active == Hsplit.n_active
+end
+
+@testset "gpu: joint ΔE row range vs site_coeffs!+delta_energy" begin
+    rng = Xoshiro(97)
+    for (name, H) in _joint_gpu_cases()
+        st = MC.ChainState(H, _rand_config(rng, H), rng, 0.6;
+                           disps = _rand_disps(rng, H))
+        tb = MC._host_tables(H)
+        # Non-vacuity, part 1: a spin site's program must target displacement rows too,
+        # or the row range never skips anything and this testset is trivial.
+        outside = 0
+        for s in Int.(tb.spin_sites), j = Int(H.site_ptr[s]):(Int(H.site_ptr[s + 1]) - 1)
+            pid = Int(H.progs.site_prog[j])
+            for e = Int(H.progs.sprog_ptr[pid]):(Int(H.progs.sprog_ptr[pid + 1]) - 1)
+                Int(H.progs.sent_tgt[e]) > H.nlm && (outside += 1)
+            end
+        end
+        @test outside > 0
+        c = zeros(H.nrows)
+        znew = zeros(H.nlm)
+        plm = Vector{Float64}(undef, H.lmax + 1)
+        nz_disp = 0
+        for s in Int.(tb.spin_sites[1:min(end, 32)])
+            MC._zlm_row!(znew, _rand_spin(rng), H.lmax, plm)
+            fill!(c, 0.0)
+            MC.site_coeffs!(c, H, s, st.zrows)
+            # Non-vacuity, part 2: the skipped rows carry NONZERO coefficients, so an
+            # unrestricted walk would give a different (and wrong) ΔE.
+            any(!iszero, view(c, (H.nlm + 1):H.nrows)) && (nz_disp += 1)
+            ΔE_cpu = MC.delta_energy(c, view(st.zrows, :, s), znew, 1, H.nlm)
+            scale = sum(abs, c) * (sum(abs, znew) + sum(abs, view(st.zrows, :, s)))
+            for ws in (4, 32)
+                ΔE_walk = 0.0
+                for lane = 1:ws
+                    ΔE_walk += MC._entry_walk_partial(tb, st.zrows, znew, s, lane, ws,
+                                                      1, H.nlm)
+                end
+                @test abs(ΔE_walk - ΔE_cpu) <= 1e-12 * max(scale, 1e-30)
+            end
+        end
+        @test nz_disp > 0
+    end
+end
+
+@testset "gpu: joint spin sweep ≡ keyed reference (bitwise)" begin
+    for (name, H) in _joint_gpu_cases(), ws in (4, 32)
+        st, gH, gst = _gpu_setup(H; with_disps = true)
+        β = 1 / 0.05
+        cfg0 = copy(st.config)
+        zr0 = copy(st.zrows)
+        u0 = copy(st.disps)
+        cfg2 = copy(st.config)
+        zr2 = copy(st.zrows)
+        dE2 = zeros(H.n_sites)
+        acc2 = zeros(Int32, H.n_sites)
+        E0 = gst.energy
+        naccs = Int[]
+        for _ = 1:5
+            push!(naccs, MC.gpu_metropolis_sweep!(gst, gH, β; workgroupsize = ws))
+        end
+        E_ref, naccs_ref = _ref_sweeps!(cfg2, zr2, dE2, acc2, H, β, st.step,
+                                        gst.seed, E0, 5, ws)
+        MC.to_host!(st, gst)
+        @test st.config == cfg2
+        @test st.zrows == zr2
+        @test gst.energy == E_ref
+        @test naccs == naccs_ref
+        @test gst.acc_metro == sum(naccs_ref)
+        @test gst.att_metro == 5 * H.n_spin_active
+        @test sum(naccs) > 0                      # the chain actually moved
+        # A SPIN sweep writes the spin block and nothing else: the displacements and
+        # their rows come back exactly as uploaded, and a site with no spin axis keeps
+        # its (frozen, meaningless) direction bit for bit.
+        @test st.disps == u0
+        @test view(st.zrows, (H.nlm + 1):H.nrows, :) ==
+              view(zr0, (H.nlm + 1):H.nrows, :)
+        @test all(st.config[s] === cfg0[s] for s = 1:H.n_sites if !H.site_has_spin[s])
+    end
+end
+
+@testset "gpu: joint incremental-energy drift gate" begin
+    for (name, H) in _joint_gpu_cases()
+        # both renormalization modes: off (pure incremental bookkeeping) and on (the
+        # host round-trip, which on a joint model also re-centres the displacements)
+        for interval in (0, 40)
+            st, gH, gst = _gpu_setup(H; with_disps = true)
+            u0 = copy(st.disps)
+            MC.gpu_run_sweeps!(gst, gH, st, 1 / 0.05, 200; renorm_interval = interval,
+                               fixed_lattice = true)
+            E = total_energy(H, st.config, st.disps)
+            @test abs(gst.energy - E) <= 1e-8 * max(1.0, abs(E))
+            # What "fixed lattice" does and does not mean. With renormalization OFF
+            # the displacements are untouched bit for bit; with it ON `_renormalize!`
+            # re-centres each component, so `st.disps` moves by a rigid per-component
+            # shift — a GAUGE change (the energy above is still exact), recorded in
+            # `com_removed`, not a different lattice.
+            if interval == 0
+                @test st.disps == u0
+                @test all(iszero, st.com_removed)
+            else
+                free = any(H.comp_free)
+                @test free == any(!iszero, st.com_removed)
+                for c = 1:H.n_disp_comps,
+                    q = H.disp_comp_ptr[c]:(H.disp_comp_ptr[c + 1] - 1)
+
+                    s = Int(H.disp_comp_sites[q])
+                    @test st.disps[s] + st.com_removed[c] ≈ u0[s] atol = 1e-12
+                end
+            end
+        end
+    end
+end
+
+@testset "gpu: the wrong-ensemble and empty-sweep traps" begin
+    Hj = _joint_gpu_cases()[1][2]
+    st, gH, gst = _gpu_setup(Hj; with_disps = true)
+    # The driver refuses to sample π(ê | u) at a lattice nobody equilibrated without
+    # the caller saying so — the device analogue of `_resolve_disp_passes`' refusal to
+    # default `disp_per_metropolis` to 0 on a joint model (run.jl).
+    err = @test_throws ArgumentError MC.gpu_run_sweeps!(gst, gH, st, 1 / 0.05, 5)
+    @test occursin("fixed_lattice = true", err.value.msg)
+    @test MC.gpu_run_sweeps!(gst, gH, st, 1 / 0.05, 5; fixed_lattice = true) === gst
+    # ... and the primitive stays unjudged: interleaving host displacement sweeps
+    # around it is exactly how a joint chain is driven today.
+    sc = MC.SweepScratch(Hj)
+    @test MC.gpu_metropolis_sweep!(gst, gH, 1 / 0.05) isa Int
+    @test MC.displacement_sweep!(st, Hj, 1 / 0.05, sc) isa Int
+    # A pure-spin Hamiltonian needs no opt-in.
+    Hs = TiledHamiltonian(_biquadratic_model(3); dims = (2, 2, 2))
+    sts, gHs, gsts = _gpu_setup(Hs)
+    @test MC.gpu_run_sweeps!(gsts, gHs, sts, 1 / 0.05, 5) === gsts
+
+    # A lattice-only model has no spin-active site: a sweep there attempts nothing and
+    # would report a 0/0 acceptance over a bit-for-bit unchanged state — a "successful"
+    # run that sampled nothing. Both spin entry points throw instead.
+    tms, L = _einstein_terms()
+    Hd = MC.TiledHamiltonian(1, tms, L; dims = (2, 2, 2), fixed_reference = true)
+    @test Hd.n_spin_active == 0
+    rng = Xoshiro(3)
+    std = MC.ChainState(Hd, _rand_config(rng, Hd), rng, 0.6; disps = _rand_disps(rng, Hd))
+    gHd = MC.GPUTiledHamiltonian(CPU(), Hd)
+    gstd = MC.GPUChainState(gHd, std; seed = UInt64(1))
+    @test_throws ArgumentError MC.gpu_metropolis_sweep!(gstd, gHd, 1 / 0.05)
+    @test_throws ArgumentError MC.gpu_run_sweeps!(gstd, gHd, std, 1 / 0.05, 5;
+                                                  fixed_lattice = true)
+end
+
+@testset "gpu: the device kernel rejects a padded spin block" begin
+    # The kernel derives the SPIN block width from `lmax` (`@localmem` trial row, ΔE
+    # row range, write-back extent) where the host reads `H.nlm`. `row_layout` makes
+    # them equal, but `TiledHamiltonian` takes a caller-supplied `RowLayout` and only
+    # checks `disp_offset` against the slot rows — a padded one would truncate the
+    # device ΔE and write partially into the displacement block.
+    sp(site) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
+    z = SVector(0, 0, 0)
+    x = SVector(1, 0, 0)
+    pair = zeros(3, 3)
+    pair[1, 1] = pair[2, 2] = pair[3, 3] = -0.5
+    # lmax = 1 needs 4 spin rows; this layout reserves 6 and starts the (0,1) block at 6
+    padded = SLCE.RowLayout(9, 1, 6, [(0, 1)], [6])
+    terms = [DecoratedTerm(-0.03, (4π)^1, 2, [1, 1], [z, x], [sp(1), sp(2)], pair)]
+    Hp = MC.TiledHamiltonian(1, terms, padded; dims = (4, 1, 1), fixed_reference = true)
+    @test Hp.nlm == 6 && Hp.lmax == 1          # the host is fine with it
+    @test_throws ArgumentError MC.GPUTiledHamiltonian(CPU(), Hp)
+end
+
+@testset "gpu: the gradient path rejects a joint Hamiltonian" begin
+    H = _joint_gpu_cases()[1][2]
+    st, gH, gst = _gpu_setup(H; with_disps = true)
+    dG = Vector{SVector{3,Float64}}(undef, H.n_sites)
+    # `GPUTiledHamiltonian` now accepts joint models for the SWEEP path, so each
+    # gradient entry point carries the spin-only guard itself.
+    @test_throws ArgumentError MC.GPUGradientScratch(gH)
+    @test_throws ArgumentError MC._gpu_gradient_rows!(dG, gH, gst.config, gst.zrows)
+    @test_throws ArgumentError MC._gradient_lane_ref!(dG, H, st.config, st.zrows, 4)
+    # ... and through both `gpu_energy_gradient!` overloads and `gpu_zlm_rows!`. None of
+    # them can inherit the guard from its `gsc`: the SPIN RESTRICTION of the very same
+    # model gives a scratch of the matching `(nlm, n_sites)` shape, so the dimension
+    # check passes and the scratch is no evidence at all about the Hamiltonian it is
+    # handed with.
+    model = _joint_model(5)[1]
+    Hj = TiledHamiltonian(model; dims = (2, 2, 2))
+    Hs = TiledHamiltonian(SLCE.restrict(model, :spin); dims = (2, 2, 2))
+    gsc = MC.GPUGradientScratch(MC.GPUTiledHamiltonian(CPU(), Hs))
+    @test size(gsc.zrows) == (Hj.nlm, Hj.n_sites)        # the shape check cannot help
+    stj, gHj, gstj = _gpu_setup(Hj; with_disps = true)
+    dGj = Vector{SVector{3,Float64}}(undef, Hj.n_sites)
+    @test_throws ArgumentError MC.gpu_energy_gradient!(dGj, gstj, gHj, gsc)
+    for refresh in (true, false)
+        # `refresh_zrows = false` is a documented fast path that skips `gpu_zlm_rows!`,
+        # so a guard placed only there would leave this walking the joint program table
+        # — whose `sent_tgt` reaches past `nlm` — against a spin-sized gradient row, an
+        # `@inbounds` out-of-bounds read that returns garbage instead of throwing.
+        @test_throws ArgumentError MC.gpu_energy_gradient!(dGj, gHj, gstj.config, gsc;
+                                                           refresh_zrows = refresh)
+    end
+    @test_throws ArgumentError MC.gpu_zlm_rows!(gsc, gHj, gstj.config)
 end
 
 @testset "gpu: dimer statistics ⟨e₁·e₂⟩ = L(β|J|)" begin

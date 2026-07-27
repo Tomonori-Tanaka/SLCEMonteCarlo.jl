@@ -246,6 +246,35 @@ end
 # (incremental vs from-scratch, serial vs parallel); this checks it against an external
 # truth, and it doubles as the equilibrated control the escape detector is calibrated
 # against.
+# A hand-built joint chain whose two cell atoms live in DIFFERENT channels: atom 1
+# carries a spin pair AND an onsite spin–displacement coupling, atom 2 only a
+# displacement well. It is the fixture the GPU joint sweep needs, because it is the
+# only one that pins both halves of "joint-safe" at once:
+#   * atom-2 sites are colored (they carry instances) but are not spin-active, so the
+#     spin schedule has to be a PROPER subset of the coloring — a sweep over the whole
+#     coloring would attempt always-accepted moves there;
+#   * atom-1 sites carry program entries targeting BOTH row blocks (the onsite term
+#     contributes to the spin rows with the site's own displacement row as the factor,
+#     and vice versa), so a spin move's row-range restriction actually skips something.
+#     On a fixture with one axis per site the restriction is vacuous.
+# Not translation-invariant (the well pins the reference), hence `fixed_reference = true`.
+function _channel_split_terms()
+    L = SLCE.RowLayout(8, 1, 4, [(0, 1), (1, 0)], [4, 7])
+    sp(site) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
+    dp(site, k, l) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.DISP, k, l))
+    z = SVector(0, 0, 0)
+    x = SVector(1, 0, 0)
+    pair = zeros(3, 3)
+    pair[1, 1] = pair[2, 2] = pair[3, 3] = -0.5
+    onsite = zeros(3, 3)
+    onsite[1, 2] = 0.35
+    onsite[2, 1] = 0.15
+    onsite[3, 3] = -0.2
+    return [DecoratedTerm(-0.03, (4π)^1, 2, [1, 1], [z, x], [sp(1), sp(2)], pair),
+            DecoratedTerm(0.4, (4π)^0.5, 1, [1], [z], [sp(1), dp(1, 0, 1)], onsite),
+            DecoratedTerm(1.7, 1.0, 1, [2], [z], [dp(1, 1, 0)], [1.0])], L
+end
+
 function _einstein_terms(a::Float64 = 2.5)
     L = SLCE.RowLayout(2, 0, 1, [(1, 0)], [1])       # spin row 1, displacement row 2
     return [MC.ScaledTerm(a, [1], [SVector(0, 0, 0)],
