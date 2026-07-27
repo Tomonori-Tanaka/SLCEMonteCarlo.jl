@@ -796,7 +796,18 @@ end
         # and the incremental energy stayed exact the whole way, which is exactly why
         # the drift warning cannot be the diagnostic for this
         @test st.max_drift < 1e-9
-        @test st.acc_disp / st.att_disp > 0.8
+        # An escaping chain accepts nearly everything — which is the point: a high
+        # acceptance rate is not evidence of health, so it cannot be the diagnostic.
+        # The threshold is deliberately loose. This is the one assertion here whose
+        # value is NOT reproducible across platforms: 4_000 sweeps of an escaping
+        # (hence chaotic) trajectory, whose accept test and Box–Muller draws go
+        # through the platform's libm, so a single last-ulp difference reorders the
+        # run. Measured 0.867 on macOS/arm64 and 0.766 on kugui's Linux/x86_64 from
+        # the same seeds — the package's reproducibility scope is one platform +
+        # Julia version (thread-count-independent), never across libm, exactly as
+        # `docs/specs/gpu-prototype.md` G3(b) states for the device backends. A tight
+        # bound here would be pinning noise; 0.8 was, and it went red on the cluster.
+        @test st.acc_disp / st.att_disp > 0.6
     end
 
     @testset "a mixed model re-centres only its flat components" begin
