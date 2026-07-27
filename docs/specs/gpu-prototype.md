@@ -350,8 +350,11 @@ unguarded call walks the joint program table — whose `sent_tgt` reaches past `
 against a spin-sized gradient row, an `@inbounds` out-of-bounds read that returns
 garbage rather than throwing. Each of the five is gated separately.
 
-**The driver refuses the wrong ensemble.** On a joint model the device moves the spins
-only, so the chain samples `π(ê | u)` at the uploaded lattice, not the joint
+**The driver refuses the wrong ensemble.** (Superseded by 3f/3 below, which makes the
+displacement sweep available and so lets the driver default to the right thing:
+`fixed_lattice` is gone, replaced by `disp_per_metropolis`. The reasoning is kept
+because the constraint it encodes did not change.) On a joint model the device moves
+the spins only, so the chain samples `π(ê | u)` at the uploaded lattice, not the joint
 distribution — a different ensemble, and displacement observables off it are
 conditional on a lattice nobody equilibrated. `gpu_run_sweeps!` throws unless the
 caller passes `fixed_lattice = true`. This is the device analogue of
@@ -398,3 +401,110 @@ Two whole-slice checks outside the suite: a stash/restore comparison of pure-spi
 device trajectories (4 fixtures × ws ∈ {4, 32}, hashed over config/rows/energy) came
 back identical to `5471379`, and SLCEDynamics.jl — which consumes the gradient tier —
 passes its 3493 assertions unchanged.
+
+**The displacement kernel and the compound driver (3f/3).** `_disp_kernel!` is
+`_metro_kernel!` with the other channel's proposal, row filler, row range and
+write-back — same workgroup shape, same lane-1 ownership, same lane-ordered fold,
+same accept rule — walking `tb.disp_sites` with `lo:hi = nlm+1:nrows`. The trial row
+is filled by `_disp_rows_device!` (3f/1) from a `@localmem` solid-harmonic batch
+workspace, exactly as the host fills it from `SweepScratch.rbuf`. Its serial twin is
+`_displacement_sweep_keyed_ref!`, so the same kernel ≡ reference bitwise gate covers
+both channels.
+
+**One trial-row convention.** 3f/2 shipped the walk with a block-relative `znew`, and
+the review flagged the resulting asymmetry with `delta_energy` as a hazard for exactly
+this slice. Rather than document it, the convention is now single: `znew` is
+`H.nrows` long everywhere — `SweepScratch.znew` on the host, `@localmem Float64 NROWS`
+in both kernels — and indexed absolutely, with only `lo:hi` written and read. The
+spin kernel therefore carries a few unused floats on a joint model; that is cheaper
+than two conventions. Pure-spin device trajectories are unchanged bit for bit
+(re-verified against `5471379` after the switch).
+
+**Per-move-kind RNG counters.** `GPUChainState` counts `sweep_index` and `disp_index`
+separately, and the slot map (philox.jl) gives the displacement proposal slots 3–5
+against the spin proposal's 0–2. Both are needed and for different reasons: disjoint
+SLOTS keep the two moves independent within one step (a shared accept uniform would
+make them accept and reject together), and a separate COUNTER keeps several
+displacement passes in one compound step from drawing the identical shift. Slot 5's
+second Box–Muller normal is discarded — a spare half-block beats a mixed accessor.
+
+**The driver compounds by default.** `gpu_run_sweeps!` takes `disp_per_metropolis`
+and resolves it through `_resolve_disp_passes` — the host drivers' own function, so
+the rule is shared rather than mirrored: `nothing` means one pass on a joint model and
+none on a pure-spin one. The `fixed_lattice` opt-in of 3f/2 is gone; freezing the
+lattice is now spelled `disp_per_metropolis = 0`, which is the same acknowledgement in
+the vocabulary the host already uses. A lattice-only model (no spin-active site) has
+its Metropolis pass skipped by the driver rather than erroring, while the spin
+primitive still refuses it; a model with nothing to sweep in either channel throws.
+
+Gates: the slot map's disjointness and the exact `u + step_u·(g₁,g₂,g₃)` shift;
+`gpu_displacement_sweep!` ≡ `_displacement_sweep_keyed_ref!` bitwise over five sweeps
+on both joint fixtures × two workgroup sizes, with — independently — spins, spin rows
+and displacement-inactive sites bitwise unchanged; compound scheduling (both counters,
+both attempt tallies, several passes per step, the pure-spin refusal of a displacement
+pass, the lattice-only skip-and-throw pair); the joint drift gate now with the lattice
+moving, plus the frozen-lattice conditional and its centre-of-mass gauge; and the
+**Einstein oscillator against its closed form** — `⟨|u|²⟩ = 3kT/(2a)` to 5 %, the one
+displacement gate in the suite that checks the device chain against an external truth
+rather than against another implementation of the same arithmetic.
+Mutation-tested: widening the displacement walk's row range to the whole table, and
+sharing the spin RNG counter, fail 22 and 21 assertions respectively.
+
+**Distributional validation of the compound joint chain** (scratch tier — too slow for
+CI, same tier as the stash/restore trajectory comparison). The device compound chain
+and the host `metropolis_sweep!` + `displacement_sweep!` chain are different Markov
+chains (keyed Philox vs per-site Xoshiro), so they can only be compared in
+distribution. On a bounded joint fixture — spin pair + onsite spin–displacement
+coupling + a well on **every** atom, `harmonic_stability` min eigenvalue 4.0 with no
+negative mode — at kT = 0.05, 4000 thermalization and 6000 measurement compound
+sweeps, four seeds each: `⟨E⟩/site` agrees to **0.12σ** and `⟨|u|²⟩/site` to **0.0σ**,
+with acceptance rates matching to three digits (0.81/0.73 both sides).
+
+Two traps this measurement walked into first, both worth remembering:
+
+- **The committed joint test fixtures are not dynamically stable in the displacement
+  channel.** `_joint_model` has no well at all, and `_channel_split_terms` has one on
+  atom 2 only while atom 1 carries a coupling *linear* in `u`. Both are fine for the
+  implementation-vs-implementation gates (bitwise vs the keyed reference, short drift
+  runs) but a distributional comparison on them compares two escaped, non-stationary
+  chains: the first attempt reported `⟨|u|²⟩ ≈ 10⁴` (|u| ~ 100 Å) on both sides and a
+  meaningless 4.5σ. A distributional check needs a bounded model.
+- **Naive `std/√N` error bars.** With τ_int ≈ 8 they understate the error by ~4×,
+  which turned agreement into a spurious 8–9σ disagreement. Use the package's own
+  `LogBinner`/`std_error`.
+
+**Review follow-ups (3f/3).** Four things the numerical review surfaced, recorded
+because each is a rule rather than a one-off fix:
+
+- **`has_disp` vs `n_disp_active`, again.** `_resolve_disp_passes` gates on the row
+  LAYOUT; `gpu_displacement_sweep!` gates on the SITES. A joint basis whose
+  displacement couplings all fitted to zero separates them, and the first version of
+  the driver threw out of its own default on such a model — which the host runs fine
+  as a no-op sweep. The driver now resolves first (so an explicit displacement pass on
+  a Hamiltonian with no displacement ROWS is still refused) and clamps to zero passes
+  when there is no displacement-active SITE. Zero passes is not a wrong-ensemble risk
+  there: with nothing depending on `u`, the frozen-`u` conditional IS the joint
+  distribution. Gated.
+- **The device driver owes the U8 diagnostics too.** Now that the device chain moves
+  the lattice, `_warn_gpu_escape_cadence` mirrors `run.jl`'s `_warn_escape_cadence`
+  (same `_escape_min_checks` arithmetic) and additionally warns when
+  `renorm_interval ≤ 0` — which on the device path is legal and turns the escape
+  detector off entirely along with re-centring. Step adaptation stays out of scope
+  (G1), but the guide now says so for `step_u` as well as `step`, and says where the
+  acceptance data actually lives (`gst`, not `st`).
+- **Widening the trial row moved a shape error into a silent one.** With a
+  block-sized buffer, a wrong `(lo, hi)` was a bounds error; with the full-length one
+  it is an uninitialized-`@localmem` read (genuinely uninitialized on a GPU). The
+  range check is still the only thing preventing it, so the spin kernel now zero-fills
+  its unused half — cheap insurance, empty loop on a pure-spin model. The
+  displacement-block tiling assertion (`disp_starts[end] + 2l + 1 == nrows`) joins the
+  spin-block padding assertion for the same reason: the write-back copies the whole
+  block.
+- **Two gates were softer than they looked.** The Einstein statistics gate started
+  from a random lattice already within 20 % of the answer (now the clamped-ion state,
+  so `⟨|u|²⟩` has to be built up; rtol tightened 0.05 → 0.04), and the renormalizing
+  arm of the joint drift gate used an interval dividing the sweep count, so the last
+  action before the comparison re-anchored the energy it was about to check (now 30
+  into 200). Recorded limits of the Einstein gate: it is step-independent by
+  construction, and its one `(k, l) = (1, 0)` row exercises neither an `l ≥ 1` solid
+  harmonic nor the `k ≥ 2` libm-`pow` path.

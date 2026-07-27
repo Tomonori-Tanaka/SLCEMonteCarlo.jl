@@ -86,6 +86,7 @@ for dependent packages' GPU dynamics.
 GPUTiledHamiltonian
 GPUChainState
 gpu_metropolis_sweep!
+gpu_displacement_sweep!
 gpu_run_sweeps!
 to_host!
 ```

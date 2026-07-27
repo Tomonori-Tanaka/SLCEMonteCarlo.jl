@@ -17,20 +17,29 @@ exported (since the A100 go/no-go and two production-model validations — see
 `run_mc` / `run_pt` remain **CPU drivers** — the device path is the chain tier
 underneath them, and it is deliberately narrow:
 
-- **Metropolis only.** No overrelaxation sweeps, no parallel-tempering rungs, no
-  adaptive-step schedule (the proposal `step` is whatever the uploaded
-  `ChainState` carries — thermalize/adapt on the host first, or set it
-  explicitly).
-- **Spin moves only, so far.** A joint spin–lattice Hamiltonian
-  ([`SLCEMonteCarlo.has_disp`](@ref)) uploads and sweeps correctly, but the device
-  moves the spins alone, so the chain samples the conditional ``\pi(\hat e \mid u)``
-  at the uploaded lattice — a different ensemble from the joint one, and every
-  displacement observable off it is conditional on a lattice nobody equilibrated.
-  [`gpu_run_sweeps!`](@ref) therefore **throws** on a joint Hamiltonian unless you
-  pass `fixed_lattice = true`. For a joint chain today, interleave the host
-  [`SLCEMonteCarlo.displacement_sweep!`](@ref) around
-  [`gpu_metropolis_sweep!`](@ref) (the primitive does not judge the ensemble), or
-  use the CPU drivers.
+- **Metropolis moves only.** Spin rotations ([`gpu_metropolis_sweep!`](@ref)) and
+  displacement shifts ([`gpu_displacement_sweep!`](@ref)); no overrelaxation sweeps
+  and no parallel-tempering rungs.
+  [`gpu_run_sweeps!`](@ref) compounds them — one Metropolis pass then
+  `disp_per_metropolis` displacement passes, defaulting to one on a joint
+  Hamiltonian and none on a pure-spin one, exactly as [`run_mc`](@ref) does. Passing
+  `disp_per_metropolis = 0` on a joint model freezes the lattice, which samples the
+  conditional ``\pi(\hat e \mid u)`` rather than the joint distribution; that is a
+  legitimate thing to ask for, but it has to be asked for.
+- **No step adaptation, on either channel.** The proposal widths are whatever the
+  uploaded `ChainState` carries — `step` in radians *and* `step_u` as a length, whose
+  default `0.01` is deliberately small (a hundredth of a bond) and typically well
+  below the thermal amplitude of a fitted model. Thermalize and adapt on the host
+  first, or set both explicitly. The device acceptance data lives on the
+  `GPUChainState` (`acc_metro`/`att_metro`, `acc_disp`/`att_disp`) and is *not* copied
+  into `st` by [`to_host!`](@ref), so a host-side adaptation call after a device run
+  would see zero attempts and do nothing — read the ratios off `gst`.
+- **Screening the displacement channel is `renorm_interval`'s job.** The escape
+  detector — the only diagnostic that measures displacement *recurrence* — runs
+  inside the host renormalization, so a joint device run with `renorm_interval = 0`
+  gets none of it (and no re-centring either). The driver warns when the cadence
+  cannot support the block test; do not silence it on a model you have not screened
+  with [`harmonic_stability`](@ref).
 - **Measurement happens on the host.** [`to_host!`](@ref) downloads the
   configuration (and the running energy) into a `ChainState`; observables,
   binning, and `Evaluable`s then use the ordinary CPU machinery.
@@ -57,7 +66,10 @@ host). `gpu_run_sweeps!` renormalizes on the host every `renorm_interval` sweeps
 ## Determinism
 
 The device sweep draws keyed counter-based Philox4x32-10 noise — a draw is a pure
-function of `(seed, site, sweep)`, with no RNG state on the device. A device
+function of `(seed, site, sweep)`, with no RNG state on the device. The two move
+kinds take disjoint counter slots and count their sweeps separately, so a
+displacement pass never shadows a spin proposal and several passes in one compound
+step do not repeat one another. A device
 trajectory is bitwise reproducible for a fixed (`seed`, backend,
 `workgroupsize`, package + Julia version); `workgroupsize` (pinned default 128)
 is part of the contract. A CPU chain and a device chain are **different
@@ -65,6 +77,11 @@ realizations** of the same ensemble (the CPU chain uses its own `Xoshiro`
 stream) — they are compared statistically, never bitwise. The gate suite runs
 the full device code path on the KA-CPU backend against a keyed serial
 reference, bitwise.
+
+Both counters start at zero in every [`GPUChainState`](@ref), so a
+download → checkpoint → re-upload "resume" **under the same `seed` replays the
+identical draws** at every site, on both channels — the new chain is a copy of the
+old one's first sweeps rather than a continuation. Give a resumed run a fresh seed.
 
 A small live run on the KA-CPU backend (the cubic-Heisenberg model of the
 tutorial):

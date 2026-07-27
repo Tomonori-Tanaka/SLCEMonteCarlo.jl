@@ -517,71 +517,223 @@ end
     end
 end
 
+@testset "gpu: displacement proposal slots are disjoint from the spin ones" begin
+    # A compound sweep attempts both moves at the same (seed, site, sweep). A shared
+    # slot would tie the displacement accept uniform to the spin one — the two moves
+    # would accept and reject together, which is not the chain either sweep's
+    # stationarity argument is about.
+    slots = (MC._SLOT_FLIP_ACC, MC._SLOT_AXIS12, MC._SLOT_AXIS3_ANGLE,
+             MC._SLOT_DISP_ACC, MC._SLOT_DISP12, MC._SLOT_DISP3)
+    @test length(unique(slots)) == 6
+    seed = UInt64(0xbeef)
+    e = SVector(0.0, 0.0, 1.0)
+    u = SVector(0.1, -0.2, 0.05)
+    for site = Int32(1):Int32(8), sw = Int32(1):Int32(3)
+        _, ua_spin = MC._keyed_proposal(seed, site, sw, e, 0.6)
+        u2, ua_disp = MC._keyed_disp_proposal(seed, site, sw, u, 0.02)
+        @test ua_spin != ua_disp
+        @test u2 != u                             # a nonzero shift was drawn
+    end
+    # the shift is exactly `u + step_u · (g1, g2, g3)` off slots 4–5
+    g1, g2 = MC._philox_normal2(MC._philox_block(seed, Int32(3), Int32(2),
+                                                 MC._SLOT_DISP12))
+    g3, _ = MC._philox_normal2(MC._philox_block(seed, Int32(3), Int32(2),
+                                                MC._SLOT_DISP3))
+    u2, _ = MC._keyed_disp_proposal(seed, Int32(3), Int32(2), u, 0.02)
+    @test u2 === u + 0.02 * SVector(g1, g2, g3)
+end
+
+@testset "gpu: displacement sweep ≡ keyed reference (bitwise)" begin
+    for (name, H) in _joint_gpu_cases(), ws in (4, 32)
+        st, gH, gst = _gpu_setup(H; with_disps = true)
+        β = 1 / 0.05
+        cfg0 = copy(st.config)
+        zr0 = copy(st.zrows)
+        u2 = copy(st.disps)
+        zr2 = copy(st.zrows)
+        dE2 = zeros(H.n_sites)
+        acc2 = zeros(Int32, H.n_sites)
+        E = gst.energy
+        naccs = Int[]
+        naccs_ref = Int[]
+        for sw = 1:5
+            push!(naccs, MC.gpu_displacement_sweep!(gst, gH, β; workgroupsize = ws))
+            push!(naccs_ref,
+                  MC._displacement_sweep_keyed_ref!(u2, zr2, dE2, acc2, H, β,
+                                                    st.step_u, gst.seed, Int32(sw), ws))
+            E += MC._reduce_dE(H, dE2)
+        end
+        MC.to_host!(st, gst)
+        @test st.disps == u2
+        @test st.zrows == zr2
+        @test gst.energy == E
+        @test naccs == naccs_ref
+        @test sum(naccs) > 0                      # the chain actually moved
+        @test gst.acc_disp == sum(naccs_ref)
+        @test gst.att_disp == 5 * H.n_disp_active
+        @test gst.disp_index == 5 && gst.sweep_index == 0
+        # A DISPLACEMENT sweep writes the displacement block and nothing else.
+        @test st.config == cfg0
+        @test view(st.zrows, 1:H.nlm, :) == view(zr0, 1:H.nlm, :)
+        @test all(st.disps[s] === u2[s] for s = 1:H.n_sites if !H.site_has_disp[s])
+    end
+end
+
+@testset "gpu: displacement sweep vs the host displacement_sweep! (statistics)" begin
+    # Independent of the reference above: the device chain and a CPU chain are
+    # different Markov chains (keyed Philox vs per-site Xoshiro), so they can only
+    # agree in distribution. Compared here on the exactly-known Einstein oscillator.
+    a = 2.5
+    kT = 0.04
+    tms, L = _einstein_terms(a)
+    H = MC.TiledHamiltonian(1, tms, L; dims = (3, 3, 3), fixed_reference = true)
+    rng = Xoshiro(11)
+    # From the CLAMPED-ION start (`disps = nothing` ⇒ all zero), so `⟨|u|²⟩` has to be
+    # built up by the sampler: a random start at amplitude 0.08 already sits within
+    # 20 % of the answer and would forgive under-thermalization.
+    st = MC.ChainState(H, _rand_config(rng, H), rng, 0.6; step_u = 0.12)
+    @test all(iszero, st.disps)
+    gH = MC.GPUTiledHamiltonian(CPU(), H)
+    gst = MC.GPUChainState(gH, st; seed = UInt64(4242))
+    β = 1 / kT
+    MC.gpu_run_sweeps!(gst, gH, st, β, 2_000; renorm_interval = 0)   # thermalize
+    acc = 0.0
+    nmeas = 4_000
+    for _ = 1:nmeas
+        MC.gpu_run_sweeps!(gst, gH, st, β, 1; renorm_interval = 0)
+        MC.to_host!(st, gst)
+        acc += sum(u -> dot(u, u), st.disps) / H.n_sites
+    end
+    # ⟨|u|²⟩ = 3kT/(2a) exactly for E = a|u|² (an isotropic Gaussian, σ² = kT/2a).
+    # Known limits of this gate, recorded rather than papered over: the stationary law
+    # of a symmetric-proposal Metropolis is step-independent, so it is insensitive to
+    # `step_u` and to a degenerate proposal covariance (that is the slot-map test's
+    # job); and the fixture's one displacement row is `(k, l) = (1, 0)`, so `R₀₀ ≡ 1`
+    # and `r2^1` is exact — no `l ≥ 1` solid harmonic and no libm-`pow` path here.
+    @test acc / nmeas ≈ 3 * kT / (2a) rtol = 0.04
+    @test 0.1 < gst.acc_disp / gst.att_disp < 0.95      # a live, non-degenerate chain
+end
+
 @testset "gpu: joint incremental-energy drift gate" begin
     for (name, H) in _joint_gpu_cases()
         # both renormalization modes: off (pure incremental bookkeeping) and on (the
         # host round-trip, which on a joint model also re-centres the displacements)
-        for interval in (0, 40)
+        # 30 does not divide 200: the run must END on unrenormalized incremental
+        # bookkeeping, or the last action before the comparison is a `_renormalize!`
+        # that re-anchors `gst.energy` on a fresh `_total_energy` and the gate is
+        # near-vacuous.
+        for interval in (0, 30)
             st, gH, gst = _gpu_setup(H; with_disps = true)
             u0 = copy(st.disps)
-            MC.gpu_run_sweeps!(gst, gH, st, 1 / 0.05, 200; renorm_interval = interval,
-                               fixed_lattice = true)
+            MC.gpu_run_sweeps!(gst, gH, st, 1 / 0.05, 200; renorm_interval = interval)
             E = total_energy(H, st.config, st.disps)
             @test abs(gst.energy - E) <= 1e-8 * max(1.0, abs(E))
-            # What "fixed lattice" does and does not mean. With renormalization OFF
-            # the displacements are untouched bit for bit; with it ON `_renormalize!`
-            # re-centres each component, so `st.disps` moves by a rigid per-component
-            # shift — a GAUGE change (the energy above is still exact), recorded in
-            # `com_removed`, not a different lattice.
+            @test gst.att_disp == 200 * H.n_disp_active     # one pass per sweep
+            @test st.disps != u0                            # the lattice really moved
+
+            # The frozen-lattice conditional, asked for explicitly. With
+            # renormalization OFF the displacements are then untouched bit for bit;
+            # with it ON `_renormalize!` re-centres each component, so `st.disps`
+            # moves by a rigid per-component shift — a GAUGE change (the energy stays
+            # exact), recorded in `com_removed`, not a different lattice.
+            st2, gH2, gst2 = _gpu_setup(H; with_disps = true)
+            MC.gpu_run_sweeps!(gst2, gH2, st2, 1 / 0.05, 200;
+                               renorm_interval = interval, disp_per_metropolis = 0)
+            E2 = total_energy(H, st2.config, st2.disps)
+            @test abs(gst2.energy - E2) <= 1e-8 * max(1.0, abs(E2))
+            @test gst2.att_disp == 0
             if interval == 0
-                @test st.disps == u0
-                @test all(iszero, st.com_removed)
+                @test st2.disps == u0
+                @test all(iszero, st2.com_removed)
             else
-                free = any(H.comp_free)
-                @test free == any(!iszero, st.com_removed)
+                @test any(H.comp_free) == any(!iszero, st2.com_removed)
                 for c = 1:H.n_disp_comps,
                     q = H.disp_comp_ptr[c]:(H.disp_comp_ptr[c + 1] - 1)
 
                     s = Int(H.disp_comp_sites[q])
-                    @test st.disps[s] + st.com_removed[c] ≈ u0[s] atol = 1e-12
+                    @test st2.disps[s] + st2.com_removed[c] ≈ u0[s] atol = 1e-12
                 end
             end
         end
     end
 end
 
-@testset "gpu: the wrong-ensemble and empty-sweep traps" begin
+@testset "gpu: compound sweep scheduling and the empty-sweep trap" begin
     Hj = _joint_gpu_cases()[1][2]
     st, gH, gst = _gpu_setup(Hj; with_disps = true)
-    # The driver refuses to sample π(ê | u) at a lattice nobody equilibrated without
-    # the caller saying so — the device analogue of `_resolve_disp_passes`' refusal to
-    # default `disp_per_metropolis` to 0 on a joint model (run.jl).
-    err = @test_throws ArgumentError MC.gpu_run_sweeps!(gst, gH, st, 1 / 0.05, 5)
-    @test occursin("fixed_lattice = true", err.value.msg)
-    @test MC.gpu_run_sweeps!(gst, gH, st, 1 / 0.05, 5; fixed_lattice = true) === gst
-    # ... and the primitive stays unjudged: interleaving host displacement sweeps
-    # around it is exactly how a joint chain is driven today.
-    sc = MC.SweepScratch(Hj)
-    @test MC.gpu_metropolis_sweep!(gst, gH, 1 / 0.05) isa Int
-    @test MC.displacement_sweep!(st, Hj, 1 / 0.05, sc) isa Int
-    # A pure-spin Hamiltonian needs no opt-in.
+    # The default is what protects: `nothing` means "whatever this Hamiltonian
+    # needs", so a joint model gets its displacement pass without being asked. A
+    # plain default of 0 would be the silent-wrong-ensemble trap (run.jl's
+    # `_resolve_disp_passes`, shared verbatim).
+    @test MC._resolve_disp_passes(Hj, nothing) == 1
+    @test MC._resolve_disp_passes(TiledHamiltonian(_dimer_model()), nothing) == 0
+    MC.gpu_run_sweeps!(gst, gH, st, 1 / 0.05, 5)
+    @test gst.sweep_index == 5 && gst.disp_index == 5
+    @test gst.att_metro == 5 * Hj.n_spin_active
+    @test gst.att_disp == 5 * Hj.n_disp_active
+    # several passes per Metropolis step advance the displacement counter alone
+    MC.gpu_run_sweeps!(gst, gH, st, 1 / 0.05, 4; disp_per_metropolis = 3)
+    @test gst.sweep_index == 9 && gst.disp_index == 5 + 12
+    # a pure-spin Hamiltonian asks for no displacement pass, and refuses one
     Hs = TiledHamiltonian(_biquadratic_model(3); dims = (2, 2, 2))
     sts, gHs, gsts = _gpu_setup(Hs)
     @test MC.gpu_run_sweeps!(gsts, gHs, sts, 1 / 0.05, 5) === gsts
+    @test gsts.att_disp == 0
+    @test_throws ArgumentError MC.gpu_run_sweeps!(gsts, gHs, sts, 1 / 0.05, 5;
+                                                  disp_per_metropolis = 1)
+    @test_throws ArgumentError MC.gpu_displacement_sweep!(gsts, gHs, 1 / 0.05)
 
-    # A lattice-only model has no spin-active site: a sweep there attempts nothing and
-    # would report a 0/0 acceptance over a bit-for-bit unchanged state — a "successful"
-    # run that sampled nothing. Both spin entry points throw instead.
+    # `_resolve_disp_passes` gates on the row LAYOUT (`has_disp`), the sweep on the
+    # SITES (`n_disp_active`), and a joint basis whose displacement couplings all
+    # fitted to zero separates them: layout rows, no site whose energy depends on `u`.
+    # The driver must run — the host does, as a no-op sweep — not throw out of its own
+    # default. (Zero passes is not a wrong-ensemble risk here: with nothing depending
+    # on `u`, the frozen-`u` conditional IS the joint distribution.)
+    sp1(site) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
+    z1 = SVector(0, 0, 0)
+    xx = SVector(1, 0, 0)
+    pr = zeros(3, 3)
+    pr[1, 1] = pr[2, 2] = pr[3, 3] = -0.5
+    Lz = SLCE.RowLayout(7, 1, 4, [(0, 1)], [4])          # displacement rows exist ...
+    Hz = MC.TiledHamiltonian(1, [DecoratedTerm(-0.03, (4π)^1, 2, [1, 1], [z1, xx],
+                                               [sp1(1), sp1(2)], pr)], Lz;
+                             dims = (4, 1, 1))            # ... but no term uses them
+    @test MC.has_disp(Hz) && Hz.n_disp_active == 0
+    @test MC._resolve_disp_passes(Hz, nothing) == 1       # the layout says yes ...
+    @test_throws ArgumentError MC.gpu_displacement_sweep!(
+        MC.GPUChainState(MC.GPUTiledHamiltonian(CPU(), Hz),
+                         MC.ChainState(Hz, _rand_config(Xoshiro(2), Hz), Xoshiro(2),
+                                       0.6; disps = _rand_disps(Xoshiro(2), Hz))),
+        MC.GPUTiledHamiltonian(CPU(), Hz), 1 / 0.05)      # ... the sites say no
+    rngz = Xoshiro(8)
+    stz = MC.ChainState(Hz, _rand_config(rngz, Hz), rngz, 0.6;
+                        disps = _rand_disps(rngz, Hz))
+    gHz = MC.GPUTiledHamiltonian(CPU(), Hz)
+    gstz = MC.GPUChainState(gHz, stz; seed = UInt64(6))
+    uz = copy(stz.disps)
+    MC.gpu_run_sweeps!(gstz, gHz, stz, 1 / 0.05, 5; renorm_interval = 0)
+    @test gstz.sweep_index == 5 && gstz.disp_index == 0
+    @test stz.disps == uz                                # nothing to move, nothing moved
+
+    # A lattice-only model: the spin PRIMITIVE throws (a sweep there attempts nothing
+    # and would report a 0/0 acceptance over a bit-for-bit unchanged state), while the
+    # driver simply skips the Metropolis pass — the displacement channel is the whole
+    # model. With both channels silenced there is nothing to run at all.
     tms, L = _einstein_terms()
     Hd = MC.TiledHamiltonian(1, tms, L; dims = (2, 2, 2), fixed_reference = true)
     @test Hd.n_spin_active == 0
     rng = Xoshiro(3)
-    std = MC.ChainState(Hd, _rand_config(rng, Hd), rng, 0.6; disps = _rand_disps(rng, Hd))
+    std = MC.ChainState(Hd, _rand_config(rng, Hd), rng, 0.6;
+                        disps = _rand_disps(rng, Hd))
+    u0 = copy(std.disps)
     gHd = MC.GPUTiledHamiltonian(CPU(), Hd)
     gstd = MC.GPUChainState(gHd, std; seed = UInt64(1))
     @test_throws ArgumentError MC.gpu_metropolis_sweep!(gstd, gHd, 1 / 0.05)
     @test_throws ArgumentError MC.gpu_run_sweeps!(gstd, gHd, std, 1 / 0.05, 5;
-                                                  fixed_lattice = true)
+                                                  disp_per_metropolis = 0)
+    MC.gpu_run_sweeps!(gstd, gHd, std, 1 / 0.05, 20; renorm_interval = 0)
+    @test gstd.sweep_index == 0 && gstd.disp_index == 20
+    @test std.disps != u0
 end
 
 @testset "gpu: the device kernel rejects a padded spin block" begin
@@ -601,6 +753,19 @@ end
     Hp = MC.TiledHamiltonian(1, terms, padded; dims = (4, 1, 1), fixed_reference = true)
     @test Hp.nlm == 6 && Hp.lmax == 1          # the host is fine with it
     @test_throws ArgumentError MC.GPUTiledHamiltonian(CPU(), Hp)
+
+    # The mirror on the other side: the displacement sweep writes `nlm+1:nrows` back
+    # wholesale while `_disp_rows_device!` fills only the declared `(k, l)` blocks, so
+    # a layout whose blocks do not TILE that range would copy uninitialized local
+    # memory into the row table. Row 8 here belongs to no block.
+    gappy = SLCE.RowLayout(8, 1, 4, [(0, 1)], [4])
+    Hg = MC.TiledHamiltonian(1, terms, gappy; dims = (4, 1, 1), fixed_reference = true)
+    @test Hg.nrows == 8 && Hg.layout.disp_starts[end] + 3 == 7   # ... 8 is unclaimed
+    @test_throws ArgumentError MC.GPUTiledHamiltonian(CPU(), Hg)
+    # and the well-formed layout of the same shape is accepted
+    tight = SLCE.RowLayout(7, 1, 4, [(0, 1)], [4])
+    Ht = MC.TiledHamiltonian(1, terms, tight; dims = (4, 1, 1), fixed_reference = true)
+    @test MC.GPUTiledHamiltonian(CPU(), Ht) isa MC.GPUTiledHamiltonian
 end
 
 @testset "gpu: the gradient path rejects a joint Hamiltonian" begin

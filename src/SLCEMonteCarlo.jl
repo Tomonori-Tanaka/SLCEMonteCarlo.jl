@@ -92,8 +92,8 @@ public to_matrix, from_matrix
 # GPU sweep API (exported 2026-07-19: A100 GO 30.1x + l02/l044 production
 # validation landed; the gradient tier below stays public-unexported — it is the
 # inter-package seam consumed by SLCEDynamics, not an end-user surface)
-export GPUTiledHamiltonian, GPUChainState, gpu_metropolis_sweep!, gpu_run_sweeps!,
-       to_host!
+export GPUTiledHamiltonian, GPUChainState, gpu_metropolis_sweep!,
+       gpu_displacement_sweep!, gpu_run_sweeps!, to_host!
 public GPUGradientScratch, gpu_energy_gradient!, gpu_zlm_rows!
 
 end # module SLCEMonteCarlo

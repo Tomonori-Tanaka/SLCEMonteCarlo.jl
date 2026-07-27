@@ -291,18 +291,23 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   or `_disp_rows!`'s block loop → update this file and the ulp bound together.
 - **GPU kernel ↔ keyed reference ↔ slot map ↔ workgroup-size pin**
   (`src/gpu/gpu_sweep.jl`, `src/gpu/philox.jl`, `docs/specs/gpu-prototype.md`
-  G2–G4): `_metro_kernel!` and `_metropolis_sweep_keyed_ref!` implement ONE
-  arithmetic contract (proposal slots, `_entry_walk_partial` dispatch + zero
-  skips, lane-ordered fold, accept rule). Touch any of them — or the Philox slot
-  layout, or the pinned default ws — and the other side plus the G-record move
-  together; gate: the full-sweep bitwise section of `test/unit/test_gpu.jl`.
+  G2–G4/G8): TWO pairs, one contract each — `_metro_kernel!` ↔
+  `_metropolis_sweep_keyed_ref!` and `_disp_kernel!` ↔
+  `_displacement_sweep_keyed_ref!` (proposal slots, `_entry_walk_partial` dispatch
+  + zero skips, lane-ordered fold, accept rule). Touch any of them — or the Philox
+  slot layout, or the pinned default ws — and the other side plus the G-record move
+  together; gate: the full-sweep bitwise sections of `test/unit/test_gpu.jl`.
+  The two move kinds need BOTH disjoint Philox slots (independence within one
+  compound step) AND separate `GPUChainState` counters (`sweep_index` /
+  `disp_index` — several displacement passes per step must not repeat a draw);
+  neither substitutes for the other.
 - **Device channel plumbing ↔ the host sweeps' skips and row ranges**
   (`src/gpu/gpu_hamiltonian.jl`, `src/gpu/gpu_sweep.jl`, `src/updates.jl`, G8):
-  `_entry_walk_partial`'s `lo:hi` selects the same entries as
-  `delta_energy(c, zold, znew, lo, hi)` (energy.jl) but takes the moved block ALONE,
-  indexed relatively (`znew_block[tgt - lo + 1]`), where `delta_energy` indexes a
-  full-length buffer absolutely — handing the walk a full-length row with
-  `lo = nlm + 1` reads the spin block as displacement rows, silently. `_channel_colors`'
+  `_entry_walk_partial`'s `lo:hi` IS `delta_energy(c, zold, znew, lo, hi)`
+  (energy.jl), full-length `znew` and absolute indexing included — ONE convention,
+  host and device, `SweepScratch.znew` and `@localmem Float64 NROWS` alike. Do not
+  reintroduce a block-relative buffer to save localmem: a `lo = nlm+1` walk handed one
+  reads the spin block as displacement rows, silently. `_channel_colors`'
   `spin_sites`/`disp_sites` are the `site_has_spin`/`site_has_disp` skips of
   `metropolis_sweep!`/`displacement_sweep!` moved to launch time. Change a host
   skip predicate or a move's row block and the device schedule/range must move

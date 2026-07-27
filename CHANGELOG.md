@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — the device displacement sweep (M4 slice 3f/3)
+
+- **`gpu_displacement_sweep!`** (exported) — the displacement half of the device
+  Metropolis path. `_disp_kernel!` is `_metro_kernel!` with the other channel's
+  proposal, row filler, row range and write-back: same workgroup shape, same lane-1
+  ownership, same lane-ordered fold, same accept rule, walking `disp_sites` with
+  `lo:hi = nlm+1:nrows`. The trial row is filled by `_disp_rows_device!` (3f/1) from a
+  `@localmem` solid-harmonic batch workspace, as the host fills it from
+  `SweepScratch.rbuf`; the serial twin `_displacement_sweep_keyed_ref!` extends the
+  kernel ≡ reference bitwise gate to both channels.
+- **`gpu_run_sweeps!` compounds the two sweeps** — one Metropolis pass then
+  `disp_per_metropolis` displacement passes — and resolves the count through
+  `_resolve_disp_passes`, the host drivers' own function rather than a copy of its
+  rule: `nothing` means one pass on a joint model and none on a pure-spin one. This
+  **replaces the `fixed_lattice` opt-in of 3f/2**; freezing the lattice is now
+  `disp_per_metropolis = 0`, the same acknowledgement in the vocabulary `run_mc`
+  already uses. A lattice-only model has its Metropolis pass skipped by the driver
+  (the spin primitive still refuses it); a model with nothing to sweep in either
+  channel throws.
+- **Per-move-kind RNG counters and slots.** The displacement proposal takes Philox
+  slots 3–5 against the spin proposal's 0–2, and `GPUChainState` counts `sweep_index`
+  and `disp_index` separately. Both are needed, for different reasons: disjoint SLOTS
+  keep the two moves independent within one compound step (a shared accept uniform
+  would make them accept and reject together), and a separate COUNTER keeps several
+  displacement passes in one step from drawing the identical shift.
+- **One trial-row convention, replacing 3f/2's two.** `znew` is `H.nrows` long
+  everywhere — `SweepScratch.znew` on the host, `@localmem Float64 NROWS` in both
+  kernels — and indexed absolutely, with only `lo:hi` written and read. The
+  block-relative kernel buffer of 3f/2 saved a few floats per workgroup and bought
+  the silent hazard the review had flagged for exactly this slice. Pure-spin device
+  trajectories are unchanged bit for bit (re-verified against `5471379`).
+- Gated by: the slot map's disjointness and the exact `u + step_u·(g₁,g₂,g₃)` shift;
+  the displacement sweep ≡ its keyed reference bitwise over five sweeps on both joint
+  fixtures × two workgroup sizes, with — independently — spins, spin rows and
+  displacement-inactive sites bitwise unchanged; compound scheduling (both counters,
+  both attempt tallies, several passes per step, the pure-spin refusal, the
+  lattice-only skip-and-throw pair); the joint drift gate with the lattice now moving,
+  plus the frozen-lattice conditional and its centre-of-mass gauge; and the
+  **Einstein oscillator against its closed form**, `⟨|u|²⟩ = 3kT/(2a)` to 5 % — the
+  one displacement gate that checks the device chain against an external truth rather
+  than another implementation of the same arithmetic.
+- Validated outside the suite (scratch tier, recorded in G8): on a **bounded** joint
+  fixture the device compound chain and the host `metropolis_sweep!` +
+  `displacement_sweep!` chain agree to 0.12σ in `⟨E⟩` and 0.0σ in `⟨|u|²⟩` over four
+  seeds each, with acceptance rates matching to three digits.
+- **`has_disp` (row layout) vs `n_disp_active` (sites), again.**
+  `_resolve_disp_passes` gates on the first, `gpu_displacement_sweep!` on the second,
+  and a joint basis whose displacement couplings all fitted to zero separates them:
+  the driver's own default threw on such a model, which the host runs fine as a no-op
+  sweep. It now resolves first — so an explicit displacement pass on a Hamiltonian
+  with no displacement *rows* is still refused — and clamps to zero passes when there
+  is no displacement-active *site*.
+- **The device driver carries the U8 diagnostics too**, now that the device chain
+  moves the lattice: `_warn_gpu_escape_cadence` mirrors `run.jl`'s
+  `_warn_escape_cadence` (same `_escape_min_checks` arithmetic) and additionally warns
+  when `renorm_interval ≤ 0`, which on this path is legal and switches off the escape
+  detector and re-centring together. Step adaptation stays out of scope, but the guide
+  now says so for `step_u` as well as `step`, says where the acceptance data actually
+  lives (`gst`, not `st` — `to_host!` does not copy counters), and warns that both RNG
+  counters restart at zero, so a re-uploaded "resume" under the same seed replays
+  rather than continues.
+- **Two device-side shape guards, not one.** Widening the trial row to `NROWS` turned
+  a wrong `(lo, hi)` from a bounds error into an uninitialized-`@localmem` read, so
+  the spin kernel zero-fills its unused half; and the constructor now also rejects a
+  `RowLayout` whose displacement blocks do not tile `nlm+1:nrows` (the write-back
+  copies the whole block), the mirror of 3f/2's padded-spin-block assertion.
+- Two gates were softer than they looked and were sharpened: the Einstein statistics
+  gate now starts from the clamped-ion state rather than a random lattice already
+  within 20 % of the answer (rtol 0.05 → 0.04), and the renormalizing arm of the joint
+  drift gate uses an interval that does not divide the sweep count, so the run no
+  longer ends on the `_renormalize!` that re-anchors the energy it is about to check.
+
 ### Added — joint device tables and a joint-safe spin sweep (M4 slice 3f/2)
 
 - **`GPUTiledHamiltonian` accepts joint spin–lattice Hamiltonians.** The
@@ -43,7 +115,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a call walks the joint program table against a spin-sized gradient row — an
   `@inbounds` out-of-bounds read returning garbage instead of throwing. Each entry
   point is gated separately.
-- **`gpu_run_sweeps!` refuses the wrong ensemble by default.** On a joint model the
+- **`gpu_run_sweeps!` refuses the wrong ensemble by default.** (`fixed_lattice` was
+  superseded within this same unreleased cycle by 3f/3's `disp_per_metropolis`, which
+  encodes the same constraint in the host's vocabulary; the reasoning below is what
+  carried over.) On a joint model the
   device moves the spins only, so the chain samples `π(ê | u)` at the uploaded
   lattice — not the joint distribution — and every displacement observable off such a
   run is conditional on a lattice nobody equilibrated. The driver now **throws** on a

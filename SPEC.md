@@ -19,7 +19,7 @@ ferrimagnetic Nd-vs-Fe order at 250 K.
 | `src/observables.jl` | `MCView` (the single argument every observable receives), `Observable`, `Evaluable` (with its `scope` site-count declaration), standard sets — spin, and the centre-of-mass-free displacement ones on a joint model |
 | `src/state.jl` | `SpinConfig`, `ChainState` (spin config + displacements + per-site RNG streams + the two proposal widths), `SweepScratch`, `_recenter!` (per-component centre-of-mass projection, called from `_renormalize!`) |
 | `src/updates.jl` | Metropolis (adaptive step), overrelaxation, displacement Metropolis, compound sweeps — color-ordered, serial or `sweep_tasks`-parallel with bit-identical results |
-| `src/gpu/*.jl` | GPU Metropolis prototype (KernelAbstractions, backend supplied by the caller): `philox.jl` keyed Philox4x32-10 stream, `zlm_device.jl` bitwise device tesseral row, `disp_device.jl` device solid-harmonic / displacement rows, `gpu_hamiltonian.jl`/`gpu_state.jl` device tables (both channels' color schedules + the layout's displacement blocks) + chain state (spins, displacements, the full row table), `gpu_sweep.jl` fused kernel + drivers + keyed serial reference. The spin sweep is joint-safe (row-range-restricted ΔE, spin-channel schedule); the gradient entry points are spin-only |
+| `src/gpu/*.jl` | GPU Metropolis prototype (KernelAbstractions, backend supplied by the caller): `philox.jl` keyed Philox4x32-10 stream, `zlm_device.jl` bitwise device tesseral row, `disp_device.jl` device solid-harmonic / displacement rows, `gpu_hamiltonian.jl`/`gpu_state.jl` device tables (both channels' color schedules + the layout's displacement blocks) + chain state (spins, displacements, the full row table), `gpu_sweep.jl` the two fused kernels (spin + displacement), the compound driver, and their keyed serial references. Both sweeps are channel-restricted (row-range ΔE, per-channel schedule); the gradient entry points are spin-only |
 | `src/minimize.jl` | `minimize_energy` (on-sphere BB descent), `find_ground_state` (multi-start anneal + polish), `GroundStateResult` |
 | `src/stability.jl` | `force_constant_matrix` / `harmonic_stability` — the displacement Hessian of the TILED Hamiltonian by central differences, and its spectrum: the before-the-run screen complementing the after-the-fact escape detector |
 | `src/run.jl` | `run_mc` (single T + annealing), `TempResult`, `MCResult` |
@@ -48,7 +48,8 @@ Exported: `KB_EV`, `TiledHamiltonian`, `n_sites`, `total_energy`, `Observable`,
 `find_ground_state`, `GroundStateResult`, `resume`, `supercell_crystal`,
 `ReducedCell`, `reduce_cell`, and (since 2026-07-19, after the A100 GO and the
 l02/l044 production validations) the GPU sweep API: `GPUTiledHamiltonian`,
-`GPUChainState`, `gpu_metropolis_sweep!`, `gpu_run_sweeps!`, `to_host!`.
+`GPUChainState`, `gpu_metropolis_sweep!`, `gpu_displacement_sweep!`,
+`gpu_run_sweeps!`, `to_host!`.
 
 Public, unexported (`SLCEMonteCarlo.<name>`): `resolve_kt`, `ScaledTerm`,
 `TermSlot`, `has_disp`, `SpinConfig`, `site_index`, `site_atom`, `site_coeffs!`, `delta_energy`,

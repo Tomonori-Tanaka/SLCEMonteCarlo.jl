@@ -42,8 +42,8 @@ struct _GPUTables{VI<:AbstractVector{Int32},VB<:AbstractVector{Int8},
     spin_sites::VI
     disp_sites::VI
     # The `RowLayout` displacement blocks, flattened (`_disp_layout_tables`); empty on
-    # a pure-spin layout. Uploaded but read by no kernel yet — the displacement sweep
-    # is G8 phase 3; only the shape assertions of the joint testset cover them.
+    # a pure-spin layout. Read by `_disp_kernel!` through `_disp_rows_device!`, which
+    # wants the ABSOLUTE row offsets — the trial row is the full table (see the walk).
     fac_k::VI
     fac_l::VI
     fac_start::VI
@@ -142,6 +142,18 @@ struct GPUTiledHamiltonian{B<:Backend,D<:_GPUTables}
             "lmax = $(H.lmax), i.e. $((H.lmax + 1)^2) tesseral rows; the device " *
             "kernel derives the block width from lmax and cannot address a padded " *
             "layout"))
+        # The mirror on the other side. The displacement kernel writes back
+        # `nlm+1:nrows` wholesale while `_disp_rows_device!` fills only the declared
+        # `(k, l)` blocks, so a layout whose blocks do not TILE that range would copy
+        # uninitialized local memory into the row table. `row_layout` always tiles it.
+        L = H.layout
+        isempty(L.disp_factors) || L.disp_starts[end] + 2 * L.disp_factors[end][2] +
+            1 == H.nrows || throw(ArgumentError(
+            "this Hamiltonian's layout leaves rows between its last displacement " *
+            "block (starts at $(L.disp_starts[end]), (k, l) = " *
+            "$(L.disp_factors[end])) and nrows = $(H.nrows); the device " *
+            "displacement sweep writes the whole block back and cannot address a " *
+            "layout whose blocks do not tile it"))
         arrays, spin_ptr, disp_ptr = _table_arrays(H)
         dev = _GPUTables(map(a -> _to_device(backend, a), arrays)...)
         return new{typeof(backend),typeof(dev)}(backend, H, dev, spin_ptr, disp_ptr)

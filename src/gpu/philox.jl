@@ -59,12 +59,21 @@ end
     return _philox4x32(ctr, key)
 end
 
-# Per-proposal slot map (G2). One Metropolis proposal consumes exactly three
-# blocks; whether a slot is *evaluated* is branch-dependent, but the value each
-# slot would produce is not — branch-dependent consumption disappears.
+# Per-proposal slot map (G2). One proposal consumes exactly three blocks; whether a
+# slot is *evaluated* is branch-dependent, but the value each slot would produce is
+# not — branch-dependent consumption disappears.
+#
+# The two move kinds take DISJOINT slots. They must: a compound sweep attempts both at
+# the same `(seed, site, sweep)`, and a shared slot would tie the displacement accept
+# uniform to the spin one — the moves would accept and reject together, which is not
+# the chain either sweep's stationarity argument is about. Slots are cheap (a whole
+# 32-bit counter word), so the map wastes them freely rather than packing.
 const _SLOT_FLIP_ACC = 0x00000000    # words 1–2 → flip uniform, words 3–4 → accept
 const _SLOT_AXIS12 = 0x00000001      # Box–Muller pair → axis normals n1, n2
 const _SLOT_AXIS3_ANGLE = 0x00000002 # Box–Muller pair → axis normal n3, angle n4
+const _SLOT_DISP_ACC = 0x00000003    # words 3–4 → the displacement accept uniform
+const _SLOT_DISP12 = 0x00000004      # Box–Muller pair → shift components g1, g2
+const _SLOT_DISP3 = 0x00000005       # Box–Muller pair → shift component g3 (+1 spare)
 
 """
     _philox_uniform(hi, lo) -> Float64

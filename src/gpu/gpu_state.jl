@@ -12,15 +12,22 @@ all-zero and never read on a pure-spin Hamiltonian), `zrows` (the full
 `nrows × n_sites` basis-row table: the tesseral SPIN block and, on a joint model,
 the displacement blocks), per-site `dE` staging and `acc` accept flags (Int32 0/1 —
 no atomics anywhere), plus host-side bookkeeping: incremental `energy` (model units,
-`j0` excluded), the keyed-RNG `seed`, the number of completed sweeps `sweep_index`
-(the RNG counter word — every sweep's draws are a pure function of `(seed, site,
-sweep_index + 1)`), the two fixed proposal widths `step` (radians) and `step_u`
-(length; no on-device adaptation in this prototype), acceptance counters per move
-type, and preallocated host staging buffers for the per-sweep `dE`/`acc` copy-back.
+`j0` excluded), the keyed-RNG `seed`, the two RNG counter words `sweep_index` and
+`disp_index` (completed sweeps of each move kind — a sweep's draws are a pure
+function of `(seed, site, counter + 1)`), the two fixed proposal widths `step`
+(radians) and `step_u` (length; no on-device adaptation in this prototype),
+acceptance counters per move type, and preallocated host staging buffers for the
+per-sweep `dE`/`acc` copy-back.
 
-`step_u`, `acc_disp` and `att_disp` are carried but **not yet used**: no device sweep
-moves the displacements until G8 phase 3, so `acc_disp / att_disp` is `0/0` on every
-run this version can produce.
+**One counter per move kind**, not one per compound sweep: a compound sweep may run
+several displacement passes per Metropolis pass, and sharing a counter would make
+every pass in one step draw the identical proposal. The two kinds also take disjoint
+Philox slots (philox.jl), so they stay independent within a step.
+
+Both counters start at **zero** here, so a download → checkpoint → re-upload "resume"
+under the same `seed` replays the identical draws at every site on both channels —
+the new chain copies the old one's first sweeps rather than continuing it. Give a
+resumed run a fresh seed.
 """
 mutable struct GPUChainState{VC<:AbstractVector{SVector{3,Float64}},
                              MF<:AbstractMatrix{Float64},
@@ -33,6 +40,7 @@ mutable struct GPUChainState{VC<:AbstractVector{SVector{3,Float64}},
     energy::Float64
     const seed::UInt64
     sweep_index::Int
+    disp_index::Int
     step::Float64
     step_u::Float64
     acc_metro::Int
@@ -63,7 +71,7 @@ function GPUChainState(gH::GPUTiledHamiltonian, st::ChainState;
     copyto!(zrows, st.zrows)
     dE = KernelAbstractions.zeros(backend, Float64, n)
     acc = KernelAbstractions.zeros(backend, Int32, n)
-    return GPUChainState(config, disps, zrows, dE, acc, st.energy, UInt64(seed), 0,
+    return GPUChainState(config, disps, zrows, dE, acc, st.energy, UInt64(seed), 0, 0,
                          st.step, st.step_u, 0, 0, 0, 0,
                          zeros(Float64, n), zeros(Int32, n))
 end
