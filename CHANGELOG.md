@@ -52,6 +52,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixture the device compound chain and the host `metropolis_sweep!` +
   `displacement_sweep!` chain agree to 0.12σ in `⟨E⟩` and 0.0σ in `⟨|u|²⟩` over four
   seeds each, with acceptance rates matching to three digits.
+- **A100 smoke PASSED** (kugui job 867813, A100-SXM4-40GB / CUDA 12.6 / CUDA.jl
+  6.2.1): all 16 checks green on real hardware — `_disp_kernel!` compiles and runs
+  (the G7 `@index` failure mode did not recur), channel isolation bitwise, device
+  determinism, drift 7.1e-15 / 0.0, the Einstein closed form to −0.02 %, and
+  CUDA ≡ KA-CPU in distribution at 0.97σ / 1.19σ with acceptance rates identical to
+  three digits. New: `bench/gpu/smoke_joint.jl` and `bench/gpu/job_joint_smoke.pbs`
+  — a separate script from `bench_gpu.jl`, which runs pure-spin fixtures and so never
+  launches the displacement kernel at all. It refuses to fall back to the CPU
+  backend, since a smoke that silently ran on the host would report success for
+  precisely the thing it exists to check.
 - **`has_disp` (row layout) vs `n_disp_active` (sites), again.**
   `_resolve_disp_passes` gates on the first, `gpu_displacement_sweep!` on the second,
   and a joint basis whose displacement couplings all fitted to zero separates them:

@@ -28,6 +28,23 @@ julia --project=bench bench/bench_minimize.jl [n_bcc] [n_2141] [nstarts] # gradi
 julia --project=bench bench/bench_profile.jl  [target] [fixture] [secs]  # line-level hotspots
 ```
 
+### GPU (`bench/gpu/`, its own environment — it carries CUDA)
+
+```bash
+julia --project=bench/gpu bench/bench_gpu.jl [n_2141_max] [nsweeps]  # the G6 go/no-go sweep
+julia --project=bench/gpu bench/gpu/smoke_joint.jl                   # the JOINT device smoke
+```
+
+`bench_gpu.jl` runs pure-spin fixtures and falls back to the KA-CPU backend when no
+GPU is present (a correctness smoke — its throughput is not a GPU number).
+`smoke_joint.jl` covers what that cannot: it launches the displacement kernel, and it
+**refuses** to run without a functional CUDA device, because the KA-CPU test suite is
+structurally blind to the one bug class this exists to catch (`@index` returns `Int32`
+on CUDA and `Int` on the CPU backend — see the G7 field note). **Run it on a device
+after any kernel-adjacent change.** PBS jobs for kugui are alongside:
+`job_i1accs.pbs` (30 min debug queue), `job_joint_smoke.pbs` (the joint smoke),
+`job_f1accs.pbs` (the production size sweep).
+
 ## How to find a bottleneck
 
 1. `bench_sweeps.jl` — is the ns/attempt near the kernel lower bound printed by

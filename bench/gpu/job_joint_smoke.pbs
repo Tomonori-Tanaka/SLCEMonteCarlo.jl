@@ -1,0 +1,20 @@
+#!/bin/bash
+# kugui debug-queue smoke for the JOINT device path (M4 slice 3f, G8): does
+# `_disp_kernel!` compile and run on CUDA, does the compound driver hold its
+# determinism and drift contracts there, and does the device chain reproduce the
+# Einstein closed form and the KA-CPU ensemble. Submit from the repo root on kugui:
+#   /opt/pbs/bin/qsub bench/gpu/job_joint_smoke.pbs
+#
+# The KA-CPU suite cannot substitute for this: its `@index` returns `Int` where the
+# CUDA backend's returns `Int32`, the exact class of bug the G7 field note records.
+#PBS -q i1accs
+#PBS -l select=1:ncpus=16:ngpus=1
+#PBS -l walltime=00:30:00
+#PBS -N slce-joint-smoke
+cd "$PBS_O_WORKDIR"
+{
+    nvidia-smi | head -12
+    # precompile on the allocated node (login nodes are kept free of heavy work)
+    ~/.juliaup/bin/julia --project=bench/gpu -e 'using Pkg; Pkg.precompile()'
+    ~/.juliaup/bin/julia -t 8 --project=bench/gpu bench/gpu/smoke_joint.jl
+} > bench/gpu/smoke_joint.log 2>&1

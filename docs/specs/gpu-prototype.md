@@ -508,3 +508,30 @@ because each is a rule rather than a one-off fix:
   into 200). Recorded limits of the Einstein gate: it is step-independent by
   construction, and its one `(k, l) = (1, 0)` row exercises neither an `l ≥ 1` solid
   harmonic nor the `k ≥ 2` libm-`pow` path.
+
+**A100 smoke of the joint path — PASSED** (2026-07-27, kugui `i1accs` job 867813,
+A100-SXM4-40GB, driver 560.35.03 / CUDA 12.6, CUDA.jl 6.2.1, Julia 1.12.6; script
+`bench/gpu/smoke_joint.jl`, job `bench/gpu/job_joint_smoke.pbs`). A separate script
+from `bench_gpu.jl` because that one runs pure-spin fixtures and so never launches
+`_disp_kernel!` at all — and device-only because the KA-CPU suite cannot see the G7
+class of bug by construction. It refuses to fall back to the CPU backend: a smoke
+that silently ran on the host would report success for exactly the thing it exists
+to check.
+
+All 16 checks green on a 128-site joint fixture (spin 64, disp 128, nrows 8):
+
+| check | result |
+|---|---|
+| `_disp_kernel!` compiles and runs on CUDA | ok (the G7 failure mode did not recur) |
+| `_metro_kernel!` under the new `Val(NROWS)` signature | ok |
+| channel isolation, both directions, bitwise | ok |
+| determinism: same seed ⇒ identical, different seed ⇒ different | ok |
+| joint drift gate, `renorm_interval` 0 / 30 | 7.1e-15 / **0.0** |
+| Einstein `⟨|u|²⟩ = 3kT/(2a)` on device | **−0.02 %** |
+| CUDA ≡ KA-CPU in distribution, `⟨E⟩` / `⟨|u|²⟩` | 0.97σ / 1.19σ (τ ≈ 9) |
+| acceptance rates across backends | 0.779/0.725 both, to three digits |
+
+The cross-backend agreement is the gate G3(b) actually promises — Box–Muller and the
+accept test go through backend libm, so bitwise identity is not available there. That
+the acceptance rates match to three digits says the two trajectories stay very close
+in practice regardless.
