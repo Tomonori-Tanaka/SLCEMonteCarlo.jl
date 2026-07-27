@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["*"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    name: tests — Julia ${{ matrix.version }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["1.12"]
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      # SLCE is a path-dev dependency; check both repos out as SIBLINGS. The docs
+      # environment's `[sources]` entries are relative (`../../SLCE.jl`), so this
+      # layout is required there and kept here for one convention.
+      - uses: actions/checkout@v4
+        with:
+          path: SLCEMonteCarlo.jl
+      - uses: actions/checkout@v4
+        with:
+          repository: Tomonori-Tanaka/SLCE.jl
+          path: SLCE.jl
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.version }}
+      - uses: julia-actions/cache@v2
+      - name: Develop the path dependency and instantiate
+        run: |
+          julia --project=SLCEMonteCarlo.jl -e '
+            using Pkg
+            Pkg.develop(path = "SLCE.jl")
+            Pkg.instantiate()'
+      # BOTH operating systems are load-bearing, not redundancy. The accept test and
+      # the Box-Muller draws go through the platform's libm, so a seeded chain that
+      # runs long enough to diverge chaotically — the escape-detector gate does — has
+      # platform-dependent STATISTICS even though the code is identical. That gate's
+      # threshold was calibrated on macOS alone and went red the first time it ran on
+      # Linux (see `857f5a6`). Reproducibility is promised for one platform + Julia
+      # version, thread-count-independent; running both is how a tolerance that
+      # quietly encodes one platform gets caught.
+      #
+      # JULIA_NUM_THREADS > 1 is REQUIRED, not a speed knob: `test_parallel.jl`
+      # compares a parallel sweep against a serial reference and the PT determinism
+      # gates compare across thread counts. At one thread the parallel path IS the
+      # serial one and the assertions pass while exercising nothing.
+      - name: Run the test suite
+        run: julia --project=SLCEMonteCarlo.jl -e 'using Pkg; Pkg.test()'
+        env:
+          TEST_MODE: all
+          JULIA_NUM_THREADS: "4"
+
+  docs:
+    name: documentation build
+    runs-on: ubuntu-latest
+    steps:
+      # Same sibling layout: `docs/Project.toml` resolves SLCE as `../../SLCE.jl`.
+      - uses: actions/checkout@v4
+        with:
+          path: SLCEMonteCarlo.jl
+      - uses: actions/checkout@v4
+        with:
+          repository: Tomonori-Tanaka/SLCE.jl
+          path: SLCE.jl
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - uses: julia-actions/cache@v2
+      # `Pkg.test()` never builds the docs, so a docstring that silently detached
+      # from its function — or an `@docs` block naming something undocumented —
+      # is invisible to the suite and only a strict Documenter build catches it.
+      # That exact defect was found by hand in a sibling package on 2026-07-27.
+      - name: Instantiate the docs environment
+        run: julia --project=SLCEMonteCarlo.jl/docs -e 'using Pkg; Pkg.instantiate()'
+      - name: Build the Documenter site
+        run: julia --project=SLCEMonteCarlo.jl/docs SLCEMonteCarlo.jl/docs/make.jl
