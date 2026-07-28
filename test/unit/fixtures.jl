@@ -153,9 +153,9 @@ function _joint_model(seed = 5; asr::Bool = true)
     lat = Lattice(Matrix(3.0 * I(3)))
     cr = Crystal(lat, [1/6 -1/6; 0.0 0.0; 0.0 0.0], [1, 1], ["Fe"])
     spec = BasisSpec(cr; lmax = 1, pmax = 2, sectors = [
-        Sector(spin = (nbody = 1:2,), cutoff = 1.1),
-        Sector(spin = [1, 1], disp = (degree = 2,), nbody = 2, cutoff = 1.1),
-        Sector(disp = (degree = 2,), nbody = 1:2, cutoff = 1.1)])
+        Sector(spin = (sites = 1:2,), cutoff = 1.1),
+        Sector(spin = [1, 1], disp = (degree = 2,), sites = 2, cutoff = 1.1),
+        Sector(disp = (degree = 2,), sites = 1:2, cutoff = 1.1)])
     b = SLCEBasis(cr, spec)
     rng = MersenneTwister(seed)
     jphi = if asr
@@ -179,9 +179,9 @@ function _stacked_joint_model(seed = 7)
     lat = Lattice(Matrix(4.0 * I(3)))
     cr = Crystal(lat, [0 0; 0 0; 0.0 0.5], [1, 1], ["Fe"])
     spec = BasisSpec(cr; lmax = 1, pmax = 2, sectors = [
-        Sector(spin = (nbody = 1:2,), cutoff = 2.1),
-        Sector(spin = [1, 1], disp = (degree = 2,), nbody = 2, cutoff = 2.1),
-        Sector(disp = (degree = 2,), nbody = 1:2, cutoff = 2.1)])
+        Sector(spin = (sites = 1:2,), cutoff = 2.1),
+        Sector(spin = [1, 1], disp = (degree = 2,), sites = 2, cutoff = 2.1),
+        Sector(disp = (degree = 2,), sites = 1:2, cutoff = 2.1)])
     b = SLCEBasis(cr, spec; backend = SpglibBackend())
     # same expected warning as `_joint_model`: a few displacement partners of this
     # small cell fall outside the cutoff, so their columns are structurally zeroed
