@@ -161,6 +161,32 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   and per component, pure-spin no-op consuming no randomness), "joint drivers: pass
   scheduling and the second proposal width", and `test_checkpoint.jl` "joint:
   displacement state survives a resume bit-exactly".
+- **Coefficient hot-swap: `_push_term_programs!`'s skip ↔ `sent_base`/`sent_term` ↔
+  `set_coefficients!` ↔ `keep_zero_terms` ↔ the GPU tables and the checkpoint
+  fingerprint** (`hamiltonian.jl`, `coefficients.jl`, `gpu/gpu_hamiltonian.jl`,
+  `checkpoint.jl`). The site-program skip tests **`folded[idx]`, never
+  `coef · folded[idx]`** — that is what makes the entry SET coefficient-independent, and
+  it is the whole reason a rewrite can be an in-place fused multiply instead of a
+  rebuild (0.033 ms vs 13–96 ms, and `dims`-independent). It is byte-identical to the
+  old predicate for any `coef ≠ 0`; re-introducing the `coef` factor would leave a
+  zero-coefficient term with no program. The invariant
+  `sent_w[i] == term_coef[sent_term[i]] · sent_base[i]` must be re-established after
+  **every** write to any of the three, and the energy program deliberately does NOT
+  carry the coefficient (it multiplies per instance), so it needs no rewrite — add a
+  weight array and it must join the invariant or be documented as raw.
+  `term_source`/`term_scale`/`n_input_terms` exist so a rewrite is indexed by the
+  caller's term list and re-applies the SAME scale the ctor did, never re-derived from
+  the cluster shape (design record §7). Everything structural — `site_active`,
+  `site_has_spin`/`site_has_disp` and their counts, the coloring, the displacement
+  components, `comp_free` — is a property of the term list the Hamiltonian was BUILT
+  with; that is what `keep_zero_terms` freezes, and why a nonzero coefficient for a
+  pruned term is a loud error naming the flag rather than a silent no-op. Two
+  consumers go stale by design and are documented, not fixed: a `GPUTiledHamiltonian`
+  keeps its old device tables (re-upload), and `_fingerprint` mixes `t.coef`, so a
+  pre-swap checkpoint correctly refuses to resume. Gates:
+  `test_coefficients.jl` (byte-identical no-op round trip, swap ≡ fresh build on the
+  triplet fast path, the named refusal, `keep_zero_terms` byte-neutral without zeros,
+  and the flatness re-check with its opt-out).
 - **Upstream BREAKING spec keywords ↔ this package's fixtures/benches/docs/assets**:
   `SLCE`'s `BasisSpec` keywords are consumed in `test/unit/fixtures.jl`,
   `bench/fixtures.jl`, `bench/assets/*.toml` (`[interaction]`) and every

@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `set_coefficients!`: coefficient hot-swap without a rebuild
+
+`set_coefficients!(H, coefs)` rewrites a built `TiledHamiltonian`'s coefficients in
+place, leaving the tiling, the instance/site adjacency, the coloring, the displacement
+components and every program *index* array untouched. Measured on Nd₂Fe₁₄B (4692
+terms): **0.033 ms**, against 13.2 ms (4³) / 96.4 ms (8³) for a full rebuild — a 404×
+/ 2912× speedup, and independent of `dims` because the work is per template, not per
+instance. For scale, one sweep is 3.8 ms (4³) / 35.6 ms (8³), so the strain outer move
+that motivated this (SLCE design record §I, one rewrite per sweep) now costs ~1% of a
+sweep instead of 3× one.
+
+What made it possible: the program entry *set* is coefficient-independent. The
+site-program skip now tests `folded[idx]` rather than `coef · folded[idx]` — the same
+entries for any term with `coef ≠ 0`, hence byte-identical programs on every model
+built the old way (gated) — and the weight stream is stored factored, `sent_w ==
+term_coef[sent_term] · sent_base`, so a rewrite is a fused multiply.
+
+`TiledHamiltonian(...; keep_zero_terms = true)` is the companion: the default prune of
+`coef == 0` terms is what makes `site_active` mean "state-independent site", but a
+pruned term has no program to rewrite, so hot-swapping across a family whose support
+varies needs the terms built anyway. Passing a nonzero coefficient for a pruned term is
+a **loud error naming the flag**, never a silent no-op. The cost of the flag is that a
+site coupled only through currently-zero terms counts as active — which is the honest
+accounting: such a site is sampled with every move accepted at `ΔE = 0`, i.e. a free
+spin that belongs in `⟨m⟩`, unlike a structurally absent site, which is frozen.
+
+`recheck_translation = true` (the default) re-measures the rigid-shift flatness and
+refuses a coefficient set that changes the verdict — the sampler re-centres along
+exactly the free directions, and no other gate would notice a silent change. It costs
+several full-energy passes, so the hot path opts out after verifying once.
+
+Two things go stale by design and are documented as the caller's: a
+`GPUTiledHamiltonian` uploaded from `H` keeps the old device tables, and the checkpoint
+fingerprint changes with the coefficients (so a pre-swap file correctly refuses to
+resume).
+
 ### Changed — BREAKING: the fourth naming batch (upstream)
 
 - **`SLCE.SlotRef` → `SLCE.Slot`.** It is not a reference to a slot — it *is* the

@@ -100,6 +100,15 @@ struct _ContractionPrograms
     site_prog::Vector{Int32}   # adjacency entry j → program id (parallel to site_inst)
     sprog_ptr::Vector{Int32}   # program p's entries: sprog_ptr[p]:sprog_ptr[p+1]-1
     sent_w::Vector{Float64}    # coef · folded[idx], nonzero entries only
+    # The same weight FACTORED, so a coefficient rewrite is a fused stream multiply
+    # rather than a rebuild (`set_coefficients!`): `sent_w[i] ==
+    # term_coef[sent_term[i]] · sent_base[i]` is an invariant of every program array,
+    # re-established after every write. Kept because the entry SET is
+    # coefficient-independent — the skip below is on `folded`, so a term's entries do
+    # not appear or vanish when its coefficient changes (this is what makes an
+    # in-place rewrite sound at all, and why the strain move can afford one per sweep).
+    sent_base::Vector{Float64} # raw folded[idx], parallel to `sent_w`
+    sent_term::Vector{Int32}   # owning template index, parallel to `sent_w`
     sent_tgt::Vector{Int32}    # target row lm_index(ls[slot], μ_slot) in `c`
     sfac_ptr::Vector{Int32}    # entry e's factors: sfac_ptr[e]:sfac_ptr[e+1]-1
     sfac_row::Vector{Int32}    # factor row (slot k's row0 + μ_k + l_k + 1) in `zrows`
@@ -145,16 +154,27 @@ end
 #
 # `slot_rows[v][j]` is axis `v`'s row for tensor index `j`, and `slot_site[v]` its
 # member site position; `q_axes[q]` lists the axes sitting on site position `q`.
-function _push_term_programs!(pr::_ContractionPrograms, coef::Float64,
+function _push_term_programs!(pr::_ContractionPrograms, k::Int, coef::Float64,
                               slot_site::Vector{Int8}, slot_rows::Vector{Vector{Int32}},
                               q_axes::Vector{Vector{Int}},
                               folded::Array{Float64,D}) where {D}
     for axes in q_axes                   # site program of member site position q
         for v in axes
             for idx in CartesianIndices(folded)
-                w = coef * folded[idx]
-                w == 0.0 && continue
-                push!(pr.sent_w, w)
+                # Skip on `folded`, NOT on `coef · folded`. For a term with `coef ≠ 0`
+                # the two predicates select the same entries (a product of finite
+                # nonzeros is nonzero), so this is byte-identical to the pre-
+                # `set_coefficients!` program on every model built the old way — the
+                # exception is a denormal underflow, `|coef · folded| < 5e-324`, which
+                # would now keep an entry whose weight is 0.0 (same arithmetic, one
+                # more entry). Gating on `coef` instead would leave a zero-coefficient
+                # term with NO program to rewrite, which is exactly what
+                # `keep_zero_terms` exists to prevent.
+                fw = folded[idx]
+                fw == 0.0 && continue
+                push!(pr.sent_w, coef * fw)
+                push!(pr.sent_base, fw)
+                push!(pr.sent_term, Int32(k))
                 push!(pr.sent_tgt, slot_rows[v][idx[v]])
                 for k = 1:D
                     k == v && continue
@@ -220,7 +240,8 @@ function _build_programs(terms::Vector{ScaledTerm}, inst_term::Vector{Int32},
                          site_inst::Vector{Int32},
                          site_slot::Vector{Int8})::_ContractionPrograms
     pr = _ContractionPrograms(Vector{Int32}(undef, length(site_inst)), Int32[1],
-                              Float64[], Int32[], Int32[1], Int32[], Int8[],
+                              Float64[], Float64[], Int32[],
+                              Int32[], Int32[1], Int32[], Int8[],
                               Vector{Int32}(undef, length(site_inst)),
                               Vector{Int32}(undef, length(site_inst)),
                               Int32[], Int32[],
@@ -247,7 +268,7 @@ function _build_programs(terms::Vector{ScaledTerm}, inst_term::Vector{Int32},
             push!(pslot1, f1)
             push!(pslot2, f2)
         end
-        _push_term_programs!(pr, t.coef, slot_site, slot_rows, q_axes, t.folded)
+        _push_term_programs!(pr, k, t.coef, slot_site, slot_rows, q_axes, t.folded)
     end
     for j in eachindex(site_inst)
         pid = pbase[inst_term[site_inst[j]]] + site_slot[j]
@@ -323,6 +344,14 @@ struct TiledHamiltonian
     disp_lmax::Int                   # max displacement l (−1 = pure spin)
     layout::RowLayout                # the upstream sampler-row contract
     terms::Vector{ScaledTerm}        # templates — `folded` payloads stored once
+    # Provenance of `terms` in the caller's list, so `set_coefficients!` can be indexed
+    # by the model's own term order rather than by whatever survived the zero prune.
+    # `term_scale[k]` is the `(4π)^…` factor applied to input coefficient
+    # `term_source[k]`, kept so a rewrite re-applies the SAME scale the constructor did
+    # instead of re-deriving it from the cluster shape (design record §7).
+    term_source::Vector{Int32}       # template k → index in the input term list
+    term_scale::Vector{Float64}      # template k → the scale applied to its raw coef
+    n_input_terms::Int               # length of the input list (≥ length(terms))
     # enumerated instances, CSR over member sites (body orders vary):
     inst_term::Vector{Int32}         # instance → template index
     inst_ptr::Vector{Int32}          # instance i's sites: inst_sites[ptr[i]:ptr[i+1]-1]
@@ -370,7 +399,19 @@ struct TiledHamiltonian
 
     function TiledHamiltonian(n_cell_atoms::Integer, terms::Vector{ScaledTerm},
                               layout::RowLayout; dims::NTuple{3,Integer} = (1, 1, 1),
-                              fixed_reference::Bool = false)
+                              fixed_reference::Bool = false,
+                              term_source::AbstractVector{<:Integer} =
+                                  Int32.(eachindex(terms)),
+                              term_scale::AbstractVector{<:Real} =
+                                  ones(length(terms)),
+                              n_input_terms::Integer = length(terms))
+        length(term_source) == length(terms) && length(term_scale) == length(terms) ||
+            throw(DimensionMismatch("term_source/term_scale must be parallel to terms"))
+        n_input_terms >= length(terms) ||
+            throw(ArgumentError("n_input_terms $n_input_terms is smaller than the " *
+                                "$(length(terms)) templates it should index"))
+        tsrc = Int32.(term_source)
+        tscl = Float64.(term_scale)
         n_cell_atoms >= 1 ||
             throw(ArgumentError("n_cell_atoms must be ≥ 1; got $n_cell_atoms"))
         all(d -> d >= 1, dims) || throw(ArgumentError("dims must be ≥ 1; got $dims"))
@@ -542,7 +583,7 @@ struct TiledHamiltonian
         # build again with the verdict. `new` may be called more than once; the two
         # objects share every array by reference, so the second is nearly free.
         H0 = new(n_cell_atoms, d, n_sites, lmax, nlm, layout.nrows, disp_lmax,
-                 layout, terms,
+                 layout, terms, tsrc, tscl, Int(n_input_terms),
                  inst_term, inst_ptr, inst_sites, site_ptr, site_inst, site_slot,
                  site_has_l1, site_has_spin, site_has_disp, site_active,
                  n_active, n_spin_active, n_disp_active,
@@ -598,7 +639,7 @@ struct TiledHamiltonian
                 "displacement guard works in the absolute frame."))
         end
         return new(n_cell_atoms, d, n_sites, lmax, nlm, layout.nrows, disp_lmax,
-                   layout, terms,
+                   layout, terms, tsrc, tscl, Int(n_input_terms),
                    inst_term, inst_ptr, inst_sites, site_ptr, site_inst, site_slot,
                    site_has_l1, site_has_spin, site_has_disp, site_active,
                    n_active, n_spin_active, n_disp_active,
@@ -750,12 +791,21 @@ _spin_row_layout(lmax::Int)::RowLayout =
 
 function TiledHamiltonian(n_cell_atoms::Integer, mterms::Vector{SpinMultipoleTerm};
                           dims::NTuple{3,Integer} = (1, 1, 1),
-                          fixed_reference::Bool = false)
+                          fixed_reference::Bool = false,
+                          keep_zero_terms::Bool = false)
     # A coef == 0 term contributes nothing to any energy, coefficient vector, or
     # gradient — drop it so "no adjacent instance" means "state-independent site".
-    mterms = filter(t -> t.coef != 0.0, mterms)
+    # `keep_zero_terms` builds its programs anyway, which is what makes the term set
+    # (and therefore the site activity, the coloring and the displacement components)
+    # a property of the SUPPORT rather than of the values — the precondition for
+    # `set_coefficients!`.
+    n_in = length(mterms)
+    keep = keep_zero_terms ? collect(eachindex(mterms)) :
+           findall(t -> t.coef != 0.0, mterms)
+    mterms = mterms[keep]
     lmax = 0
     terms = Vector{ScaledTerm}(undef, length(mterms))
+    scales = Vector{Float64}(undef, length(mterms))
     for (k, mt) in enumerate(mterms)
         body = length(mt.atoms)
         (length(mt.shifts) == body && length(mt.ls) == body) ||
@@ -768,18 +818,25 @@ function TiledHamiltonian(n_cell_atoms::Integer, mterms::Vector{SpinMultipoleTer
         slots = [TermSlot(i, Harmonics.lm_index(mt.ls[i], -mt.ls[i]) - 1, mt.ls[i], true)
                  for i in eachindex(mt.ls)]
         # The package's single scale-application site for this surface.
-        terms[k] = ScaledTerm(mt.coef * (4π)^(body / 2), copy(mt.atoms), copy(mt.shifts),
+        scales[k] = (4π)^(body / 2)
+        terms[k] = ScaledTerm(mt.coef * scales[k], copy(mt.atoms), copy(mt.shifts),
                               slots, copy(mt.folded))
     end
     return TiledHamiltonian(n_cell_atoms, terms, _spin_row_layout(lmax); dims = dims,
-                            fixed_reference = fixed_reference)
+                            fixed_reference = fixed_reference, term_source = keep,
+                            term_scale = scales, n_input_terms = n_in)
 end
 
 function TiledHamiltonian(n_cell_atoms::Integer, dterms::Vector{DecoratedTerm},
                           layout::RowLayout; dims::NTuple{3,Integer} = (1, 1, 1),
-                          fixed_reference::Bool = false)
-    dterms = filter(t -> t.coef != 0.0, dterms)
+                          fixed_reference::Bool = false,
+                          keep_zero_terms::Bool = false)
+    n_in = length(dterms)
+    keep = keep_zero_terms ? collect(eachindex(dterms)) :
+           findall(t -> t.coef != 0.0, dterms)
+    dterms = dterms[keep]
     terms = Vector{ScaledTerm}(undef, length(dterms))
+    scales = Vector{Float64}(undef, length(dterms))
     for (k, dt) in enumerate(dterms)
         length(dt.slots) == ndims(dt.folded) || throw(ArgumentError(
             "term $k: $(length(dt.slots)) slots but a rank-$(ndims(dt.folded)) folded " *
@@ -797,15 +854,18 @@ function TiledHamiltonian(n_cell_atoms::Integer, dterms::Vector{DecoratedTerm},
         # The package's single scale-application site for this surface — `scale` is the
         # general (4π)^(n_spin_slots/2), read off the field and NEVER re-derived from
         # the cluster shape (SLCE's DecoratedTerm docstring, design record §7).
+        scales[k] = dt.scale
         terms[k] = ScaledTerm(dt.coef * dt.scale, copy(dt.atoms), copy(dt.shifts),
                               slots, copy(dt.folded))
     end
     return TiledHamiltonian(n_cell_atoms, terms, layout; dims = dims,
-                            fixed_reference = fixed_reference)
+                            fixed_reference = fixed_reference, term_source = keep,
+                            term_scale = scales, n_input_terms = n_in)
 end
 
 function TiledHamiltonian(model::SLCEModel; dims::NTuple{3,Integer} = (1, 1, 1),
-                          fixed_reference::Bool = false)
+                          fixed_reference::Bool = false,
+                          keep_zero_terms::Bool = false)
     layout = row_layout(model)
     # A model with no displacement rows goes down the frozen pure-spin path, byte for
     # byte as before M4. `restrict` is a no-op on a genuinely pure-spin basis and the
@@ -814,9 +874,11 @@ function TiledHamiltonian(model::SLCEModel; dims::NTuple{3,Integer} = (1, 1, 1),
     # pathological "declared a displacement sector, built no displacement SALC" case.
     isempty(layout.disp_factors) &&
         return TiledHamiltonian(n_atoms(model), spin_multipole_terms(restrict(model, :spin));
-                                dims = dims, fixed_reference = fixed_reference)
+                                dims = dims, fixed_reference = fixed_reference,
+                                keep_zero_terms = keep_zero_terms)
     return TiledHamiltonian(n_atoms(model), decorated_terms(model), layout; dims = dims,
-                            fixed_reference = fixed_reference)
+                            fixed_reference = fixed_reference,
+                            keep_zero_terms = keep_zero_terms)
 end
 
 """

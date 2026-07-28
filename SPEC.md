@@ -14,6 +14,7 @@ ferrimagnetic Nd-vs-Fe order at 250 K.
 |---|---|
 | `src/units.jl` | re-exports `SLCE`'s `KB_EV` / `resolve_kt` (kelvin XOR model-energy-unit control); the definitions live upstream, never here |
 | `src/hamiltonian.jl` | `TermSlot`, `ScaledTerm`, `TiledHamiltonian` (supercell tiling, CSR instance/site adjacency, `site_active`/`n_active` for scheduling and `site_has_spin`/`n_spin_active` for the spin channel — non-magnetic sites are frozen and excluded, precompiled sparse contraction programs, conflict-graph coloring for parallel sweeps), `site_index` |
+| `src/coefficients.jl` | `set_coefficients!` — coefficient hot-swap over the factored weight stream (`sent_w == term_coef[sent_term] · sent_base`), for the strain outer move and the active-learning hook: 0.033 ms vs 13–96 ms for a rebuild, and independent of `dims` |
 | `src/energy.jl` | the energy contract: `total_energy`, `site_coeffs!`, `delta_energy`, `site_gradient`, all-site `energy_gradient!` (program kernels + bitwise-gated rank-generic reference kernels), joint `total_energy(H, config, disps)` and the displacement row filler |
 | `src/binning.jl` | `LogBinner`, `BinStore`, `jackknife` |
 | `src/observables.jl` | `MCView` (the single argument every observable receives), `Observable`, `Evaluable` (with its `scope` site-count declaration), standard sets — spin, and the centre-of-mass-free displacement ones on a joint model |
@@ -42,7 +43,8 @@ topology only); geometry helpers take an explicit `Crystal`.
 
 ## Public API
 
-Exported: `KB_EV`, `TiledHamiltonian`, `n_sites`, `total_energy`, `Observable`,
+Exported: `KB_EV`, `TiledHamiltonian`, `n_sites`, `total_energy`,
+`set_coefficients!`, `Observable`,
 `Evaluable`, `ObservableStat`, `standard_observables`, `standard_evaluables`,
 `run_mc`, `MCResult`, `TempResult`, `run_pt`, `PTResult`, `minimize_energy`,
 `find_ground_state`, `GroundStateResult`, `resume`, `supercell_crystal`,

@@ -20,6 +20,7 @@ site_atom
 ScaledTerm
 TermSlot
 has_disp(::TiledHamiltonian)
+set_coefficients!
 SpinConfig
 ```
 

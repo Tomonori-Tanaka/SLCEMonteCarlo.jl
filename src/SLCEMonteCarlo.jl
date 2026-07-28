@@ -51,6 +51,7 @@ import SLCE.SolidHarmonics
 
 include("units.jl")
 include("hamiltonian.jl")
+include("coefficients.jl")
 include("energy.jl")
 include("binning.jl")
 include("observables.jl")
@@ -73,7 +74,7 @@ include("geometry.jl")
 include("reduce.jl")
 
 export KB_EV
-export TiledHamiltonian, n_sites, total_energy
+export TiledHamiltonian, n_sites, total_energy, set_coefficients!
 export MCView, Observable, Evaluable, ObservableStat, standard_observables,
        standard_evaluables
 export run_mc, MCResult, TempResult
