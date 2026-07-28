@@ -24,6 +24,27 @@ set_coefficients!
 SpinConfig
 ```
 
+## Volume grids (K(ε))
+
+The sampler's form of a `SLCE.StrainedModels` grid: polynomial coefficients over the term
+list a [`TiledHamiltonian`](@ref) was built from, converted once so that installing the
+coefficients for a new cell volume is a Horner pass plus an in-place
+[`set_coefficients!`](@ref) rather than a model rebuild.
+
+Build the Hamiltonian with `keep_zero_terms = true` — both introspection surfaces upstream
+prune exactly-zero coefficients by default, which makes their index → SALC map a function
+of the fit rather than of the basis, and two grid points whose sparse fits zero different
+keys would otherwise produce term lists of equal length with shifted maps.
+
+```@docs
+StrainSchedule
+strain_domain
+strain_coefficients
+strain_coefficients!
+strain_j0
+strain_volume
+```
+
 ## Cell reduction
 
 ```@docs
@@ -96,6 +117,8 @@ to_host!
 
 ```@docs
 MCView
+has_strain
+strain
 Observable
 Evaluable
 ObservableStat

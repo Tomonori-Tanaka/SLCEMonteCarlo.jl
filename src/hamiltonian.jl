@@ -872,12 +872,21 @@ function TiledHamiltonian(model::SLCEModel; dims::NTuple{3,Integer} = (1, 1, 1),
     # exact u = 0 sub-model otherwise, which is what makes `spin_multipole_terms` — whose
     # refusal is triggered by the SPEC, not by the surviving coefficients — accept the
     # pathological "declared a displacement sector, built no displacement SALC" case.
+    # `keep_zero_terms` has to reach the EMISSION, not only the ingestion: both
+    # introspection surfaces prune SALCs whose coefficient is exactly zero, so the index →
+    # SALC map they hand back is a function of the fit rather than of the basis, and a flag
+    # applied here cannot resurrect a term that was never emitted. Freezing the support
+    # across a family whose fits have differing exact zeros (a K(ε) grid, an
+    # active-learning refit) needs both halves.
     isempty(layout.disp_factors) &&
-        return TiledHamiltonian(n_atoms(model), spin_multipole_terms(restrict(model, :spin));
+        return TiledHamiltonian(n_atoms(model),
+                                spin_multipole_terms(restrict(model, :spin);
+                                                     keep_zero = keep_zero_terms);
                                 dims = dims, fixed_reference = fixed_reference,
                                 keep_zero_terms = keep_zero_terms)
-    return TiledHamiltonian(n_atoms(model), decorated_terms(model), layout; dims = dims,
-                            fixed_reference = fixed_reference,
+    return TiledHamiltonian(n_atoms(model),
+                            decorated_terms(model; keep_zero = keep_zero_terms), layout;
+                            dims = dims, fixed_reference = fixed_reference,
                             keep_zero_terms = keep_zero_terms)
 end
 

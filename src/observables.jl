@@ -25,7 +25,13 @@ every [`Observable`](@ref) receives:
   zero, which is why the standard set is gated on `n_disp_active > 0` rather than
   measured and discarded. On a joint Hamiltonian the length is validated;
 - `energy` — the configuration's current total SLCE energy (model units, `j0`
-  excluded), so `:energy` costs an observable nothing extra.
+  excluded), so `:energy` costs an observable nothing extra;
+- `strain` — the chain's current linear scale `s = 1 + η` on a K(ε) volume grid, or
+  `nothing` on a fixed-cell run. **`nothing` is not `1.0`**: a fixed-cell run has no
+  strain degree of freedom at all, and reporting `s = 1` would let a magnetostriction
+  observable average a constant and report zero response rather than refusing. Reach it
+  through [`strain`](@ref), which throws on a fixed-cell view, or guard with
+  [`has_strain`](@ref) — the same discipline the empty `disps` uses.
 
 One argument rather than a widening positional list: the sampled state grows with
 the model (spin, then displacements, then whatever a later channel adds), and an
@@ -56,6 +62,7 @@ struct MCView
     config::SpinConfig
     disps::Vector{SVector{3,Float64}}
     energy::Float64
+    strain::Union{Nothing,Float64}
 
     # `disps` is emptied on a Hamiltonian with no displacement channel, whatever the
     # producer passed. A pure-spin chain still CARRIES an all-zero displacement vector
@@ -69,15 +76,20 @@ struct MCView
     # `@inbounds` accumulator downstream. The check costs one comparison per
     # measurement, not per site.
     function MCView(H::TiledHamiltonian, config::SpinConfig,
-                    disps::Vector{SVector{3,Float64}}, energy::Real)
+                    disps::Vector{SVector{3,Float64}}, energy::Real,
+                    strain::Union{Nothing,Real} = nothing)
         length(config) == H.n_sites || throw(DimensionMismatch(
             "MCView config has $(length(config)) sites; the Hamiltonian has " *
             "$(H.n_sites)"))
-        has_disp(H) || return new(H, config, _NO_DISPS, Float64(energy))
+        st = strain === nothing ? nothing : Float64(strain)
+        st === nothing || st > 0 ||
+            throw(ArgumentError("MCView strain (a linear scale s = 1 + η) must be " *
+                                "positive; got $st"))
+        has_disp(H) || return new(H, config, _NO_DISPS, Float64(energy), st)
         length(disps) == H.n_sites || throw(DimensionMismatch(
             "MCView disps has $(length(disps)) entries; this Hamiltonian carries a " *
             "displacement channel and needs one per site ($(H.n_sites))"))
-        return new(H, config, disps, Float64(energy))
+        return new(H, config, disps, Float64(energy), st)
     end
 end
 
@@ -87,8 +99,37 @@ const _NO_DISPS = SVector{3,Float64}[]
 
 Base.show(io::IO, v::MCView) =
     print(io, "MCView(", length(v.config), " sites",
-          isempty(v.disps) ? "" : " + displacements", ", E=",
+          isempty(v.disps) ? "" : " + displacements",
+          v.strain === nothing ? "" : " + strain", ", E=",
           @sprintf("%.6g", v.energy), ")")
+
+"""
+    has_strain(v::MCView) -> Bool
+
+Whether this view comes from a chain with a strain degree of freedom. Guard a
+magnetostriction-type observable with it; a fixed-cell chain has no `s` to report and
+[`strain`](@ref) throws rather than returning `1.0`.
+"""
+has_strain(v::MCView)::Bool = v.strain !== nothing
+
+"""
+    strain(v::MCView) -> Float64
+
+The chain's current linear scale `s = 1 + η`. **Throws on a fixed-cell view** — the
+same reason `disps` is emptied rather than zeroed there: a confident `1.0` would let an
+observable average a constant and report "no volume response" for a run that never had
+the degree of freedom.
+
+Accessors exist for the fields the sampled state grows by, so that the next channel is
+not another struct break (design record §8).
+"""
+function strain(v::MCView)::Float64
+    v.strain === nothing && throw(ArgumentError(
+        "this view has no strain: the chain was run at a fixed cell, so there is no " *
+        "linear scale to report (and 1.0 would be a fabricated one). Guard with " *
+        "`has_strain(v)`, or run with a `StrainSchedule`."))
+    return v.strain
+end
 
 """
     Observable(name::Symbol, ncomp::Integer, f)

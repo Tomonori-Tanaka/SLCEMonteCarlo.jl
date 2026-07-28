@@ -187,6 +187,24 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   `test_coefficients.jl` (byte-identical no-op round trip, swap ≡ fresh build on the
   triplet fast path, the named refusal, `keep_zero_terms` byte-neutral without zeros,
   and the flatness re-check with its opt-out).
+- **`StrainSchedule` ↔ `keep_zero_terms` ↔ upstream `decorated_terms(; keep_zero)` ↔
+  `set_coefficients!`** (`strain.jl`, `hamiltonian.jl`, SLCE `slce/introspect.jl`): the
+  hot-swap is indexed by the caller's term list, and BOTH halves of the support freeze are
+  required. Upstream prunes exactly-zero coefficients by default, so its index → SALC map
+  is a function of the fit; `keep_zero_terms` here freezes the support of whatever list it
+  is handed, so it now passes `keep_zero` through to the emission — a flag applied only at
+  ingestion cannot resurrect a term never emitted. Two grid points whose sparse fits zero
+  DIFFERENT keys otherwise emit lists of equal length with shifted maps, and every length
+  check passes while each coefficient lands on a neighbouring cluster. `StrainSchedule`'s
+  constructor re-checks this term by term (atoms and images, across the grid and against
+  `H`) rather than trusting it. **The schedule holds no scale and no `H`**: the current
+  scale is chain state and the coefficients are `H`'s, and they must be written together —
+  keeping the schedule immutable is what stops a caller installing one volume's
+  coefficients against another volume's displacements. `n_cells` counts ATOMS
+  (`H.n_sites ÷ n_atoms`), never `prod(dims)`, which `reduce_cell` breaks; `D` is
+  `3·n_disp_active − count(comp_free)`, not `3(N−1)`, because re-centring is per
+  (direction, component) and there are `n_disp_comps` independent centres of mass.
+  Gates: `test_strainschedule.jl`.
 - **Upstream BREAKING spec keywords ↔ this package's fixtures/benches/docs/assets**:
   `SLCE`'s `BasisSpec` keywords are consumed in `test/unit/fixtures.jl`,
   `bench/fixtures.jl`, `bench/assets/*.toml` (`[interaction]`) and every

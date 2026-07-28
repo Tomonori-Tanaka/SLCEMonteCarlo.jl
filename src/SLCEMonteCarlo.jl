@@ -52,6 +52,10 @@ import SLCE.SolidHarmonics
 include("units.jl")
 include("hamiltonian.jl")
 include("coefficients.jl")
+# The sampler's form of a K(ε) volume grid: polynomial coefficients over the term list a
+# Hamiltonian was built from, converted once so a strain move costs a Horner pass and an
+# in-place rewrite rather than a model rebuild.
+include("strain.jl")
 include("energy.jl")
 include("binning.jl")
 include("observables.jl")
@@ -75,6 +79,11 @@ include("reduce.jl")
 
 export KB_EV
 export TiledHamiltonian, n_sites, total_energy, set_coefficients!
+# K(ε) volume grids, sampler side (the move itself lands with the driver)
+export StrainSchedule
+public strain_domain, in_strain_domain, strain_coefficients, strain_coefficients!,
+       strain_j0, strain_volume
+public has_strain, strain
 export MCView, Observable, Evaluable, ObservableStat, standard_observables,
        standard_evaluables
 export run_mc, MCResult, TempResult

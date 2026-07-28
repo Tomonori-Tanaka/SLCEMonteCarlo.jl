@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — the strain schedule, and the other half of the support freeze
+
+`StrainSchedule` is the sampler's form of a `SLCE.StrainedModels` volume grid: the grid is
+converted once into polynomial coefficients over the term list a `TiledHamiltonian` was
+built from, so installing the coefficients for a new cell volume is a Horner pass plus an
+in-place `set_coefficients!` rather than a model rebuild. It also carries what the NPT
+weight needs — `j0(s)` per training cell, the supercell volume, the mobile-atom count, and
+`D = 3·N_mob − count(comp_free)`, the dimension of the sampled displacement space (not
+`3(N−1)`: re-centring is per (direction, component) and there are `n_disp_comps`
+independent centres of mass).
+
+`keep_zero_terms` now reaches the *emission*, not only the ingestion. Both upstream
+introspection surfaces prune SALCs whose coefficient is exactly zero, so their index → SALC
+map is a function of the fit rather than of the basis, and a flag applied when the list is
+consumed cannot resurrect a term that was never emitted. Two grid points whose sparse fits
+zero different keys can then produce term lists of equal length with shifted maps — every
+length check passes while each coefficient lands on a neighbouring cluster. The schedule's
+constructor re-checks the correspondence term by term (atoms and images, across the grid
+and against the Hamiltonian) instead of trusting it, and refuses a Hamiltonian built the
+default way by name.
+
+`MCView` gains `strain` — the chain's linear scale on a volume grid, or `nothing` on a
+fixed-cell run. `nothing` rather than `1.0` for the same reason `disps` is emptied on a
+pure-spin Hamiltonian: a fixed-cell chain has no strain degree of freedom, and a confident
+`1.0` would let a magnetostriction observable average a constant and report zero response.
+Reach it through `strain(v)`, which throws there, or guard with `has_strain(v)`. The
+existing four-argument constructor is unchanged, so no producer breaks.
+
+Also fixes the `set_coefficients!` docstring, which showed `coef(model)` — the per-SALC
+vector, one granularity above what the function indexes.
+
 ### Added — `set_coefficients!`: coefficient hot-swap without a rebuild
 
 `set_coefficients!(H, coefs)` rewrites a built `TiledHamiltonian`'s coefficients in

@@ -25,6 +25,8 @@
 Rewrite `H`'s coefficients in place from `coefs`, a vector of **raw** (unscaled)
 coefficients indexed by the term list `H` was built from — `spin_multipole_terms(model)`
 or `decorated_terms(model)`, in that order, including any term the zero prune dropped.
+That is **one entry per term**, not per SALC: `coef(model)` is the per-SALC vector and is
+the wrong granularity here (it throws, but it is the natural thing to reach for).
 The `(4π)^(n_spin_slots/2)` scale each term was ingested with is re-applied here, so
 `coefs` is in the same units `coef(model)` reports; the scale is never re-derived from
 the cluster shape.
@@ -45,7 +47,7 @@ across a family whose support varies:
 
 ```julia
 H = TiledHamiltonian(model; dims = (4, 4, 4), keep_zero_terms = true)
-set_coefficients!(H, coef(model_at_next_grid_point))
+set_coefficients!(H, [t.coef for t in decorated_terms(next_model; keep_zero = true)])
 ```
 
 The cost of `keep_zero_terms` is that a site coupled only through currently-zero terms
