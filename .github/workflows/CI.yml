@@ -109,6 +109,12 @@ jobs:
   docs:
     name: documentation build
     runs-on: ubuntu-latest
+    # `contents: write` is what lets `deploydocs` push the built site to the
+    # `gh-pages` branch that GitHub Pages serves. Without it the build still runs
+    # and still fails on a broken docstring — it just never publishes.
+    permissions:
+      contents: write
+      statuses: write
     steps:
       # Same sibling layout: `docs/Project.toml` resolves SLCE as `../../SLCE.jl`.
       - uses: actions/checkout@v4
@@ -128,5 +134,8 @@ jobs:
       # That exact defect was found by hand in a sibling package on 2026-07-27.
       - name: Instantiate the docs environment
         run: julia --project=SLCEMonteCarlo.jl/docs -e 'using Pkg; Pkg.instantiate()'
-      - name: Build the Documenter site
+      - name: Build the Documenter site and deploy it to gh-pages
         run: julia --project=SLCEMonteCarlo.jl/docs SLCEMonteCarlo.jl/docs/make.jl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}

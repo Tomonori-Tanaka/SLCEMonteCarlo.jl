@@ -1,6 +1,7 @@
 using SLCEMonteCarlo
-using SLCE   # the SCE fitting core, for the executed `@example` model builds
+using SLCE   # the SLCE fitting core, for the executed `@example` model builds
 using Documenter
+using Documenter: Remotes
 
 DocMeta.setdocmeta!(SLCEMonteCarlo, :DocTestSetup, :(using SLCEMonteCarlo);
                     recursive = true)
@@ -8,15 +9,12 @@ DocMeta.setdocmeta!(SLCEMonteCarlo, :DocTestSetup, :(using SLCEMonteCarlo);
 makedocs(;
     sitename = "SLCEMonteCarlo.jl",
     modules = [SLCEMonteCarlo],
-    # The SLCE dependency is a path-dev without a resolvable remote in this
-    # build, so per-line source/edit links stay disabled; the navbar links to the
-    # repository (private: github.com/Tomonori-Tanaka/SLCEMonteCarlo.jl).
-    remotes = nothing,
+    repo = Remotes.GitHub("Tomonori-Tanaka", "SLCEMonteCarlo.jl"),
     format = Documenter.HTML(;
         prettyurls = get(ENV, "CI", "false") == "true",
         mathengine = Documenter.MathJax3(),
-        edit_link = nothing,
-        repolink = "https://github.com/Tomonori-Tanaka/SLCEMonteCarlo.jl",
+        canonical = "https://tomonori-tanaka.github.io/SLCEMonteCarlo.jl/dev",
+        edit_link = "main",
         footer = "Built with [Documenter.jl](https://documenter.juliadocs.org).",
     ),
     pages = [
@@ -42,4 +40,13 @@ makedocs(;
     ],
     checkdocs = :exports,
     doctest = false,
+)
+
+# Publishes to https://tomonori-tanaka.github.io/SLCEMonteCarlo.jl/ from the `documentation build`
+# CI job (which needs `permissions: contents: write`). Outside CI this is a no-op, so a
+# local `julia --project=docs docs/make.jl` still just builds into `docs/build/`.
+deploydocs(;
+    repo = "github.com/Tomonori-Tanaka/SLCEMonteCarlo.jl",
+    devbranch = "main",
+    push_preview = false,
 )
