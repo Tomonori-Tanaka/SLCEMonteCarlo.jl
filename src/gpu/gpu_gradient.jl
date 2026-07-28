@@ -1,4 +1,4 @@
-# The device all-site SCE gradient (decision record docs/specs/gpu-prototype.md
+# The device all-site SLCE gradient (decision record docs/specs/gpu-prototype.md
 # G7) — phase 2 of the GPU path, the entry point SLCEDynamics' GPU LLG
 # consumes. One workgroup per site; lane 1 fills the site's gradient-row table
 # (the `znew` analog — `∇Z(e_s)` depends only on `e_s`, fixed during the pass);
@@ -183,7 +183,7 @@ end
                          workgroupsize = 128, refresh_zrows = true,
                          synchronize = true) -> dG
 
-Device twin of [`energy_gradient!`](@ref): the all-site, tangent-projected SCE
+Device twin of [`energy_gradient!`](@ref): the all-site, tangent-projected SLCE
 gradient `dG[s] = ∂E/∂e_s` (`e·G = 0` to rounding, inactive sites exactly zero
 — their adjacency range is empty — model energy units, `j0` excluded, exact at
 any body order). `dG` and `dconfig` are caller-owned device vectors of

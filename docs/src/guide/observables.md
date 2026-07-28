@@ -14,7 +14,7 @@ jackknifed over stored bins). The conventions below are stated authoritatively i
 
 | name | what it is |
 |---|---|
-| `:energy`, `:energy2` | total SCE energy (model units, `j0` excluded) and its square |
+| `:energy`, `:energy2` | total SLCE energy (model units, `j0` excluded) and its square |
 | `:m` | the magnetization vector `Σₛ eₛ / n_active` over the **active** sites (3 components) |
 | `:absm`, `:m2`, `:m4` | `|m|` and its powers |
 | `:sublattice_m` | per training-cell atom: the cell-averaged spin vector, flattened (`3·n_cell_atoms` components); inactive sublattices report exactly zero |

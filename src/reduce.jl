@@ -23,7 +23,7 @@ A fitted training-cell Hamiltonian re-expressed in a smaller (or re-based) unit 
 by [`reduce_cell`](@ref). Feed it to [`TiledHamiltonian`](@ref) to tile MC supercells
 in multiples of the *reduced* cell.
 
-`T` is the term type the reduction was fed: `SLCE.MultipoleTerm` for a pure-spin
+`T` is the term type the reduction was fed: `SLCE.SpinMultipoleTerm` for a pure-spin
 model, `SLCE.DecoratedTerm` for a general (joint spin–lattice) one. The two carry
 different amounts of information — a decorated term labels every tensor axis with its
 own `(channel, k, l)` and its own site — so the reduced list is emitted in whichever
@@ -36,7 +36,7 @@ shifts), `crystal` (the reduced cell, for geometry I/O such as
 `parent_atoms` (reduced atom `b` → its representative training atom), `atom_map`
 (training atom `a` → `(b, offset)` with `offset ∈ ℤ³` in reduced-lattice units), and
 `layout` (the model's `SLCE.RowLayout` for a decorated reduction, `nothing` for a
-pure-spin one, whose row numbering the `MultipoleTerm` constructor derives).
+pure-spin one, whose row numbering the `SpinMultipoleTerm` constructor derives).
 """
 struct ReducedCell{T}
     n_atoms::Int
@@ -53,8 +53,8 @@ struct ReducedCell{T}
                          layout::Union{Nothing,RowLayout}) where {T}
         # `ReducedCell` is exported, so a hand-built one must fail here rather than at
         # the `TiledHamiltonian` method table with a bare MethodError.
-        (T === MultipoleTerm || T === DecoratedTerm) || throw(ArgumentError(
-            "a ReducedCell holds SLCE.MultipoleTerm or SLCE.DecoratedTerm, not $T"))
+        (T === SpinMultipoleTerm || T === DecoratedTerm) || throw(ArgumentError(
+            "a ReducedCell holds SLCE.SpinMultipoleTerm or SLCE.DecoratedTerm, not $T"))
         # The invariant every consumer leans on: a decorated reduction carries the
         # model's own row numbering (its slots name `(channel, k, l)` factors that only
         # a layout can place), a pure-spin one does not (the tesseral block is derived
@@ -109,7 +109,7 @@ _same_frac(r1::SVector{3,Float64}, r2::SVector{3,Float64}, tol::Float64)::Bool =
 """
     reduce_cell(model::SLCEModel, crystal::Crystal, sub_lattice;
                 pos_tol = 1e-6, coef_rtol = 1e-10) -> ReducedCell
-    reduce_cell(crystal::Crystal, terms::Vector{MultipoleTerm}, sub_lattice;
+    reduce_cell(crystal::Crystal, terms::Vector{SpinMultipoleTerm}, sub_lattice;
                 pos_tol = 1e-6, coef_rtol = 1e-10) -> ReducedCell
     reduce_cell(crystal::Crystal, terms::Vector{DecoratedTerm}, layout::RowLayout,
                 sub_lattice; pos_tol = 1e-6, coef_rtol = 1e-10) -> ReducedCell
@@ -185,13 +185,13 @@ function reduce_cell(model::SLCEModel, crystal::Crystal,
     # and `restrict` is what makes the pathological "declared a displacement sector,
     # built no displacement SALC" model reduce instead of being refused.
     isempty(layout.disp_factors) &&
-        return reduce_cell(crystal, multipole_terms(restrict(model, :spin)),
+        return reduce_cell(crystal, spin_multipole_terms(restrict(model, :spin)),
                            sub_lattice; pos_tol = pos_tol, coef_rtol = coef_rtol)
     return reduce_cell(crystal, decorated_terms(model), layout, sub_lattice;
                        pos_tol = pos_tol, coef_rtol = coef_rtol)
 end
 
-reduce_cell(crystal::Crystal, mterms::Vector{MultipoleTerm},
+reduce_cell(crystal::Crystal, mterms::Vector{SpinMultipoleTerm},
             sub_lattice::AbstractMatrix{<:Real};
             pos_tol::Real = 1e-6, coef_rtol::Real = 1e-10) =
     _reduce_cell(crystal, mterms, nothing, sub_lattice, pos_tol, coef_rtol)
@@ -288,7 +288,7 @@ end
 # and `folded` through the permutation before grouping; the aligned copies then match
 # exactly. The two term surfaces differ only in what an axis is (`_align_reduced`).
 
-_reduced_key_type(::Type{MultipoleTerm}) =
+_reduced_key_type(::Type{SpinMultipoleTerm}) =
     Tuple{Vector{Int},Vector{SVector{3,Int}},Vector{Int}}
 _reduced_key_type(::Type{DecoratedTerm}) =
     Tuple{Vector{Int},Vector{SVector{3,Int}},Vector{SLCE.SlotRef}}
@@ -397,7 +397,7 @@ function _check_extents(folded::Array{Float64}, ls, k::Int)
     return nothing
 end
 
-function _align_reduced(mt::MultipoleTerm, atom_map, m::SMatrix{3,3,Int,9}, nat::Int,
+function _align_reduced(mt::SpinMultipoleTerm, atom_map, m::SMatrix{3,3,Int,9}, nat::Int,
                         k::Int)
     length(mt.ls) == length(mt.atoms) ||
         throw(ArgumentError("term $k: atoms/ls lengths disagree"))
@@ -438,7 +438,7 @@ end
 # rule at all, as long as it says so consistently — `TiledHamiltonian`, the site that
 # applies it, treats the field as declared data too, and the package's kernel-arithmetic
 # fixtures rely on that.
-_check_scales(::Vector{MultipoleTerm}, entries) = nothing
+_check_scales(::Vector{SpinMultipoleTerm}, entries) = nothing
 function _check_scales(dterms::Vector{DecoratedTerm}, entries)
     k0 = first(entries)[1]
     s0 = dterms[k0].scale
@@ -453,8 +453,8 @@ function _check_scales(dterms::Vector{DecoratedTerm}, entries)
     return nothing
 end
 
-_emit_reduced(mt::MultipoleTerm, key, folded::Array{Float64}) =
-    MultipoleTerm(mt.coef, length(key[1]), copy(key[1]), copy(key[2]), copy(key[3]),
+_emit_reduced(mt::SpinMultipoleTerm, key, folded::Array{Float64}) =
+    SpinMultipoleTerm(mt.coef, length(key[1]), copy(key[1]), copy(key[2]), copy(key[3]),
                   copy(folded))
 _emit_reduced(dt::DecoratedTerm, key, folded::Array{Float64}) =
     DecoratedTerm(dt.coef, dt.scale, length(key[1]), copy(key[1]), copy(key[2]),
@@ -468,7 +468,7 @@ Equivalent to `TiledHamiltonian(red.n_atoms, red.terms[, red.layout]; dims)` —
 `(4π)` scale is applied there (reduction keeps coefficients raw), from the term's own
 `scale` field on the decorated path.
 """
-TiledHamiltonian(red::ReducedCell{MultipoleTerm}; dims::NTuple{3,Integer} = (1, 1, 1),
+TiledHamiltonian(red::ReducedCell{SpinMultipoleTerm}; dims::NTuple{3,Integer} = (1, 1, 1),
                  fixed_reference::Bool = false) =
     TiledHamiltonian(red.n_atoms, red.terms; dims = dims,
                      fixed_reference = fixed_reference)

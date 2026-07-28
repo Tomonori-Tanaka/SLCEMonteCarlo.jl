@@ -10,7 +10,7 @@
 #      row filler agrees with the upstream reference `SLCE.site_rows!`.
 #   2. NOTHING a pure-spin model produces moved. The strongest available form of that is
 #      not "the energies agree" but "the precompiled program arrays are byte-identical":
-#      the same terms fed through the old `MultipoleTerm` surface and the new
+#      the same terms fed through the old `SpinMultipoleTerm` surface and the new
 #      `DecoratedTerm` one must flatten to the very same integers and floats, which
 #      makes the channel generalization a pure relabeling on that path. The checkpoint
 #      fingerprint is pinned the same way, against an in-test copy of the pre-M4 formula.
@@ -415,7 +415,7 @@ using Test
     end
 end
 
-@testset "pure-spin ingest: MultipoleTerm ≡ DecoratedTerm (bitwise)" begin
+@testset "pure-spin ingest: SpinMultipoleTerm ≡ DecoratedTerm (bitwise)" begin
     # The same terms through the frozen surface and the general one must flatten to
     # byte-identical program arrays — that is what makes the channel generalization a
     # pure relabeling for every pure-spin consumer, rather than "numerically the same".
@@ -427,10 +427,10 @@ end
         f[rand(rng, length(f)) .< 0.5] .= 0.0
         f
     end
-    cases = [(2, (2, 2, 1), [MultipoleTerm(0.3, 1, [1], [z3], [2], sparse_folded(5)),
-                             MultipoleTerm(-0.2, 2, [1, 2], [z3, z3], [1, 1],
+    cases = [(2, (2, 2, 1), [SpinMultipoleTerm(0.3, 1, [1], [z3], [2], sparse_folded(5)),
+                             SpinMultipoleTerm(-0.2, 2, [1, 2], [z3, z3], [1, 1],
                                            sparse_folded(3, 3)),
-                             MultipoleTerm(0.1, 3, [1, 2, 1], [z3, z3, x3], [1, 1, 2],
+                             SpinMultipoleTerm(0.1, 3, [1, 2, 1], [z3, z3, x3], [1, 1, 2],
                                            sparse_folded(3, 3, 5))]),
              (1, (4, 1, 1), _chain_terms(0.05)),
              (1, (4, 1, 1), _threebody_terms(0.05)),

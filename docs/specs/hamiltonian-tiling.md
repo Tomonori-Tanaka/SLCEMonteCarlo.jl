@@ -1,5 +1,11 @@
 # Decision record — supercell tiling and the Hamiltonian memory layout
 
+> **Naming note (2026-07-28).** This is a dated decision record and is kept as
+> written; the names below are the ones the decision was taken under. Renamed
+> since, in the family-wide naming batch: `MultipoleTerm` → `SpinMultipoleTerm`, `multipole_terms` → `spin_multipole_terms`. The current spelling is what
+> the code, `SPEC.md` and the API reference use.
+
+
 Status: landed (M1). Owner: `src/hamiltonian.jl`, `src/energy.jl`;
 gates in `test/unit/test_hamiltonian.jl`, `test/unit/test_energy.jl`.
 

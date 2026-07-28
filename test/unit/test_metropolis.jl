@@ -37,7 +37,7 @@ _corr12_obs() = Observable(:corr12, 1, v -> dot(v.config[1], v.config[2]))
         h = c0 * n1                        # V(e) = h·e_z
         folded = zeros(3)
         folded[2] = 1.0
-        term = MultipoleTerm(c0 / sqrt(4π), 1, [1], [SVector(0, 0, 0)], [1], folded)
+        term = SpinMultipoleTerm(c0 / sqrt(4π), 1, [1], [SVector(0, 0, 0)], [1], folded)
         H1 = TiledHamiltonian(1, [term])
         ez = Observable(:ez, 1, v -> v.config[1][3])
         for (i, βh) in enumerate([1.0, 2.0])

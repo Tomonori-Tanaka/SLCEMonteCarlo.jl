@@ -6,7 +6,7 @@ CurrentModule = SLCEMonteCarlo
 
 ## The exact single-spin ΔE
 
-A fitted SCE energy is a sum of cluster terms
+A fitted SLCE energy is a sum of cluster terms
 ``E = Σ_k c_k (4π)^{N_k/2} Σ_μ F_k[μ] ∏_i Z_{l_iμ_i}(\boldsymbol e_{s_i})``,
 each instance touching **distinct** sites (a constructor invariant). Freezing all
 spins but site ``s`` therefore makes the energy *linear in the tesseral row* of
@@ -47,7 +47,7 @@ bit-identical restart.
 
 ## Overrelaxation
 
-The classical decorrelation move for continuous spins, generalized to any SCE:
+The classical decorrelation move for continuous spins, generalized to any SLCE:
 reflect ``\boldsymbol e → 2(\boldsymbol e·\hat h)\hat h − \boldsymbol e`` about
 the local ``l=1`` field axis ``\hat h`` (read off ``c_s``'s three ``l=1``
 components), then Metropolis-accept on the **exact** ΔE.

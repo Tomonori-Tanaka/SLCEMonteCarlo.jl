@@ -326,7 +326,7 @@ end
 
 Run single-spin Metropolis Monte Carlo on the tiled Hamiltonian at one absolute
 temperature or a ladder of them. Provide **exactly one** of `temperature` (kelvin,
-converted with [`KB_EV`](@ref) — assumes an eV-fitted model) or `kT` (`k_B·T` in the
+converted with `KB_EV` — assumes an eV-fitted model) or `kT` (`k_B·T` in the
 model's energy units), scalar or collection. A collection runs **in the given
 order** with the chain carried over (fresh thermalization at each value), so
 ordering high → low is an annealing run; pass `carryover = false` for an

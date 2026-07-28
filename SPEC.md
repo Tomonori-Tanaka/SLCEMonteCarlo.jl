@@ -1,6 +1,6 @@
 # SLCEMonteCarlo.jl — specification
 
-Full classical spin Monte Carlo for fitted SCE models from `SLCE.jl`.
+Full classical spin Monte Carlo for fitted SLCE models from `SLCE.jl`.
 Self-contained core (no Carlo.jl), Threads parallelism, own binning analysis.
 This file tracks the architecture and public API; the decision records live in
 `docs/specs/*.md`. Validated end-to-end on the Nd₂Fe₁₄B l02 refit (68 atoms,
@@ -12,7 +12,7 @@ ferrimagnetic Nd-vs-Fe order at 250 K.
 
 | File | Contents |
 |---|---|
-| `src/units.jl` | `KB_EV`, `resolve_kt` (kelvin XOR model-energy-unit control) |
+| `src/units.jl` | re-exports `SLCE`'s `KB_EV` / `resolve_kt` (kelvin XOR model-energy-unit control); the definitions live upstream, never here |
 | `src/hamiltonian.jl` | `TermSlot`, `ScaledTerm`, `TiledHamiltonian` (supercell tiling, CSR instance/site adjacency, `site_active`/`n_active` for scheduling and `site_has_spin`/`n_spin_active` for the spin channel — non-magnetic sites are frozen and excluded, precompiled sparse contraction programs, conflict-graph coloring for parallel sweeps), `site_index` |
 | `src/energy.jl` | the energy contract: `total_energy`, `site_coeffs!`, `delta_energy`, `site_gradient`, all-site `energy_gradient!` (program kernels + bitwise-gated rank-generic reference kernels), joint `total_energy(H, config, disps)` and the displacement row filler |
 | `src/binning.jl` | `LogBinner`, `BinStore`, `jackknife` |
@@ -26,13 +26,13 @@ ferrimagnetic Nd-vs-Fe order at 250 K.
 | `src/pt.jl` | `run_pt` (replica exchange over threads), `PTResult` |
 | `src/checkpoint.jl` | JLD2 schema v3, `resume` |
 | `src/geometry.jl` | `supercell_crystal`, `to_matrix`/`from_matrix` |
-| `src/reduce.jl` | `reduce_cell`/`ReducedCell{T}` — verified re-expression of a supercell-fitted model (pure-spin `MultipoleTerm` or joint `DecoratedTerm`) in a user-chosen smaller cell |
+| `src/reduce.jl` | `reduce_cell`/`ReducedCell{T}` — verified re-expression of a supercell-fitted model (pure-spin `SpinMultipoleTerm` or joint `DecoratedTerm`) in a user-chosen smaller cell |
 
 ## Dependency boundary
 
 Reads a fitted model only through `SLCE`'s public surface
 (`decorated_terms`, `row_layout`/`row_index`/`site_rows!`, `restrict`,
-`multipole_terms`, `n_atoms`, `intercept`, `SLCE.load`, `Lattice`/`Crystal`,
+`spin_multipole_terms`, `n_atoms`, `intercept`, `SLCE.load`, `Lattice`/`Crystal`,
 `SLCE.Harmonics`, `SLCE.SolidHarmonics`). The per-term scale — the general
 `(4π)^(n_spin_slots/2)` carried by `DecoratedTerm.scale`, which reduces to
 `(4π)^(body/2)` on the frozen pure-spin surface — is applied exactly once,
@@ -65,7 +65,7 @@ packages; consumers must claim a nonzero `ctr[4]` domain tag — MC streams use 
 `model_fingerprint` (the checkpoint format's stable FNV-1a model identity, shared
 by dependent packages' checkpoint files), `GPUGradientScratch`,
 `gpu_energy_gradient!`, `gpu_zlm_rows!` (phase 2: the device all-site
-tangent-projected SCE gradient — the GPU field entry point for dependent
+tangent-projected SLCE gradient — the GPU field entry point for dependent
 packages' dynamics; bitwise-gated against its lane reference, G7).
 
 ## Design record index

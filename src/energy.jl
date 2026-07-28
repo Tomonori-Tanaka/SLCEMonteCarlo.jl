@@ -138,7 +138,7 @@ end
     total_energy(H::TiledHamiltonian, config::SpinConfig) -> Float64
     total_energy(H::TiledHamiltonian, config::SpinConfig, disps) -> Float64
 
-The SCE energy of a state on the tiled supercell, in the model's energy units with
+The SLCE energy of a state on the tiled supercell, in the model's energy units with
 the intercept `j0` excluded: the sum of every cluster instance's contraction
 `coef · Σ_μ folded[μ] ∏ᵢ fᵢ(μᵢ)` over its tensor axes, with `fᵢ` the axis's own site
 factor — `Z_{l,m}(ê_a)` on a spin axis, `|u_a|^{2k} R_{l,m}(u_a)` on a displacement
@@ -318,7 +318,7 @@ end
     energy_gradient(H::TiledHamiltonian, config::SpinConfig; ntasks = 1)
         -> Vector{SVector{3,Float64}}
 
-All-site, tangent-projected gradient of the total SCE energy: `G[s] = ∂E/∂e_s`
+All-site, tangent-projected gradient of the total SLCE energy: `G[s] = ∂E/∂e_s`
 with `e_s · G[s] == 0` exactly (the radial part is removed by
 `SLCE.Harmonics.grad_Zlm_unsafe`), exact at any body order — the
 leave-one-out coefficients of [`site_coeffs!`](@ref) are independent of `e_s`, so

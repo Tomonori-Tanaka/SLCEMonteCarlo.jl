@@ -115,7 +115,7 @@
         folded = zeros(3)
         folded[2] = 1.0                       # μ = 0 slot of l = 1
         z = SVector(0, 0, 0)
-        term = MultipoleTerm(c0 / sqrt(4π), 1, [1], [z], [1], folded)
+        term = SpinMultipoleTerm(c0 / sqrt(4π), 1, [1], [z], [1], folded)
         H = TiledHamiltonian(1, [term])
         e = normalize(SVector(0.3, -0.4, 0.85))
         @test total_energy(H, MC.SpinConfig([e])) ≈ c0 * n1 * e[3] atol = 1e-14
@@ -123,17 +123,17 @@
 
     @testset "constructor guards" begin
         z = SVector(0, 0, 0)
-        good = MultipoleTerm(1.0, 2, [1, 2], [z, z], [1, 1], zeros(3, 3))
-        @test_throws ArgumentError TiledHamiltonian(2, MultipoleTerm[])
+        good = SpinMultipoleTerm(1.0, 2, [1, 2], [z, z], [1, 1], zeros(3, 3))
+        @test_throws ArgumentError TiledHamiltonian(2, SpinMultipoleTerm[])
         @test_throws ArgumentError TiledHamiltonian(0, [good])
         @test_throws ArgumentError TiledHamiltonian(2, [good]; dims = (0, 1, 1))
         @test_throws ArgumentError TiledHamiltonian(1, [good])            # atom 2 > 1
-        bad_anchor = MultipoleTerm(1.0, 2, [1, 2], [SVector(1, 0, 0), z], [1, 1],
+        bad_anchor = SpinMultipoleTerm(1.0, 2, [1, 2], [SVector(1, 0, 0), z], [1, 1],
                                    zeros(3, 3))
         @test_throws ArgumentError TiledHamiltonian(2, [bad_anchor])
-        bad_repeat = MultipoleTerm(1.0, 2, [1, 1], [z, z], [1, 1], zeros(3, 3))
+        bad_repeat = SpinMultipoleTerm(1.0, 2, [1, 1], [z, z], [1, 1], zeros(3, 3))
         @test_throws ArgumentError TiledHamiltonian(2, [bad_repeat])
-        bad_shape = MultipoleTerm(1.0, 2, [1, 2], [z, z], [1, 2], zeros(3, 3))
+        bad_shape = SpinMultipoleTerm(1.0, 2, [1, 2], [z, z], [1, 2], zeros(3, 3))
         @test_throws ArgumentError TiledHamiltonian(2, [bad_shape])
     end
 end

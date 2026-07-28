@@ -1,4 +1,4 @@
-# The tiled Hamiltonian: the fitted training-cell SCE unfolded onto an N₁×N₂×N₃
+# The tiled Hamiltonian: the fitted training-cell SLCE unfolded onto an N₁×N₂×N₃
 # supercell (see `docs/specs/hamiltonian-tiling.md`).
 #
 # A term's `shifts` are per-site integer lattice translations of the *training* cell
@@ -59,12 +59,12 @@ end
 """
     ScaledTerm
 
-One fitted SCE term template in consumer form: `coef` is the raw fitted `jϕ` times the
+One fitted SLCE term template in consumer form: `coef` is the raw fitted `jϕ` times the
 term's scale `(4π)^(n_spin_slots/2)` — applied here, **exactly once** in the package —
 with the member `atoms` (training-cell indices), per-site integer lattice `shifts`
 (`shifts[1] = 0`), one [`TermSlot`](@ref) per tensor axis, and the
 rank-`length(slots)` real coefficient tensor `folded`. Copied out of
-`SLCE.DecoratedTerm` (or its frozen pure-spin predecessor `SLCE.MultipoleTerm`) with
+`SLCE.DecoratedTerm` (or its frozen pure-spin predecessor `SLCE.SpinMultipoleTerm`) with
 value semantics — never an alias of the model's arrays.
 
 On a pure-spin term the slots are the identity layout (axis `i` = the spin factor of
@@ -266,11 +266,11 @@ end
 
 """
     TiledHamiltonian(model::SLCEModel; dims = (1, 1, 1))
-    TiledHamiltonian(n_cell_atoms, terms::Vector{MultipoleTerm}; dims = (1, 1, 1))
+    TiledHamiltonian(n_cell_atoms, terms::Vector{SpinMultipoleTerm}; dims = (1, 1, 1))
     TiledHamiltonian(n_cell_atoms, terms::Vector{DecoratedTerm}, layout::RowLayout;
                      dims = (1, 1, 1))
 
-The fitted SCE Hamiltonian tiled onto an `dims = (N₁, N₂, N₃)` supercell of the
+The fitted SLCE Hamiltonian tiled onto an `dims = (N₁, N₂, N₃)` supercell of the
 training cell: `n_sites = n_cell_atoms · N₁N₂N₃` sites, with one cluster
 *instance* per fitted term and supercell cell (member `i` of a term anchored in cell
 `t` sits at `site_index(atoms[i], mod.(t .+ shifts[i], dims))` — toroidal boundary
@@ -279,7 +279,7 @@ excluded; on the training cell (`dims = (1,1,1)`) the total energy equals
 `predict_energy(model, config[, disps]) − intercept(model)`.
 
 The second and third forms consume hand-built term lists with **raw** (unscaled)
-coefficients; the scale — `(4π)^(body/2)` for a `MultipoleTerm`, the general
+coefficients; the scale — `(4π)^(body/2)` for a `SpinMultipoleTerm`, the general
 `(4π)^(n_spin_slots/2)` carried by a `DecoratedTerm` — is applied here, exactly once.
 Terms with `coef == 0` are dropped up front (they contribute nothing anywhere;
 the introspection surfaces already filter fitted zeros, so this only affects hand-built
@@ -739,7 +739,7 @@ end
 
 # --- term ingest: the two upstream introspection surfaces -> ScaledTerm --------------
 
-# The pure-spin row layout of a `MultipoleTerm` list: the SPIN block alone, with `lmax`
+# The pure-spin row layout of a `SpinMultipoleTerm` list: the SPIN block alone, with `lmax`
 # read off the surviving terms exactly as it was before the displacement channel
 # existed. (`row_layout(model)` would instead cover every factor the BASIS can build,
 # which for a pure-spin model is a superset — correct, but it would widen the row
@@ -748,7 +748,7 @@ _spin_row_layout(lmax::Int)::RowLayout =
     RowLayout(Harmonics.num_lm(lmax), lmax, Harmonics.num_lm(lmax),
               Tuple{Int,Int}[], Int[])
 
-function TiledHamiltonian(n_cell_atoms::Integer, mterms::Vector{MultipoleTerm};
+function TiledHamiltonian(n_cell_atoms::Integer, mterms::Vector{SpinMultipoleTerm};
                           dims::NTuple{3,Integer} = (1, 1, 1),
                           fixed_reference::Bool = false)
     # A coef == 0 term contributes nothing to any energy, coefficient vector, or
@@ -809,11 +809,11 @@ function TiledHamiltonian(model::SLCEModel; dims::NTuple{3,Integer} = (1, 1, 1),
     layout = row_layout(model)
     # A model with no displacement rows goes down the frozen pure-spin path, byte for
     # byte as before M4. `restrict` is a no-op on a genuinely pure-spin basis and the
-    # exact u = 0 sub-model otherwise, which is what makes `multipole_terms` — whose
+    # exact u = 0 sub-model otherwise, which is what makes `spin_multipole_terms` — whose
     # refusal is triggered by the SPEC, not by the surviving coefficients — accept the
     # pathological "declared a displacement sector, built no displacement SALC" case.
     isempty(layout.disp_factors) &&
-        return TiledHamiltonian(n_atoms(model), multipole_terms(restrict(model, :spin));
+        return TiledHamiltonian(n_atoms(model), spin_multipole_terms(restrict(model, :spin));
                                 dims = dims, fixed_reference = fixed_reference)
     return TiledHamiltonian(n_atoms(model), decorated_terms(model), layout; dims = dims,
                             fixed_reference = fixed_reference)

@@ -24,7 +24,7 @@ every [`Observable`](@ref) receives:
   `H.site_has_disp` or walks `H.disp_comp_ptr` will find nothing to do and return
   zero, which is why the standard set is gated on `n_disp_active > 0` rather than
   measured and discarded. On a joint Hamiltonian the length is validated;
-- `energy` — the configuration's current total SCE energy (model units, `j0`
+- `energy` — the configuration's current total SLCE energy (model units, `j0`
   excluded), so `:energy` costs an observable nothing extra.
 
 One argument rather than a widening positional list: the sampled state grows with

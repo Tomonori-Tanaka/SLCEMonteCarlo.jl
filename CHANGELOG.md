@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — the documentation is published
+
+- **<https://tomonori-tanaka.github.io/SLCEMonteCarlo.jl/dev/>** — the Documenter site is
+  now deployed to GitHub Pages by the `documentation build` CI job (`deploydocs`
+  in `docs/make.jl`, `permissions: contents: write` on the job). It was being
+  built on every push and then thrown away.
+- **Per-line source links work**: `remotes = nothing` / `edit_link = nothing` are
+  gone in favour of the real repository, so every docstring on the site links to
+  its own lines on GitHub and each page has an "Edit on GitHub" link.
+- README carries a docs badge, a CI badge and the site URL.
+
+### Changed — BREAKING: the family-wide naming batch
+
+Follows SLCE.jl's third naming batch (see its `CHANGELOG`); landed in all four
+repositories together.
+
+- **`MultipoleTerm` / `multipole_terms` → `SpinMultipoleTerm` /
+  `spin_multipole_terms`** (upstream rename; `TiledHamiltonian`'s frozen pure-spin
+  path and every fixture follow).
+- **`has_disp` is now a method of `SLCE.has_disp`, not a second generic.** This
+  package defined its own `has_disp(::TiledHamiltonian)` while the core defined
+  `has_disp(::SiteDecor)`; they asked the same question at two granularities but were
+  different functions, so a user loading both packages had two `has_disp` and no way
+  to call one of them unqualified. Imported and extended, exactly as `n_atoms` already
+  was for `ReducedCell`. Behaviour is unchanged; `SLCEMonteCarlo.has_disp(H)` still
+  resolves.
+- **`KB_EV` / `resolve_kt` moved to `SLCE`** and are re-exported / re-published from
+  here unchanged — `export KB_EV` and `public resolve_kt` still hold, and the values
+  are bit-identical (the two definitions were character-for-character the same). This
+  package no longer owns a second copy of the kelvin ↔ model-energy conversion.
+- **Prose: `SCE` → `SLCE`, "spin–lattice cluster expansion".** The module docstring
+  and README expanded the acronym as "symmetry-adapted cluster expansion", which was
+  wrong — *symmetry-adapted* describes the basis, not the expansion. No identifier
+  changed. `docs/specs/` decision records keep their original wording.
+
 ### Added — the device displacement sweep (M4 slice 3f/3)
 
 - **`gpu_displacement_sweep!`** (exported) — the displacement half of the device

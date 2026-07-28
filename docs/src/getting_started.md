@@ -20,7 +20,7 @@ Pkg.develop(path = "path/to/SLCEMonteCarlo.jl")
 ```julia
 using SLCEMonteCarlo, SLCE
 
-model = SLCE.load(SLCEModel, "model.toml")   # a fitted SCE
+model = SLCE.load(SLCEModel, "model.toml")   # a fitted SLCE
 H = TiledHamiltonian(model; dims = (4, 4, 4))         # training cell → 4×4×4 supercell
 
 result = run_mc(H; temperature = 300, seed = 1)       # kelvin (or kT = ... in eV)
@@ -34,7 +34,7 @@ p.stats[:sublattice_m]     # per-sublattice magnetization vectors
 
 The temperature rule (everywhere in the package): **exactly one** of
 
-- `temperature` — kelvin, converted with [`KB_EV`](@ref) (assumes an eV-fitted
+- `temperature` — kelvin, converted with `KB_EV` (assumes an eV-fitted
   model, the convention for DFT-fitted models), or
 - `kT` — ``k_B T`` directly in the model's energy units (theory / test runs).
 

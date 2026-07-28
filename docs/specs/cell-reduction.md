@@ -1,5 +1,11 @@
 # Decision record — cell reduction (`reduce_cell`)
 
+> **Naming note (2026-07-28).** This is a dated decision record and is kept as
+> written; the names below are the ones the decision was taken under. Renamed
+> since, in the family-wide naming batch: `multipole_terms` → `spin_multipole_terms`. The current spelling is what
+> the code, `SPEC.md` and the API reference use.
+
+
 Status: landed (post-v0). Owner: `src/reduce.jl`; gates in `test/unit/test_reduce.jl`.
 
 ## R1 — why

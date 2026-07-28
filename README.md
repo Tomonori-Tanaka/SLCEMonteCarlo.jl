@@ -1,10 +1,15 @@
 # SLCEMonteCarlo.jl
 
-Classical spin Monte Carlo for fitted SCE (symmetry-adapted cluster expansion)
+[![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://tomonori-tanaka.github.io/SLCEMonteCarlo.jl/dev/)
+[![CI](https://github.com/Tomonori-Tanaka/SLCEMonteCarlo.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/Tomonori-Tanaka/SLCEMonteCarlo.jl/actions/workflows/CI.yml)
+
+**Documentation:** <https://tomonori-tanaka.github.io/SLCEMonteCarlo.jl/dev/>
+
+Classical spin Monte Carlo for fitted SLCE (spin–lattice cluster expansion)
 models from [SLCE.jl](https://github.com/Tomonori-Tanaka/SLCE.jl).
 
 - **Supercell tiling** — replicate the fitted training-cell Hamiltonian onto an
-  `N₁ × N₂ × N₃` supercell from the public `multipole_terms` introspection alone.
+  `N₁ × N₂ × N₃` supercell from the public `spin_multipole_terms` introspection alone.
 - **Cell reduction** — re-express a supercell-fitted model in a user-chosen smaller
   cell (`reduce_cell`, verified — structure and couplings must actually have that
   periodicity), so MC sizes are not locked to training-cell multiples.

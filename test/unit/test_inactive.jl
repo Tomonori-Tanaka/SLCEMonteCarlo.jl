@@ -27,7 +27,7 @@
 
     @testset "coef == 0 terms are dropped up front" begin
         terms = _chain_terms(-0.05)
-        zero_term = MultipoleTerm(0.0, terms[1].body, terms[1].atoms, terms[1].shifts,
+        zero_term = SpinMultipoleTerm(0.0, terms[1].body, terms[1].atoms, terms[1].shifts,
                                   terms[1].ls, terms[1].folded)
         Ha = TiledHamiltonian(1, terms; dims = (3, 1, 1))
         Hb = TiledHamiltonian(1, vcat(terms, [zero_term]); dims = (3, 1, 1))

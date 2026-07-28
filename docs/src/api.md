@@ -19,7 +19,7 @@ site_index
 site_atom
 ScaledTerm
 TermSlot
-has_disp
+has_disp(::TiledHamiltonian)
 SpinConfig
 ```
 
@@ -123,7 +123,12 @@ from_matrix
 
 ## Units
 
-```@docs
-KB_EV
-resolve_kt
-```
+`KB_EV` and `resolve_kt` are **defined in `SLCE`** and re-exported here unchanged —
+one definition of the kelvin ↔ model-energy conversion for the whole family, so two
+copies cannot drift apart. They are documented in
+[SLCE.jl's API reference](https://tomonori-tanaka.github.io/SLCE.jl/dev/api/#Units).
+
+| name | what it is |
+|:--|:--|
+| `KB_EV` | Boltzmann's constant in eV/K, the exact CODATA ratio `1.380649e-23 / 1.602176634e-19`. `kT = KB_EV * temperature`, assuming an **eV-fitted** model. |
+| `SLCEMonteCarlo.resolve_kt(temperature, kT)` | resolves exactly one of the two controls — scalar or collection — into a validated `k_B·T` vector in the model's energy units. |

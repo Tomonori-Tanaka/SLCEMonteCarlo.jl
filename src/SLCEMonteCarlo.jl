@@ -1,7 +1,7 @@
 """
     SLCEMonteCarlo
 
-Classical spin Monte Carlo for fitted SCE (symmetry-adapted cluster expansion) models
+Classical spin Monte Carlo for fitted SLCE (spin–lattice cluster expansion) models
 from `SLCE.jl`: tile the fitted training-cell Hamiltonian onto an
 `N₁ × N₂ × N₃` supercell ([`TiledHamiltonian`](@ref)) — optionally after a verified
 re-expression in a user-chosen smaller cell ([`reduce_cell`](@ref)) — and sample it
@@ -17,13 +17,13 @@ numerically with
 [`find_ground_state`](@ref) (multi-start annealing + polish).
 
 The fitted model is read **only** through `SLCE`'s public introspection surface
-(`decorated_terms`, `row_layout`, `restrict`, `multipole_terms`, `n_atoms`,
+(`decorated_terms`, `row_layout`, `restrict`, `spin_multipole_terms`, `n_atoms`,
 `intercept`, `SLCE.Harmonics`); the per-term scale — the general
 `(4π)^(n_spin_slots/2)` a `DecoratedTerm` carries as a field, which reduces to
 `(4π)^(body/2)` on the frozen pure-spin surface — is applied exactly once, in the
 [`TiledHamiltonian`](@ref) constructor, and is never re-derived from the cluster shape.
 Temperatures are absolute, under exactly one of two keywords:
-`temperature` [kelvin, converted with [`KB_EV`](@ref)] or `kT` [model energy units].
+`temperature` [kelvin, converted with `KB_EV`] or `kT` [model energy units].
 """
 module SLCEMonteCarlo
 
@@ -37,11 +37,15 @@ using Random: Random, AbstractRNG, Xoshiro
 using StaticArrays
 using Statistics: Statistics, mean
 
-using SLCE: SLCE, SLCEModel, MultipoleTerm, multipole_terms, intercept,
+using SLCE: SLCE, SLCEModel, SpinMultipoleTerm, spin_multipole_terms, intercept,
                   DecoratedTerm, decorated_terms, restrict,
                   RowLayout, row_layout, row_index,
                   Lattice, Crystal, cartesian_positions
-import SLCE: n_atoms                  # extended for ReducedCell
+# Extended here rather than redefined: `n_atoms` for `ReducedCell`, `has_disp` for
+# `TiledHamiltonian`. Both ask the core's question at this package's granularity — a
+# second generic of the same name would make `SLCE.has_disp` and
+# `SLCEMonteCarlo.has_disp` different functions for a user who loads both.
+import SLCE: n_atoms, has_disp
 import SLCE.Harmonics
 import SLCE.SolidHarmonics
 

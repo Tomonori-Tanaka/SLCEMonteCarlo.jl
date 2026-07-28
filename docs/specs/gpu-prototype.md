@@ -1,5 +1,11 @@
 # Decision record — GPU Metropolis prototype (Phase 1 of the F7 staging)
 
+> **Naming note (2026-07-28).** This is a dated decision record and is kept as
+> written; the names below are the ones the decision was taken under. Renamed
+> since, in the family-wide naming batch: `multipole_terms` → `spin_multipole_terms`. The current spelling is what
+> the code, `SPEC.md` and the API reference use.
+
+
 Status: landed on `feat/gpu-prototype` (Phase 1 of `gpu-feasibility.md` F7).
 Owner: `src/gpu/*.jl`; gates in `test/unit/test_gpu.jl`; bench in
 `bench/bench_gpu.jl`. The CPU paths are untouched and remain the production

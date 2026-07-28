@@ -6,11 +6,11 @@
 
 ## Project goal
 
-Full classical spin Monte Carlo for fitted SCE models from
+Full classical spin Monte Carlo for fitted SLCE models from
 [`SLCE.jl`](../SLCE.jl) — the from-scratch successor of the frozen
 `SpinClusterMC.jl` (Magesty-XML + Carlo.jl), with no API-compatibility constraint.
 Core capabilities: tile the fitted training-cell Hamiltonian onto an `N₁×N₂×N₃`
-supercell (`TiledHamiltonian`, via `MultipoleTerm.shifts`) — optionally after a
+supercell (`TiledHamiltonian`, via `SpinMultipoleTerm.shifts`) — optionally after a
 *verified* re-expression in a user-chosen smaller cell (`reduce_cell`, so `dims` is
 not locked to training-cell multiples) — single-spin Metropolis
 with an adaptive step, overrelaxation, annealing sweeps (`run_mc`), replica exchange
@@ -29,7 +29,7 @@ temperature-unit conventions, hard-coded observables, per-instance payload
 duplication, positional hand-rolled serialization) are what this design avoids.
 
 This package reads a fitted model **only** through `SLCE`'s public surface:
-`decorated_terms` / `multipole_terms`, `row_layout` / `row_index` / `site_rows!`,
+`decorated_terms` / `spin_multipole_terms`, `row_layout` / `row_index` / `site_rows!`,
 `restrict`, `n_atoms(model)`, `intercept`, `SLCE.load(SLCEModel, …)`,
 `Lattice`/`Crystal`/`cartesian_positions`, `SLCE.Harmonics` (`Zlm_unsafe`,
 `lm_index`, `num_lm`, `grad_Zlm_unsafe`) and `SLCE.SolidHarmonics`
@@ -45,7 +45,7 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
 - **Real (tesseral) spherical harmonics `Zₗₘ`** from `SLCE.Harmonics`
   (`lm_index(l, m) = l² + l + m + 1` ordering) on spin axes; 4π-free real solid
   harmonics `|u|^{2k} Rₗₘ(u)` from `SLCE.SolidHarmonics` on displacement axes.
-  `multipole_terms`/`decorated_terms` return the **raw** fitted `jϕ`; the scale —
+  `spin_multipole_terms`/`decorated_terms` return the **raw** fitted `jϕ`; the scale —
   `(4π)^(n_spin_slots/2)`, one `√(4π)` per **spin slot**, which reduces to
   `(4π)^(body/2)` only when every site holds exactly one spin factor — is applied
   **exactly once**, in the `TiledHamiltonian` constructor (`ScaledTerm.coef`), read off
@@ -59,7 +59,7 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   (intercept) excluded everywhere — MC only needs differences; the reconstruction
   gate is `total_energy(H₁ₓ₁ₓ₁, cfg[, u]) == predict_energy(model, cfg[, u]) −
   intercept(model)`.
-- **Supercell tiling**: `MultipoleTerm.shifts` are per-site integer training-cell
+- **Supercell tiling**: `SpinMultipoleTerm.shifts` are per-site integer training-cell
   lattice translations (`shifts[1] = 0` anchored). One instance per template term and
   supercell cell `t`, member `i` at `site_index(atom_i, mod.(t + shifts[i], dims))`.
   Each directed member is one plain summand — no ½ or 1/N factors.
@@ -75,7 +75,7 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
 ## Coupled ("linked") code sites — change one, check all
 
 - **`hamiltonian.jl` ↔ the core's introspection contract** (`SLCE`'s
-  `slce/introspect.jl`): field meanings of `MultipoleTerm` (coef/body/atoms/shifts/
+  `slce/introspect.jl`): field meanings of `SpinMultipoleTerm` (coef/body/atoms/shifts/
   ls/folded) and `DecoratedTerm` (coef/**scale**/body/atoms/shifts/slots/folded), the
   raw-coef scale rule, and the shifts anchoring. Gates:
   `test_hamiltonian.jl` (dims=(1,1,1) ≡ `predict_energy − intercept`; 2×2×2
@@ -88,7 +88,7 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   displacement axis, so `sfac_slot`/`site_slot` mean member **site position** and
   `efac_site` maps an energy-program factor to it. Four things move together:
   (1) the row numbering is `SLCE.row_layout(model)` — never invented here, and the
-  frozen `MultipoleTerm` path deliberately keeps deriving its own
+  frozen `SpinMultipoleTerm` path deliberately keeps deriving its own
   (`_spin_row_layout`) so a pure-spin model's rows are the pre-M4 integers, with
   `H.lmax`/`H.nlm` = the SPIN block alone and `H.nrows` = all rows;
   (2) the scale is `(4π)^(n_spin_slots/2)` read off `DecoratedTerm.scale`, NOT
@@ -167,6 +167,15 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   `docs/src/**.md` `@example` block. The `isotropy` → `soc` rename (with its
   **inverted** sense) broke all four at once and was invisible until the suite was
   run — a downstream rename is not done when SLCE's own tests are green.
+- **Names this package borrows rather than owns** (`src/SLCEMonteCarlo.jl` header,
+  `src/units.jl`): `has_disp` and `n_atoms` are **methods of `SLCE`'s generics**
+  (`import SLCE: n_atoms, has_disp`), and `KB_EV` / `resolve_kt` are `using`-ed from
+  `SLCE` and merely re-exported. Do not re-define any of them here. A second generic
+  of the same name compiles and passes both suites while leaving a user who loads
+  both packages holding two different `has_disp`; a second `const KB_EV` is a unit
+  conversion that can drift with nothing to catch it (both were the case until the
+  2026-07-28 family naming batch). Adding a `has_disp`-like predicate for a new type
+  → extend the upstream generic, or ask upstream to add one.
 - **`energy.jl` 4-function contract ↔ `updates.jl` ↔ SLCETools' `mc/metropolis.jl`**:
   `site_coeffs!`/`delta_energy` are the site-generalized siblings of SLCETools'
   `_accumulate_site_term!` kernel (same `μ = idx − l − 1` mapping, rank-specialized

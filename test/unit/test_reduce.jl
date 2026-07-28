@@ -27,8 +27,8 @@ end
 
 # The same term on new member sites — member ORDER is preserved, so a decorated term's
 # slot → member-position map carries over untouched.
-_resite(mt::MultipoleTerm, atoms, shifts) =
-    MultipoleTerm(mt.coef, length(atoms), atoms, shifts, copy(mt.ls), copy(mt.folded))
+_resite(mt::SpinMultipoleTerm, atoms, shifts) =
+    SpinMultipoleTerm(mt.coef, length(atoms), atoms, shifts, copy(mt.ls), copy(mt.folded))
 _resite(dt::DecoratedTerm, atoms, shifts) =
     DecoratedTerm(dt.coef, dt.scale, length(atoms), atoms, shifts, copy(dt.slots),
                   copy(dt.folded))
@@ -168,12 +168,12 @@ end
         raw = sub_terms[1].coef
         folded = sub_terms[1].folded
         z = SVector(0, 0, 0)
-        tr_terms = [MultipoleTerm(raw, 2, [1, 2], [z, z], [1, 1], copy(folded)),
-                    MultipoleTerm(raw, 2, [2, 1], [z, SVector(1, 1, 0)], [1, 1],
+        tr_terms = [SpinMultipoleTerm(raw, 2, [1, 2], [z, z], [1, 1], copy(folded)),
+                    SpinMultipoleTerm(raw, 2, [2, 1], [z, SVector(1, 1, 0)], [1, 1],
                                   copy(folded)),
-                    MultipoleTerm(raw, 2, [1, 2], [z, SVector(-1, -1, 0)], [1, 1],
+                    SpinMultipoleTerm(raw, 2, [1, 2], [z, SVector(-1, -1, 0)], [1, 1],
                                   copy(folded)),
-                    MultipoleTerm(raw, 2, [2, 1], [z, z], [1, 1], copy(folded))]
+                    SpinMultipoleTerm(raw, 2, [2, 1], [z, z], [1, 1], copy(folded))]
         red = reduce_cell(tr_cr, tr_terms, sub_lat)
         @test n_atoms(red) == 1
         @test red.M == SMatrix{3,3,Int}(mB)
@@ -199,7 +199,7 @@ end
         cr = _dimer_crystal()
         red = reduce_cell(model, cr, Matrix(cr.lattice.vectors))
         @test n_atoms(red) == 4
-        @test length(red.terms) == length(multipole_terms(model))
+        @test length(red.terms) == length(spin_multipole_terms(model))
         H_a = TiledHamiltonian(model; dims = (2, 1, 2))
         H_b = TiledHamiltonian(red; dims = (2, 1, 2))
         cfg = _rand_config(MersenneTwister(5), H_a)
@@ -210,7 +210,7 @@ end
         model, cr = _stacked_chain_model()
         red = reduce_cell(model, cr, [4.0 0 0; 0 4.0 0; 0 0 2.0])
         @test n_atoms(red) == 1
-        @test length(red.terms) == length(multipole_terms(model)) ÷ 2
+        @test length(red.terms) == length(spin_multipole_terms(model)) ÷ 2
         H_tr = TiledHamiltonian(model; dims = (1, 1, 1))
         H_red = TiledHamiltonian(red; dims = (1, 1, 2))
         rng = MersenneTwister(17)
@@ -234,7 +234,7 @@ end
         ch1 = _chain_terms(-0.03)
         ising = zeros(3, 3)
         ising[3, 3] = 1.0                       # a second, distinct coupling tensor
-        ch2 = [MultipoleTerm(0.007, 2, copy(t.atoms), copy(t.shifts), copy(t.ls),
+        ch2 = [SpinMultipoleTerm(0.007, 2, copy(t.atoms), copy(t.shifts), copy(t.ls),
                              copy(ising)) for t in ch1]
         sub2 = vcat(ch1, ch2)
         tr_cr = supercell_crystal(sub_cr, (2, 2, 1))
@@ -259,7 +259,7 @@ end
         model, cr = _stacked_anisotropic_model(SpglibBackend())
         red = reduce_cell(model, cr, [4.0 0 0; 0 4.0 0; 0 0 2.0])
         @test n_atoms(red) == 1
-        @test length(red.terms) == length(multipole_terms(model)) ÷ 2
+        @test length(red.terms) == length(spin_multipole_terms(model)) ÷ 2
         # the sub-partition branch is genuinely exercised: some reduced cluster
         # carries several SALC channels (same anchored key, different folded)
         keys = [(t.atoms, t.shifts, t.ls) for t in red.terms]
@@ -287,7 +287,7 @@ end
         red = reduce_cell(model, cr, [1.0 0 0; 0 1.0 0; 0 0 4.0])
         @test n_atoms(red) == 1
         @test red.M == SMatrix{3,3,Int}([1 1 0; -1 1 0; 0 0 1])
-        @test length(red.terms) == length(multipole_terms(model)) ÷ 2
+        @test length(red.terms) == length(spin_multipole_terms(model)) ÷ 2
         # a training-periodic (not uniform!) configuration: paint each reduced cell
         # with its coset's spin — diag(2,2,1) = M·[1 -1 0; 1 1 0; 0 0 1] wraps a
         # sublattice of M·ℤ³ and covers two training cells.
@@ -543,7 +543,7 @@ end
 
         # a coefficient that breaks the translation symmetry of the Hamiltonian
         bad = copy(tr_terms)
-        bad[3] = MultipoleTerm(bad[3].coef * 1.001, 2, copy(bad[3].atoms),
+        bad[3] = SpinMultipoleTerm(bad[3].coef * 1.001, 2, copy(bad[3].atoms),
                                copy(bad[3].shifts), copy(bad[3].ls),
                                copy(bad[3].folded))
         @test_throws ArgumentError reduce_cell(tr_cr, bad, sub_lat)
@@ -564,7 +564,7 @@ end
         # wrong sub_lattice shape
         @test_throws ArgumentError reduce_cell(tr_cr, tr_terms, ones(2, 2))
         # empty term list
-        @test_throws ArgumentError reduce_cell(tr_cr, MultipoleTerm[], sub_lat)
+        @test_throws ArgumentError reduce_cell(tr_cr, SpinMultipoleTerm[], sub_lat)
 
         # geometrically periodic but chemically not: species differ across cosets
         tr2 = supercell_crystal(sub_cr, (2, 1, 1))
@@ -583,7 +583,7 @@ end
         # the term as if it sat in every reduced cell, which is not the Hamiltonian
         # that was fitted. Unreachable from a fitted model, reachable by stitching two
         # term lists together, and precisely what "verified, never assumed" is for.
-        copy_of(t) = MultipoleTerm(t.coef, length(t.atoms), copy(t.atoms),
+        copy_of(t) = SpinMultipoleTerm(t.coef, length(t.atoms), copy(t.atoms),
                                    copy(t.shifts), copy(t.ls), copy(t.folded))
         one_sided = [copy_of(tr_terms[1]) for _ = 1:4]
         @test length(one_sided) % 4 == 0          # …the weaker test would pass
@@ -594,7 +594,7 @@ end
 
         # degenerate hand-built shapes reach an ArgumentError, not a BoundsError /
         # DimensionMismatch out of the middle of the census
-        @test_throws ArgumentError reduce_cell(tr_cr, [MultipoleTerm(0.1, 0, Int[],
+        @test_throws ArgumentError reduce_cell(tr_cr, [SpinMultipoleTerm(0.1, 0, Int[],
                                                                     SVector{3,Int}[],
                                                                     Int[], fill(1.0))],
                                                sub_lat)

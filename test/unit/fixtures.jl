@@ -99,8 +99,8 @@ function _chain_terms(J)
     raw = J / (2 * n1^2 * (4π))                       # both members + (4π)^(2/2) scale
     z = SVector(0, 0, 0)
     x = SVector(1, 0, 0)
-    return [MultipoleTerm(raw, 2, [1, 1], [z, x], [1, 1], copy(folded)),
-            MultipoleTerm(raw, 2, [1, 1], [z, -x], [1, 1], copy(folded))]
+    return [SpinMultipoleTerm(raw, 2, [1, 1], [z, x], [1, 1], copy(folded)),
+            SpinMultipoleTerm(raw, 2, [1, 1], [z, -x], [1, 1], copy(folded))]
 end
 
 # Hand-built 3-body chain cluster (0, +x, +2x) with a few dense folded entries —
@@ -114,7 +114,7 @@ function _threebody_terms(J)
     folded[3, 1, 2] = -0.4
     z = SVector(0, 0, 0)
     x = SVector(1, 0, 0)
-    return [MultipoleTerm(J, 3, [1, 1, 1], [z, x, 2 * x], [1, 1, 1], folded)]
+    return [SpinMultipoleTerm(J, 3, [1, 1, 1], [z, x, 2 * x], [1, 1, 1], folded)]
 end
 
 # Hand-built 4-body chain cluster (0, +x, +2x, +3x): body ≥ 4 has no fast path,
@@ -127,7 +127,7 @@ function _fourbody_terms(J)
     folded[3, 2, 1, 3] = -0.3
     z = SVector(0, 0, 0)
     x = SVector(1, 0, 0)
-    return [MultipoleTerm(J, 4, [1, 1, 1, 1], [z, x, 2 * x, 3 * x], [1, 1, 1, 1],
+    return [SpinMultipoleTerm(J, 4, [1, 1, 1, 1], [z, x, 2 * x, 3 * x], [1, 1, 1, 1],
                           folded)]
 end
 

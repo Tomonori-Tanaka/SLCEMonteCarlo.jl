@@ -97,9 +97,9 @@ end
     end
     z3 = SVector(0, 0, 0)
     x3 = SVector(1, 0, 0)
-    mixed = [MultipoleTerm(0.3, 1, [1], [z3], [2], sparse_folded(5)),
-             MultipoleTerm(-0.2, 2, [1, 2], [z3, z3], [1, 1], sparse_folded(3, 3)),
-             MultipoleTerm(0.1, 3, [1, 2, 1], [z3, z3, x3], [1, 1, 2],
+    mixed = [SpinMultipoleTerm(0.3, 1, [1], [z3], [2], sparse_folded(5)),
+             SpinMultipoleTerm(-0.2, 2, [1, 2], [z3, z3], [1, 1], sparse_folded(3, 3)),
+             SpinMultipoleTerm(0.1, 3, [1, 2, 1], [z3, z3, x3], [1, 1, 2],
                            sparse_folded(3, 3, 5))]
     hams = [MC.TiledHamiltonian(2, mixed; dims = (2, 2, 1)),
             TiledHamiltonian(_biquadratic_model(0); dims = (2, 2, 1)),
