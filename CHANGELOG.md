@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — BREAKING: the fourth naming batch (upstream)
+
+- **`SLCE.SlotRef` → `SLCE.Slot`.** It is not a reference to a slot — it *is* the
+  slot (site index + site factor), and `Ref` means a mutable box in Julia. This
+  package reads it in the adjacency builder (`hamiltonian.jl`), the cell reduction
+  (`reduce.jl`), the fixtures and the GPU smoke bench; all follow. Nothing else in
+  SLCE.jl's fourth batch reaches this package.
+
 ### Added — the documentation is published
 
 - **<https://tomonori-tanaka.github.io/SLCEMonteCarlo.jl/dev/>** — the Documenter site is

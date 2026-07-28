@@ -102,7 +102,7 @@ _slot_scale(dt::DecoratedTerm) =
 function _canonicalize(dt::DecoratedTerm)
     p = sortperm(1:length(dt.atoms); by = i -> (dt.atoms[i], Tuple(dt.shifts[i])))
     back = invperm(p)
-    moved = [SLCE.SlotRef(back[s.site], s.factor) for s in dt.slots]
+    moved = [SLCE.Slot(back[s.site], s.factor) for s in dt.slots]
     q = sortperm(1:length(moved);
                  by = v -> (moved[v].factor.channel, moved[v].site,
                             moved[v].factor.k, moved[v].factor.l, v))
@@ -381,7 +381,7 @@ end
                                   copy(sub_mixed[1].slots), zeros(3))]
         @test_throws ArgumentError reduce_cell(sub_cr, bad_rank, L, sub_lat)
         bad_site = [DecoratedTerm(0.1, (4π)^0.5, 1, [1], [SVector(0, 0, 0)],
-                                  [SLCE.SlotRef(2, SLCE.SiteFactor(SLCE.SPIN, 0, 1))],
+                                  [SLCE.Slot(2, SLCE.SiteFactor(SLCE.SPIN, 0, 1))],
                                   zeros(3))]
         @test_throws ArgumentError reduce_cell(sub_cr, bad_site, L, sub_lat)
         @test_throws ArgumentError reduce_cell(sub_cr, DecoratedTerm[], L, sub_lat)
@@ -395,8 +395,8 @@ end
         mB = [1 1 0; -1 1 0; 0 0 1]
         tr_cr = Crystal(Lattice(Float64.(mB)), [0 0.5; 0 0.5; 0.0 0.0], [1, 1], ["Fe"])
         L = SLCE.RowLayout(7, 1, 4, [(0, 1)], [4])
-        sp(site) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
-        dp(site) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.DISP, 0, 1))
+        sp(site) = SLCE.Slot(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
+        dp(site) = SLCE.Slot(site, SLCE.SiteFactor(SLCE.DISP, 0, 1))
         z = SVector(0, 0, 0)
         f = [0.3 -0.1 0.0; 0.0 0.2 0.5; -0.4 0.0 0.1]
         # the two training images of ONE mixed +x pair of the 1-atom cell
@@ -600,7 +600,7 @@ end
                                                sub_lat)
         L1 = SLCE.RowLayout(7, 1, 4, [(0, 1)], [4])
         wrong_extent = [DecoratedTerm(0.1, (4π)^0.5, 1, [1], [SVector(0, 0, 0)],
-                                      [SLCE.SlotRef(1, SLCE.SiteFactor(SLCE.SPIN, 0,
+                                      [SLCE.Slot(1, SLCE.SiteFactor(SLCE.SPIN, 0,
                                                                        1))],
                                       zeros(5))]
         @test_throws ArgumentError reduce_cell(tr_cr, wrong_extent, L1, sub_lat)

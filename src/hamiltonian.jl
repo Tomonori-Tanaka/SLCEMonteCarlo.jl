@@ -45,7 +45,7 @@ in the term's `atoms`**, not a global site id), the per-site row block it gather
 a displacement axis).
 
 Several slots may share a `site` — a site is not an axis. `row0` is derived once, at
-construction, from `SLCE.SlotRef` + the model's `SLCE.RowLayout`, so no hot kernel ever
+construction, from `SLCE.Slot` + the model's `SLCE.RowLayout`, so no hot kernel ever
 re-derives a row index; that both channels number their `2l + 1` components
 contiguously is checked per slot against `SLCE.row_index` when the term is ingested.
 """

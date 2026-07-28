@@ -262,7 +262,7 @@ using Test
         # a member site with no tensor axis at all would lie to the inactive-site
         # convention (active, yet contributing nothing)
         bad = [DecoratedTerm(0.1, 1.0, 2, [1, 2], [SVector(0, 0, 0), SVector(0, 0, 0)],
-                             [SLCE.SlotRef(1, SLCE.SiteFactor(SLCE.SPIN, 0, 1))],
+                             [SLCE.Slot(1, SLCE.SiteFactor(SLCE.SPIN, 0, 1))],
                              randn(3))]
         @test_throws ArgumentError MC.TiledHamiltonian(2, bad, MC._spin_row_layout(1))
         # TWO AXES OF ONE CHANNEL on a site. This one is the dangerous case: such a term
@@ -270,13 +270,13 @@ using Test
         # NOT catch it — it would go into the sweeps with a `delta_energy` that silently
         # drops the site's own Δz·Δz′ cross term (measured 21 % off).
         two = [DecoratedTerm(0.1, 4π, 1, [1], [SVector(0, 0, 0)],
-                             [SLCE.SlotRef(1, SLCE.SiteFactor(SLCE.SPIN, 0, 1)),
-                              SLCE.SlotRef(1, SLCE.SiteFactor(SLCE.SPIN, 0, 1))],
+                             [SLCE.Slot(1, SLCE.SiteFactor(SLCE.SPIN, 0, 1)),
+                              SLCE.Slot(1, SLCE.SiteFactor(SLCE.SPIN, 0, 1))],
                              randn(3, 3))]
         @test_throws ArgumentError MC.TiledHamiltonian(1, two, MC._spin_row_layout(1))
         # a layout the upstream row_index itself rejects (l beyond the spin block) …
         wide = [DecoratedTerm(0.1, 1.0, 1, [1], [SVector(0, 0, 0)],
-                              [SLCE.SlotRef(1, SLCE.SiteFactor(SLCE.SPIN, 0, 2))],
+                              [SLCE.Slot(1, SLCE.SiteFactor(SLCE.SPIN, 0, 2))],
                               randn(5))]
         @test_throws ArgumentError MC.TiledHamiltonian(1, wide, MC._spin_row_layout(1))
         # … and one it accepts while the block still runs off the end of `nrows`, which
@@ -285,7 +285,7 @@ using Test
         short = SLCE.RowLayout(2, 1, 2, Tuple{Int,Int}[], Int[])
         @test SLCE.row_index(short, SLCE.SiteFactor(SLCE.SPIN, 0, 1), 1) == 4
         ok1 = [DecoratedTerm(0.1, 4π, 1, [1], [SVector(0, 0, 0)],
-                             [SLCE.SlotRef(1, SLCE.SiteFactor(SLCE.SPIN, 0, 1))],
+                             [SLCE.Slot(1, SLCE.SiteFactor(SLCE.SPIN, 0, 1))],
                              randn(3))]
         @test_throws ArgumentError MC.TiledHamiltonian(1, ok1, short)
 
@@ -321,8 +321,8 @@ using Test
         # that includes a frozen random direction.
         z3 = SVector(0, 0, 0)
         mixed = [DecoratedTerm(0.2, 4π, 2, [1, 2], [z3, z3],
-                               [SLCE.SlotRef(1, SLCE.SiteFactor(SLCE.SPIN, 0, 1)),
-                                SLCE.SlotRef(2, SLCE.SiteFactor(SLCE.DISP, 0, 1))],
+                               [SLCE.Slot(1, SLCE.SiteFactor(SLCE.SPIN, 0, 1)),
+                                SLCE.Slot(2, SLCE.SiteFactor(SLCE.DISP, 0, 1))],
                                randn(3, 3))]
         L2 = SLCE.RowLayout(7, 1, 4, [(0, 1)], [4])
         # hand-built and not translation-invariant; this test is about the activity
@@ -346,8 +346,8 @@ using Test
         # by a factor |u|² — must not share a fingerprint.
         z3 = SVector(0, 0, 0)
         mk(k) = [DecoratedTerm(0.3, 4π, 2, [1, 2], [z3, z3],
-                               [SLCE.SlotRef(1, SLCE.SiteFactor(SLCE.SPIN, 0, 1)),
-                                SLCE.SlotRef(2, SLCE.SiteFactor(SLCE.DISP, k, 1))],
+                               [SLCE.Slot(1, SLCE.SiteFactor(SLCE.SPIN, 0, 1)),
+                                SLCE.Slot(2, SLCE.SiteFactor(SLCE.DISP, k, 1))],
                                fill(0.5, 3, 3))]
         HA = MC.TiledHamiltonian(2, mk(0), SLCE.RowLayout(7, 1, 4, [(0, 1)], [4]);
                                  fixed_reference = true)
@@ -440,7 +440,7 @@ end
         lmax = maximum(maximum(t.ls) for t in mterms)
         dterms = [DecoratedTerm(mt.coef, (4π)^(mt.body / 2), mt.body, mt.atoms,
                                 mt.shifts,
-                                [SLCE.SlotRef(i, SLCE.SiteFactor(SLCE.SPIN, 0, mt.ls[i]))
+                                [SLCE.Slot(i, SLCE.SiteFactor(SLCE.SPIN, 0, mt.ls[i]))
                                  for i in eachindex(mt.ls)], mt.folded)
                   for mt in mterms]
         Ha = MC.TiledHamiltonian(nat, mterms; dims = dims)
@@ -662,8 +662,8 @@ end
         # sites must stay bitwise frozen, and `fixed_reference` disables re-centring.
         z3 = SVector(0, 0, 0)
         mixed = [DecoratedTerm(0.2, 4π, 2, [1, 2], [z3, z3],
-                               [SLCE.SlotRef(1, SLCE.SiteFactor(SLCE.SPIN, 0, 1)),
-                                SLCE.SlotRef(2, SLCE.SiteFactor(SLCE.DISP, 0, 1))],
+                               [SLCE.Slot(1, SLCE.SiteFactor(SLCE.SPIN, 0, 1)),
+                                SLCE.Slot(2, SLCE.SiteFactor(SLCE.DISP, 0, 1))],
                                randn(MersenneTwister(2), 3, 3))]
         L2 = SLCE.RowLayout(7, 1, 4, [(0, 1)], [4])
         Hm = MC.TiledHamiltonian(2, mixed, L2; dims = (2, 1, 1),

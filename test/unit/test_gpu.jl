@@ -689,7 +689,7 @@ end
     # The driver must run — the host does, as a no-op sweep — not throw out of its own
     # default. (Zero passes is not a wrong-ensemble risk here: with nothing depending
     # on `u`, the frozen-`u` conditional IS the joint distribution.)
-    sp1(site) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
+    sp1(site) = SLCE.Slot(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
     z1 = SVector(0, 0, 0)
     xx = SVector(1, 0, 0)
     pr = zeros(3, 3)
@@ -742,7 +742,7 @@ end
     # them equal, but `TiledHamiltonian` takes a caller-supplied `RowLayout` and only
     # checks `disp_offset` against the slot rows — a padded one would truncate the
     # device ΔE and write partially into the displacement block.
-    sp(site) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
+    sp(site) = SLCE.Slot(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
     z = SVector(0, 0, 0)
     x = SVector(1, 0, 0)
     pair = zeros(3, 3)

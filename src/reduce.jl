@@ -291,7 +291,7 @@ end
 _reduced_key_type(::Type{SpinMultipoleTerm}) =
     Tuple{Vector{Int},Vector{SVector{3,Int}},Vector{Int}}
 _reduced_key_type(::Type{DecoratedTerm}) =
-    Tuple{Vector{Int},Vector{SVector{3,Int}},Vector{SLCE.SlotRef}}
+    Tuple{Vector{Int},Vector{SVector{3,Int}},Vector{SLCE.Slot}}
 
 function _reduce_terms(mterms::Vector{T},
                        atom_map::Vector{Tuple{Int,SVector{3,Int}}},
@@ -422,7 +422,7 @@ function _align_reduced(dt::DecoratedTerm, atom_map, m::SMatrix{3,3,Int,9}, nat:
     # order, with `folded`'s axes carried along. The trailing `v` makes the order
     # independent of the sort algorithm when a term repeats one factor on one site.
     back = invperm(perm)
-    moved = [SLCE.SlotRef(back[s.site], s.factor) for s in dt.slots]
+    moved = [SLCE.Slot(back[s.site], s.factor) for s in dt.slots]
     sperm = sortperm(1:length(moved);
                      by = v -> (moved[v].factor.channel, moved[v].site,
                                 moved[v].factor.k, moved[v].factor.l, v))

@@ -45,8 +45,8 @@ end
 
 # --- fixtures (hand-built: no SLCEBasis, so no symmetry backend is needed here) -------
 
-sp(site) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
-dp(site, k, l) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.DISP, k, l))
+sp(site) = SLCE.Slot(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
+dp(site, k, l) = SLCE.Slot(site, SLCE.SiteFactor(SLCE.DISP, k, l))
 
 # A BOUNDED joint chain: spin pair + an onsite spin–displacement coupling (linear in u)
 # + a well on EVERY atom, so the displacement energy is a shifted harmonic and the

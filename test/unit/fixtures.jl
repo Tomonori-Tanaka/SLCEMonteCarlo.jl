@@ -198,8 +198,8 @@ end
 # `fixed_reference = true` at every tiling.
 function _mixed_chain_terms()
     L = SLCE.RowLayout(8, 1, 4, [(0, 1), (1, 0)], [4, 7])
-    sp(site) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
-    dp(site, k, l) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.DISP, k, l))
+    sp(site) = SLCE.Slot(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
+    dp(site, k, l) = SLCE.Slot(site, SLCE.SiteFactor(SLCE.DISP, k, l))
     z = SVector(0, 0, 0)
     x = SVector(1, 0, 0)
     pair = zeros(3, 3)
@@ -221,8 +221,8 @@ end
 # the three translation copies come back as genuine 3-cycles.
 function _threebody_mixed_terms()
     L = SLCE.RowLayout(7, 1, 4, [(0, 1)], [4])
-    sp(site) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
-    dp(site) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.DISP, 0, 1))
+    sp(site) = SLCE.Slot(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
+    dp(site) = SLCE.Slot(site, SLCE.SiteFactor(SLCE.DISP, 0, 1))
     z = SVector(0, 0, 0)
     x = SVector(1, 0, 0)
     folded = zeros(3, 3, 3)
@@ -260,8 +260,8 @@ end
 # Not translation-invariant (the well pins the reference), hence `fixed_reference = true`.
 function _channel_split_terms()
     L = SLCE.RowLayout(8, 1, 4, [(0, 1), (1, 0)], [4, 7])
-    sp(site) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
-    dp(site, k, l) = SLCE.SlotRef(site, SLCE.SiteFactor(SLCE.DISP, k, l))
+    sp(site) = SLCE.Slot(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
+    dp(site, k, l) = SLCE.Slot(site, SLCE.SiteFactor(SLCE.DISP, k, l))
     z = SVector(0, 0, 0)
     x = SVector(1, 0, 0)
     pair = zeros(3, 3)
