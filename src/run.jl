@@ -498,10 +498,6 @@ function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
         maxlog = 1)
     sctx = nothing
     if strain !== nothing
-        checkpoint === nothing || throw(ArgumentError(
-            "checkpointing a strained (NPT) run needs checkpoint schema v4 " *
-            "(the chain's scale and the grid identity are not in v3); not wired " *
-            "yet — run without `checkpoint` for now"))
         _check_strain_pairing(H, strain)
         sc = StrainScratch(H)
         # establish the (H, s = 1) contract the move maintains — with the one-time
@@ -509,8 +505,12 @@ function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
         set_coefficients!(H, strain_coefficients!(sc.coef, strain, 1.0))
         sctx = (strain, sc)
     end
+    # the checkpointer captures the model fingerprint HERE, while `H` carries the
+    # reference coefficients — the identity a strained run's file must store
     ck = _make_checkpointer(checkpoint, checkpoint_interval, H, plan, observables,
-                            "mc", 0)
+                            "mc", 0;
+                            grid_fp = strain === nothing ? UInt64(0) :
+                                      _grid_fingerprint(strain))
     rng = Xoshiro(plan.seed)
     st = ChainState(H, _initial_config(H, init, rng), rng, plan.step0;
                     disps = disps, step_u = plan.step_u0)

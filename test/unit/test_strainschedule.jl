@@ -500,9 +500,6 @@ _ss_vk_mean(k, va, vb) =
         @test_throws ArgumentError run_mc(H; kT = 0.05, sweeps_therm = 1,
                                           sweeps_measure = 2, strain = sch,
                                           pressure = 0.0, pressure_GPa = 0.0)
-        @test_throws ArgumentError run_mc(H; kT = 0.05, sweeps_therm = 1,
-                                          sweeps_measure = 2, strain = sch,
-                                          pressure = 0.0, checkpoint = "x.jld2")
         # ...the schedule of a DIFFERENT Hamiltonian is refused by the pairing check
         H1 = TiledHamiltonian(models[2]; dims = (1, 1, 1), keep_zero_terms = true)
         @test_throws ArgumentError run_mc(H1; kT = 0.05, sweeps_therm = 1,
@@ -521,6 +518,82 @@ _ss_vk_mean(k, va, vb) =
             e
         end
         @test err isa ArgumentError && occursin("swap rule", err.msg)
+    end
+
+    @testset "checkpoint v4: a strained run resumes bit-identically" begin
+        sm, models = _ss_grid()
+        H = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        sch = StrainSchedule(sm, H)
+        dir = mktempdir()
+        path = joinpath(dir, "npt.jld2")
+        kw = (; kT = [0.06, 0.05], sweeps_therm = 60, sweeps_measure = 120,
+              renorm_interval = 30, nbins = 4, seed = 0x71, strain = sch,
+              pressure = 0.01)
+        a = run_mc(H; kw...)
+        # writing consumes no RNG; the last periodic tick lands mid-measure of the
+        # second temperature, with the chain generally away from s = 1
+        b = run_mc(H; kw..., checkpoint = path, checkpoint_interval = 100)
+        @test [p.stats[:energy].mean[1] for p in a.points] ==
+              [p.stats[:energy].mean[1] for p in b.points]
+        @test a.final_config == b.final_config
+        @test isfile(path)
+        # the caller's H arrives carrying the LAST run's final-scale coefficients;
+        # resume reinstalls the reference before the fingerprint check, so it must
+        # not care — and the continued run is the uninterrupted one, bit for bit
+        c = resume(path, H; strain = sch)
+        @test [p.stats[:energy].mean[1] for p in a.points] ==
+              [p.stats[:energy].mean[1] for p in c.points]
+        @test isequal([p.acceptance_strain for p in a.points],
+                      [p.acceptance_strain for p in c.points])
+        @test a.final_config == c.final_config
+        @test a.final_disps == c.final_disps
+        # ...and resuming the now-completed file is idempotent
+        d = resume(path, H; strain = sch)
+        @test a.final_config == d.final_config
+
+        # the handshake's refusals, each by name
+        err = try
+            resume(path, H)
+            nothing
+        catch e
+            e
+        end
+        @test err isa Exception && occursin("strained (NPT) run", sprint(showerror, err))
+        sm2, _ = _ss_grid(; scales = [0.97, 1.0, 1.03])
+        sch2 = StrainSchedule(sm2, H)
+        err = try
+            resume(path, H; strain = sch2)
+            nothing
+        catch e
+            e
+        end
+        @test err isa Exception &&
+              occursin("grid fingerprint", sprint(showerror, err))
+        # a fixed-cell checkpoint refuses a schedule...
+        fpath = joinpath(dir, "fixed.jld2")
+        run_mc(H; kT = 0.05, sweeps_therm = 20, sweeps_measure = 40, nbins = 4,
+               seed = 0x72, checkpoint = fpath)
+        err = try
+            resume(fpath, H; strain = sch)
+            nothing
+        catch e
+            e
+        end
+        @test err isa Exception &&
+              occursin("fixed-cell run", sprint(showerror, err))
+        # ...and a pre-strain (v3) file is refused with its provenance named
+        p3 = joinpath(dir, "old.jld2")
+        MCs.jldopen(p3, "w") do f
+            f["schema_version"] = 3
+        end
+        err = try
+            resume(p3, H)
+            nothing
+        catch e
+            e
+        end
+        @test err isa Exception && occursin("schema v3", sprint(showerror, err)) &&
+              occursin("strain channel", sprint(showerror, err))
     end
 
     @testset "MCView carries the strain, and refuses to invent one" begin

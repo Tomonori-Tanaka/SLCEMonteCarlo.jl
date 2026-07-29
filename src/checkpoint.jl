@@ -9,10 +9,18 @@
 # stored counters, so a resumed run is bit-identical to an uninterrupted one.
 # Writes go to a temp file, then an atomic `mv`. Checkpoint writing consumes no RNG.
 
-const _CKPT_SCHEMA_VERSION = 3
+const _CKPT_SCHEMA_VERSION = 4
 
 # The run-side checkpoint writer: the target path, the write cadence, and the
 # run-description needed to make the file self-contained.
+#
+# On a strained (NPT) run, `fingerprint` is the model fingerprint AT THE REFERENCE
+# SCALE `s = 1` — `_fingerprint` mixes the coefficient values (deliberately: a
+# coefficient hot-swap must refuse to resume), and a strained chain's coefficients
+# move with its volume, so the only well-defined identity is the reference's. The
+# drivers construct the checkpointer while `H` carries the reference coefficients,
+# and `resume` reinstalls them before comparing. `grid_fp` identifies the volume
+# grid itself (zero on a fixed-cell run).
 mutable struct _Checkpointer
     const path::String
     const interval::Int              # sweeps between writes; 0 ⇒ boundaries only
@@ -23,18 +31,20 @@ mutable struct _Checkpointer
     const obs_ncomps::Vector{Int}
     const kind::String               # "mc" | "pt"
     const exchange_interval::Int     # pt only (0 for mc)
+    const grid_fp::UInt64            # strain-grid identity (0 = fixed cell)
 end
 
 function _make_checkpointer(path::Union{Nothing,AbstractString}, interval::Integer,
                             H::TiledHamiltonian, plan::UpdatePlan,
                             observables::Vector{Observable}, kind::String,
-                            exchange_interval::Int)
+                            exchange_interval::Int; grid_fp::UInt64 = UInt64(0))
     path === nothing && return nothing
     interval >= 0 ||
         throw(ArgumentError("checkpoint_interval must be ≥ 0; got $interval"))
     return _Checkpointer(String(path), Int(interval), 0, _fingerprint(H), plan,
                          [String(o.name) for o in observables],
-                         [o.ncomp for o in observables], kind, exchange_interval)
+                         [o.ncomp for o in observables], kind, exchange_interval,
+                         grid_fp)
 end
 
 # --- model fingerprint (stable FNV-1a — deliberately NOT Base.hash, which is
@@ -116,6 +126,34 @@ dependent packages' checkpoint formats (e.g. `SLCEDynamics`).
 """
 model_fingerprint(H::TiledHamiltonian)::UInt64 = _fingerprint(H)
 
+# The volume grid's identity, for a strained run's checkpoint: everything the
+# schedule's conversion produced. Two runs may share a model fingerprint at the
+# reference and still disagree off it — same reference fit, different grid — so the
+# grid needs its own identity, and it is checked BEFORE the reference coefficients
+# are reinstalled from the schedule the caller supplies.
+function _grid_fingerprint(sch::StrainSchedule)::UInt64
+    h = 0xcbf29ce484222325
+    for s in sch.scales
+        h = _fp_mix(h, s)
+    end
+    for c in codeunits(String(sch.abscissa))
+        h = _fp_mix(h, c)
+    end
+    h = _fp_mix(h, sch.x0)
+    h = _fp_mix(h, sch.xw)
+    for v in sch.coefpoly
+        h = _fp_mix(h, v)
+    end
+    for v in sch.j0poly
+        h = _fp_mix(h, v)
+    end
+    h = _fp_mix(h, sch.v_train)
+    h = _fp_mix(h, sch.n_cells)
+    h = _fp_mix(h, sch.n_mobile)
+    h = _fp_mix(h, sch.d_dim)
+    return h
+end
+
 # --- plain-data (de)serializers ------------------------------------------------------
 
 _rng_words(rng::Xoshiro)::Vector{UInt64} =
@@ -154,9 +192,10 @@ function _write_chain(f, g::String, st::ChainState)
     f["$g/site_rngs"] = reduce(hcat, [_rng_words(r) for r in st.site_rngs])
     f["$g/step"] = st.step
     f["$g/step_u"] = st.step_u
+    f["$g/strain"] = st.strain
     f["$g/frozen"] = st.frozen
     f["$g/counters"] = Int[st.acc_metro, st.att_metro, st.acc_or, st.att_or,
-                           st.acc_disp, st.att_disp]
+                           st.acc_disp, st.att_disp, st.acc_strain, st.att_strain]
     f["$g/max_drift"] = st.max_drift
     # The escape detector's accumulators. They steer no random decision, so a resume
     # is bit-identical with or without them — but dropping them would restart the
@@ -195,12 +234,11 @@ function _read_chain(f, g::String, H::TiledHamiltonian)::ChainState
     site_rngs = [_rng_from_words(srw[:, s]) for s = 1:H.n_sites]
     ef = f["$g/escape_f"]
     ei = f["$g/escape_i"]
-    # Schema v3 predates the strain channel: a v3 chain is a fixed cell at s = 1 with
-    # no strain attempts (v4 stores the field; the version gate refuses a mismatch).
     return ChainState(config, disps, zrows, f["$g/energy"],
                       _rng_from_words(f["$g/rng"]), site_rngs, f["$g/step"],
-                      f["$g/step_u"], 1.0, f["$g/frozen"], cnt[1], cnt[2], cnt[3],
-                      cnt[4], cnt[5], cnt[6], 0, 0, f["$g/max_drift"], com,
+                      f["$g/step_u"], f["$g/strain"], f["$g/frozen"], cnt[1], cnt[2],
+                      cnt[3], cnt[4], cnt[5], cnt[6], cnt[7], cnt[8],
+                      f["$g/max_drift"], com,
                       ef[1], ef[2], ef[3], ei[1], ef[4], ef[5], ei[2], ei[3], ef[6],
                       ei[4], f["$g/escape_warned"])
 end
@@ -271,11 +309,9 @@ function _read_point(f, g::String)::TempResult
                                   f["$g/stats/$k/tau_int"], f["$g/stats/$k/count"])
     end
     kt = f["$g/kT"]
-    # points written before the strain channel carry no strain acceptance; a
-    # fixed-cell NaN is exactly what they mean
-    acc_s = haskey(f, "$g/acceptance_strain") ? f["$g/acceptance_strain"] : NaN
     return TempResult(kt, kt / KB_EV, stats, f["$g/acceptance_metropolis"],
-                      f["$g/acceptance_or"], f["$g/acceptance_disp"], acc_s,
+                      f["$g/acceptance_or"], f["$g/acceptance_disp"],
+                      f["$g/acceptance_strain"],
                       f["$g/final_step"], f["$g/final_step_u"], f["$g/max_drift"],
                       f["$g/disp_rms"], f["$g/disp_max"], f["$g/disp_checks"],
                       f["$g/escaped"])
@@ -305,6 +341,11 @@ function _write_header(f, ck::_Checkpointer)
     f["plan/carryover"] = p.carryover
     f["plan/sweep_tasks"] = p.sweep_tasks
     f["plan/seed"] = p.seed
+    f["plan/strain_interval"] = p.strain_interval
+    f["plan/strain_proposal"] = String(p.strain_proposal)
+    f["plan/strain_step"] = p.strain_step
+    f["plan/pressure"] = p.pressure
+    f["grid_fingerprint"] = ck.grid_fp
     f["plan/observable_names"] = ck.obs_names
     f["plan/observable_ncomps"] = ck.obs_ncomps
     return nothing
@@ -324,7 +365,11 @@ function _read_plan(f)::UpdatePlan
                       sweep_tasks = f["plan/sweep_tasks"],
                       # keep the UInt64 — Int() would InexactError on seeds ≥ 2^63,
                       # i.e. on half of the default rand(UInt64) seeds
-                      seed = f["plan/seed"])
+                      seed = f["plan/seed"],
+                      strain_interval = f["plan/strain_interval"],
+                      strain_proposal = Symbol(f["plan/strain_proposal"]),
+                      strain_step = f["plan/strain_step"],
+                      pressure = f["plan/pressure"])
 end
 
 # --- writers (atomic: temp file + mv) ------------------------------------------------
@@ -409,7 +454,8 @@ end
     resume(path, H::TiledHamiltonian;
            observables = standard_observables(H),
            evaluables = standard_evaluables(H),
-           checkpoint = path, checkpoint_interval = nothing)
+           checkpoint = path, checkpoint_interval = nothing,
+           strain = nothing)
         -> MCResult | PTResult
 
 Continue a checkpointed [`run_mc`](@ref) / [`run_pt`](@ref) run from the state
@@ -420,12 +466,23 @@ model fingerprint and the observable names/component counts and errors on any
 mismatch. By default the resumed run keeps checkpointing to the same `path` with
 the stored cadence (`checkpoint = nothing` disables; `checkpoint_interval`
 overrides).
+
+A strained (NPT) run's checkpoint additionally stores the chain's cell scale and
+the volume grid's fingerprint; resuming it requires the same [`StrainSchedule`](@ref)
+as `strain` (checked against the stored fingerprint). `resume` then reinstalls the
+schedule's **reference** coefficients into `H` before the model-fingerprint check —
+the fingerprint mixes coefficient values, and a strained chain's move with its
+volume, so the reference is the identity both sides compare — and finally installs
+the checkpointed scale's coefficients so the `(H, chain)` contract holds when the
+run continues. `H`'s current coefficient state on entry is therefore irrelevant
+(and is overwritten).
 """
 function resume(path::AbstractString, H::TiledHamiltonian;
                 observables::Vector{Observable} = standard_observables(H),
                 evaluables::Vector{Evaluable} = standard_evaluables(H),
                 checkpoint::Union{Nothing,AbstractString} = path,
-                checkpoint_interval::Union{Nothing,Integer} = nothing)
+                checkpoint_interval::Union{Nothing,Integer} = nothing,
+                strain::Union{Nothing,StrainSchedule} = nothing)
     isfile(path) || throw(ArgumentError("no checkpoint file at $path"))
     # Read and validate EVERYTHING eagerly, closing the file before the long
     # computation starts — the resumed run typically overwrites this very path
@@ -434,7 +491,32 @@ function resume(path::AbstractString, H::TiledHamiltonian;
     data = jldopen(String(path), "r") do f
         f["schema_version"] == _CKPT_SCHEMA_VERSION || error(
             "checkpoint schema v$(f["schema_version"]) ≠ " *
-            "v$(_CKPT_SCHEMA_VERSION) of this package version")
+            "v$(_CKPT_SCHEMA_VERSION) of this package version" *
+            (f["schema_version"] < _CKPT_SCHEMA_VERSION ?
+             " (written before the strain channel; resume it with the package " *
+             "version that wrote it)" : ""))
+        plan = _read_plan(f)
+        # The strain handshake comes BEFORE the model fingerprint: on a strained
+        # run the stored fingerprint is the model's at the REFERENCE scale, and the
+        # only way to compare against it is to reinstall the reference coefficients
+        # from the schedule the caller supplies — after checking that schedule IS
+        # the stored grid.
+        if plan.strain_interval > 0
+            strain === nothing && error(
+                "this checkpoint belongs to a strained (NPT) run; pass its volume " *
+                "grid as `resume(path, H; strain = sch)` — the schedule is not " *
+                "serialized, only its fingerprint")
+            f["grid_fingerprint"] == _grid_fingerprint(strain) || error(
+                "the supplied strain schedule is not the grid this checkpoint was " *
+                "written with (grid fingerprint mismatch)")
+            _check_strain_pairing(H, strain)
+            set_coefficients!(H, strain_coefficients(strain, 1.0);
+                              recheck_translation = false)
+        else
+            strain === nothing || error(
+                "a strain schedule was passed, but this checkpoint belongs to a " *
+                "fixed-cell run")
+        end
         f["model_fingerprint"] == _fingerprint(H) || error(
             "checkpoint model fingerprint does not match this TiledHamiltonian " *
             "(different model, dims, or coefficients)")
@@ -445,7 +527,6 @@ function resume(path::AbstractString, H::TiledHamiltonian;
          ncomps == [o.ncomp for o in observables]) || error(
             "the resumed observables (names/ncomps) do not match the checkpoint; " *
             "stored: $(names) with $(ncomps)")
-        plan = _read_plan(f)
         kind = f["kind"]
         body = if kind == "mc"
             (; points = TempResult[_read_point(f, "points/$i")
@@ -480,15 +561,29 @@ function resume(path::AbstractString, H::TiledHamiltonian;
     end
     interval = checkpoint_interval === nothing ? data.stored_interval :
                Int(checkpoint_interval)
+    # `H` still carries the reference coefficients here (installed above), so the
+    # continued file's fingerprint is the same identity the original run wrote.
     ck = _make_checkpointer(checkpoint, interval, H, data.plan, observables,
-                            data.kind, data.exch)
+                            data.kind, data.exch;
+                            grid_fp = strain === nothing ? UInt64(0) :
+                                      _grid_fingerprint(strain))
     b = data.body
     if data.kind == "mc"
+        sctx = nothing
+        if strain !== nothing
+            # re-establish the (H, chain) contract at the CHECKPOINTED scale —
+            # bit-identical to what the interrupted run held, because the Horner
+            # pass is deterministic
+            sc = StrainScratch(H)
+            set_coefficients!(H, strain_coefficients!(sc.coef, strain, b.st.strain);
+                              recheck_translation = false)
+            sctx = (strain, sc)
+        end
         b.temp_index > length(data.plan.kts) &&
             return MCResult(b.points, copy(b.st.config), _final_disps(H, b.st),
                             data.plan.seed)
         return _mc_loop!(b.points, b.st, H, data.plan, observables, evaluables,
-                         b.temp_index, b.phase, b.sweep, b.accs, ck)
+                         b.temp_index, b.phase, b.sweep, b.accs, ck, sctx)
     end
     nt = min(length(data.plan.kts), Threads.nthreads())
     return _pt_run!(b.lanes, H, data.plan, observables, evaluables, data.exch, nt,
