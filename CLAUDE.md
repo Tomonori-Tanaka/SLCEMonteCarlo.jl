@@ -413,7 +413,11 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   projection rule changes on one side it must change on both, or `⟨u2⟩` and
   `TempResult.disp_rms²` stop being the same quantity. Gate: `test_joint.jl`
   "displacement observables see the centre-of-mass-free frame" (three `renorm_interval`
-  spanning 10², plus agreement with `disp_rms²`).
+  spanning 10², plus agreement with `disp_rms²`). **The guide is the third site**:
+  `docs/src/guide/{observables,joint}.md` said `v.disps` arrives centred and shipped
+  custom-observable recipes built on raw `v.disps` (fixed 2026-07-30) — a doc that
+  states the sampler's frame instead of the observable's obligation teaches exactly
+  the bias this rule exists to prevent, and nothing in the suite catches it.
 - **Displacement channel gates: `n_disp_active > 0`, never `has_disp`**
   (`observables.jl`, `hamiltonian.jl` `_require_disp`): `has_disp` is a property of the
   row LAYOUT, and a joint basis whose displacement couplings all fitted to zero has

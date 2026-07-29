@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — documentation: the site now describes what the sampler samples
+
+The manual still presented a pure-spin sampler, with displacements and NPT
+buried at the end of one page. Two new guide pages carry them —
+`guide/joint.md` (displacement sweeps, the measured flat directions and the
+frame, the harmonic screen and the escape detector, the surfaces that are still
+spin-only) and `guide/npt.md` (the strain move, `W` vs `E`, the pressure check,
+PT under pressure, the warm start, strained checkpoints, the device coefficient
+sync) — and `guide/running.md` keeps the chain mechanics. `theory/updates.md`
+gains the displacement and strain moves, and its central ΔE identity is
+generalized to the two-channel term form. Sidebar order now follows the reading
+order: mechanics → sampled fields → strategies → measuring/restarting →
+execution layers.
+
+Corrections of record (all verified against the source, several pre-dating this
+change): `:m` normalizes by `n_spin_active` over `site_has_spin`-masked sites,
+and `H.site_active` — the either-channel predicate — is the wrong mask for a
+magnetization; `v.disps` carries the frame of the **last renormalization**, not
+a centred one, so a custom displacement observable must subtract the component
+mean itself (the guide's examples did not, and the recipe is now shown); a
+component's flat directions are **measured** (`H.comp_free`), not implied by the
+acoustic sum rule; `acoustic_residual` is the sum-rule residual, distinct from
+the finite-difference floor `tol` is derived from; the PT payload swap moves
+displacements, the re-centring record and the cell scale, not just
+configuration and energy; `strain_init = nothing` starts at the reference scale
+rather than selecting a fixed cell; `resume` checks the grid fingerprint before
+reinstalling reference coefficients and the model fingerprint after; a per-rung
+`strain_init` ladder is self-consistent for at most one rung; the joint
+`:specific_heat` is configurational (`3/2 k_B`, not Dulong–Petit `3 k_B`);
+`harmonic_stability` throws rather than returning a verdict when the Hessian
+vanishes at the expansion point. `README.md` and `docs/src/index.md` no longer
+describe a spin-only package, and `api.md` documents the host and device
+gradient seam, `model_fingerprint`, and the Philox primitives.
+
 ### Added — the strained warm start (`docs/specs/strain-move.md` S12)
 
 `MCResult.final_strain` / `PTResult.final_strains` record a strained run's

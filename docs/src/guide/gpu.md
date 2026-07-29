@@ -43,6 +43,12 @@ underneath them, and it is deliberately narrow:
 - **Measurement happens on the host.** [`to_host!`](@ref) downloads the
   configuration (and the running energy) into a `ChainState`; observables,
   binning, and `Evaluable`s then use the ordinary CPU machinery.
+- **No cell move.** There is no device strain move: the sweep runs at whatever
+  coefficients the device tables hold. Every host-side
+  [`set_coefficients!`](@ref) — a strain move, an active-learning hot-swap —
+  must be followed by [`sync_coefficients!`](@ref) on the live wrapper, since a
+  stale weight table is undetectable from the device side (the sweep stays
+  type-correct and bit-stable against it).
 - Temperature schedules, annealing ladders, and checkpointing are the caller's
   loop.
 

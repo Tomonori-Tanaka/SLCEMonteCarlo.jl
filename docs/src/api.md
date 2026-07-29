@@ -69,6 +69,21 @@ delta_energy
 site_gradient
 ```
 
+## Gradients (the dynamics seam)
+
+Public but unexported (call them qualified): the all-site spin gradient
+`SLCEDynamics.jl` integrates, host and device. Spin-only — a joint Hamiltonian is
+refused at every entry point, so restrict the model to its clamped-ion sub-model
+first. `energy_gradient` is the allocating form of `energy_gradient!` and shares
+its docstring.
+
+```@docs
+energy_gradient!
+GPUGradientScratch
+gpu_energy_gradient!
+gpu_zlm_rows!
+```
+
 ## Running
 
 ```@docs
@@ -107,10 +122,10 @@ displacement_sweep!
 
 ## GPU
 
-The chain-level device sweep (see the [GPU guide](guide/gpu.md)). The gradient
-tier (`SLCEMonteCarlo.gpu_energy_gradient!`, `SLCEMonteCarlo.GPUGradientScratch`,
-`SLCEMonteCarlo.gpu_zlm_rows!`) is public but unexported — the inter-package seam
-for dependent packages' GPU dynamics.
+The chain-level device sweep (see the [GPU guide](guide/gpu.md)). The device
+gradient tier is public but unexported — the inter-package seam for dependent
+packages' GPU dynamics; it is documented with its host counterpart in the
+Gradients section above.
 
 ```@docs
 GPUTiledHamiltonian
@@ -152,6 +167,18 @@ jackknife
 supercell_crystal
 to_matrix
 from_matrix
+```
+
+## Identity and device RNG
+
+`model_fingerprint` is what a checkpoint stores and `resume` checks; the Philox
+primitives are the keyed counter-based stream the device sweep draws from, exposed
+so a dependent package can reproduce a device trajectory on the host.
+
+```@docs
+model_fingerprint
+philox_block
+philox_normal2
 ```
 
 ## Units

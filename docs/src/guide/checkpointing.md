@@ -36,9 +36,28 @@ temperature; PT: the thermalization→measurement boundary).
 
 ## Why it is bit-identical
 
-The file captures configs, the incremental energy (restored verbatim), Xoshiro
-RNG words, every schedule counter, and the full binning-accumulator state —
-and every schedule in the package is deterministic in those counters. Writes are
+The file captures the whole sampled state — configurations, displacements and the
+frame they have been re-centred to, the cell scale on an NPT run — plus the
+incremental energy (restored verbatim), Xoshiro RNG words, both proposal widths,
+every schedule counter, and the full binning-accumulator state; and every schedule
+in the package is deterministic in those counters. Writes are
 atomic (temp file + `mv`) and consume no RNG, so checkpointing never perturbs the
 run it protects. One writer per checkpoint path — two concurrent runs must not
 share one. Schema and rationale: `docs/specs/checkpoint-schema.md`.
+
+## Strained (NPT) runs
+
+A strained run's checkpoint additionally stores the volume grid's fingerprint, and
+resuming it needs the same grid:
+
+```julia
+result = resume("run.jld2", H; strain = sch)
+```
+
+The schedule is not serialized (it is derived data, and the check is what makes a
+wrong one impossible), so the handshake is by fingerprint. Passing a schedule to a
+fixed-cell checkpoint — or omitting one on a strained checkpoint — is an error,
+and the model-fingerprint check runs *after* `resume` has reinstalled the
+reference-scale coefficients, because that fingerprint mixes coefficient values
+and a strained chain has moved them. Files written by an older schema version are
+refused by name rather than continued under different physics.

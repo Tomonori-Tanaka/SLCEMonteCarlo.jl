@@ -19,6 +19,11 @@ Two entry points find minimum-energy spin configurations numerically
 Both return a [`GroundStateResult`](@ref): the winning configuration plus the full
 per-start energy table — the cheap self-diagnostic for landscape ruggedness.
 
+Both are **spin-only**: the descent lives on the product of unit spheres, and a
+joint spin–lattice Hamiltonian is refused rather than minimized at a silent
+``u = 0``. Pass the clamped-ion sub-model instead — `SLCE.restrict(model, :spin)`
+is the exact ``u = 0`` section of the same fit ([joint models](joint.md)).
+
 ## A worked example: the triangular-lattice antiferromagnet
 
 The classic frustration benchmark. Antiferromagnetic nearest-neighbor bonds on a

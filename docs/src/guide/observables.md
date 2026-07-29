@@ -15,7 +15,7 @@ jackknifed over stored bins). The conventions below are stated authoritatively i
 | name | what it is |
 |---|---|
 | `:energy`, `:energy2` | total SLCE energy (model units, `j0` excluded) and its square |
-| `:m` | the magnetization vector `Σₛ eₛ / n_active` over the **active** sites (3 components) |
+| `:m` | the magnetization vector `Σₛ eₛ / n_spin_active` over the **spin-active** sites (3 components) |
 | `:absm`, `:m2`, `:m4` | `|m|` and its powers |
 | `:sublattice_m` | per training-cell atom: the cell-averaged spin vector, flattened (`3·n_cell_atoms` components); inactive sublattices report exactly zero |
 
@@ -28,9 +28,13 @@ and, on a **joint spin–lattice** model only:
 | `:sublattice_u2`, `:sublattice_u4` | the same two per training-cell atom (`n_cell_atoms` components). `:sublattice_u2` is the isotropic Debye–Waller input, `B_a = 8π²⟨u²⟩_a/3` |
 
 Spin **directions** only — magnetic-moment magnitudes (μ_B) are not part of the
-fitted model; attach them downstream if needed. Inactive (non-magnetic) sites — no
-cluster instance touches them, e.g. a species with `lmax = 0` — are excluded
-throughout; mask custom observables the same way via `H.site_active`.
+fitted model; attach them downstream if needed. Sites the spin channel does not
+touch — a species with `lmax = 0`, or (on a joint model) a purely
+displacement-coupled one — are excluded throughout; mask custom **spin**
+observables the same way, via `H.site_has_spin`. `H.site_active` is the wider
+predicate (touched by an instance in *either* channel) and is what drives the
+sweep schedule and the energy-derived normalizations — using it as a magnetization
+mask would average a frozen random direction into `⟨m⟩` on a joint model.
 
 **Two site counts.** Once displacements exist, `n_active` (active in *either*
 channel) and `n_spin_active` (magnetic) differ, and per-site normalizations must
@@ -64,7 +68,9 @@ Derived (`standard_evaluables(H)`):
   momenta are sampled, so the classical kinetic term is absent from every heat
   capacity here — for an absolute value add
   ``(3/2)\,n_{\mathrm{disp}}/n_{\mathrm{active}}`` to the reported
-  per-active-site number (``3/2\,k_B`` per *mobile* atom).
+  per-active-site number (``3/2\,k_B`` per *mobile* atom). The run-side story —
+  setting the move up, and the pressure check — is in
+  [NPT and strain moves](npt.md).
 - `:susceptibility` — |m|-connected, per spin-active site:
   ``χ = n_{\mathrm{spin}}(⟨m²⟩ − ⟨|m|⟩²)/k_BT``. On a finite system with
   continuous symmetry ``⟨\boldsymbol m⟩ = 0`` exactly, so the textbook connected
@@ -86,10 +92,11 @@ Derived (`standard_evaluables(H)`):
 ## Composing your own
 
 An observable receives **one** argument, an [`MCView`](@ref) of the sampled state:
-`v.config`, `v.disps`, `v.energy`, `v.H`. One argument rather than a widening
-positional list, because the state grows with the model — displacements arrived in
-M4 — and a positional contract would break every observable ever written each time
-it did.
+`v.config`, `v.disps`, `v.energy`, `v.H`, and — on an NPT run — the cell scale
+through [`strain(v)`](@ref strain) / [`has_strain(v)`](@ref has_strain). One
+argument rather than a widening positional list, because the state grows with the
+model — displacements arrived in M4, the cell scale in M5 — and a positional
+contract would break every observable ever written each time it did.
 
 ```julia
 # a raw observable: f(v::MCView) -> Real or an ncomp-vector
@@ -103,11 +110,12 @@ r = run_mc(H; kT = 0.02, observables = vcat(standard_observables(H), corr12),
            evaluables = vcat(standard_evaluables(H), uovere))
 ```
 
-`v.disps` holds the displacements in the sampler's **centre-of-mass-free** frame,
+`v.disps` holds the displacements in whatever frame the last renormalization left,
 and is **empty** on a Hamiltonian with no displacement channel — so a displacement
 observable run against a pure-spin model throws instead of reporting a confident
-zero. It must be a gauge-invariant function of those displacements; see the
-displacement section below and `docs/specs/updates-stationarity.md` U7.
+zero. It must be a gauge-invariant function of those displacements, which means
+centring them itself; see the displacement section below and
+`docs/specs/updates-stationarity.md` U7.
 
 ## A ferrimagnet order parameter
 
@@ -126,32 +134,60 @@ projs = [dot(subv[a], axis) for a = 1:H.n_cell_atoms]     # ferri: signs differ
 
 ## Displacement observables
 
-On a joint model the displacements arrive in `v.disps`, in the **centre-of-mass-free
-frame** of each displacement-coupling component. That frame is not a convenience: it
-is the only one in which a displacement is a stationary quantity at all
-(`docs/specs/updates-stationarity.md` U7), so a custom displacement observable must
-be a **gauge-invariant** function of `v.disps` — anything built from an absolute
-position has no stationary distribution to average.
+On a joint model the displacements arrive in `v.disps` — in the frame the **last
+renormalization** left, which is not the centre-of-mass-free one at an arbitrary
+measurement (the sampler re-centres every `renorm_interval` sweeps, measurements
+fire every `measure_interval`). Along a component's flat directions the centre of
+mass random-walks freely between those points, and it has no stationary
+distribution: a custom displacement observable must therefore be a
+**gauge-invariant** function of `v.disps`, and the standard set achieves that by
+subtracting the component mean *inside the observable*. Do the same:
 
 ```julia
+# `v.disps` is not pre-centred: subtract each displacement-coupling component's
+# centre of mass along its FLAT directions — the same quantity `:u2`/`:u4` remove.
+# Skipping this adds the free walk's ⟨|ū|²⟩, which is positive, grows with
+# `renorm_interval`, and shrinks with system size (so it reads as a finite-size
+# effect rather than as a bug).
+function centred(v)
+    H, u = v.H, v.disps
+    c = copy(u)
+    for k = 1:H.n_disp_comps
+        lo, hi = Int(H.disp_comp_ptr[k]), Int(H.disp_comp_ptr[k + 1]) - 1
+        sites = [Int(H.disp_comp_sites[j]) for j = lo:hi]
+        free = SVector{3,Float64}(H.comp_free[1, k], H.comp_free[2, k],
+                                  H.comp_free[3, k])
+        ū = free .* (sum(u[s] for s in sites) / length(sites))
+        for s in sites
+            c[s] = u[s] - ū
+        end
+    end
+    return c
+end
+
 # per-sublattice anisotropic MSD tensor ⟨u_i u_j⟩ for atom 1 (the full
 # Debye-Waller input, of which :sublattice_u2 is the isotropic trace/3)
 msd1 = Observable(:msd1, 9, v -> begin
+    u = centred(v)
     acc = zeros(3, 3)
     n = 0
-    for s in eachindex(v.disps)
+    for s in eachindex(u)
         v.H.site_has_disp[s] && SLCEMonteCarlo.site_atom(v.H, s) == 1 || continue
-        u = v.disps[s]
-        acc .+= u * u'
+        acc .+= u[s] * u[s]'
         n += 1
     end
     vec(acc ./ max(n, 1))
 end)
 
 # a spin-lattice cross-correlator: gauge-invariant in u, rotation-invariant in e
-sl = Observable(:sl, 1, v -> sum(dot(v.config[s], v.disps[s])^2
-                                 for s in eachindex(v.disps)) / length(v.disps))
+sl = Observable(:sl, 1, v -> begin
+    u = centred(v)
+    sum(dot(v.config[s], u[s])^2 for s in eachindex(u)) / length(u)
+end)
 ```
+
+(`comp_free` marks each component's flat directions: a `fixed_reference = true`
+model's pinned directions carry a physical absolute frame and are left alone.)
 
 For the closed-form checks: an isotropic harmonic well of stiffness `a` gives
 `⟨u²⟩ = 3kT/(2a)` and `⟨u⁴⟩ = 15(kT/2a)²`, so the **per-site** ratio is `5/3` at every

@@ -22,9 +22,10 @@ pt.swap_acceptance     # length nrungs−1, the ladder diagnostic
 
 A [`StrainSchedule`](@ref) plus the pressure keywords (as in [`run_mc`](@ref))
 makes every lane an NPT chain at the same pressure: each lane sweeps its own
-coefficient clone of `H`, the strain travels with the swapped payload, and the
-swap weight becomes `E + n_cells·j0(s) + P·V(s)` — see the running guide's NPT
-section.
+coefficient clone of `H`, the cell scale travels with the swapped payload, and the
+swap weight becomes `W = E + n_cells·j0(s) + P·V(s)` — see the
+[NPT guide](npt.md). `strain_init` seeds the lanes (one scalar, or one value per
+rung) and `PTResult.final_strains` reports where each ended up.
 
 ## Choosing the ladder — the size scaling matters
 
@@ -175,9 +176,12 @@ cuts the ladder in two.
 
 ## Semantics worth knowing
 
-- **Lane = fixed temperature.** Exchanges swap the chain *payload*
-  (configuration + energy); RNG, adapted step, and accumulators stay with the
-  lane, so `points[r]` is directly the equilibrium physics at `kts[r]`.
+- **Lane = fixed temperature.** Exchanges swap the chain *payload* — the whole
+  physical state: spins, displacements (with the frame they have been re-centred
+  to), the running energy, and on an NPT run the cell scale. RNG streams, proposal
+  widths, acceptance counters, the escape detector's accumulators and the
+  measurement bins stay with the lane, so `points[r]` is directly the equilibrium
+  physics at `kts[r]`.
 - Exchanges run during **thermalization and measurement alike**.
 - Step adaptation is per-lane and thermalization-only, as in [`run_mc`](@ref).
 - **Determinism**: results are bit-identical for a fixed seed regardless of

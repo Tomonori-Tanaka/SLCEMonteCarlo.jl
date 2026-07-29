@@ -84,6 +84,31 @@ energy, specific heat, magnetization, susceptibility, and Binder-cumulant crossi
 plus a user-defined staggered-magnetization observable on the antiferromagnetic
 counterpart — all computed at docs-build time.
 
+## A joint spin–lattice model, and NPT
+
+If the fit carries displacement sectors, the same call samples the atomic
+displacements alongside the spins — one displacement sweep per Metropolis sweep by
+default, plus the boundedness screens a truncated `E(u)` needs
+([joint models](guide/joint.md)):
+
+```julia
+r = run_mc(Hjoint; temperature = 300, step_u = 0.05, renorm_interval = 200)
+r.points[1].escaped          # ← false-and-screened is the only good answer
+r.points[1].stats[:sublattice_u2]   # per-sublattice ⟨u²⟩, the Debye–Waller input
+```
+
+Adding a [`StrainSchedule`](@ref) built from a `SLCE.StrainedModels` volume grid
+puts the cell volume in the chain too, at an applied pressure — a different
+ensemble, read through different observables ([NPT](guide/npt.md)):
+
+```julia
+# the grid's term list must be built unpruned, so the Hamiltonian is rebuilt here
+Hs  = TiledHamiltonian(sm.models[1]; dims = (4, 4, 4), keep_zero_terms = true)
+sch = SLCEMonteCarlo.StrainSchedule(sm, Hs)
+r = run_mc(Hs; temperature = 300, strain = sch, pressure_GPa = 1.0)
+r.final_strain               # the end cell scale (`nothing` on a fixed-cell run)
+```
+
 ## Where things are defined
 
 - Model → Hamiltonian: [`TiledHamiltonian`](@ref) (tiling, memory layout —
@@ -92,5 +117,9 @@ counterpart — all computed at docs-build time.
   [`resume`](@ref) (checkpoint restart).
 - Observables: [`Observable`](@ref) / [`Evaluable`](@ref) and the standard sets;
   conventions in `docs/specs/binning-observables.md`.
+- Volume grids: [`StrainSchedule`](@ref), [`npt_observables`](@ref),
+  [`pressure_diagnostics`](@ref) — `docs/specs/strain-move.md`.
+- Screening a joint model: [`harmonic_stability`](@ref),
+  [`force_constant_matrix`](@ref).
 - Geometry for I/O: [`supercell_crystal`](@ref),
   [`to_matrix`](@ref) / [`from_matrix`](@ref).

@@ -25,12 +25,14 @@ makedocs(;
         ],
         "Guide" => [
             "guide/running.md",
+            "guide/joint.md",
+            "guide/npt.md",
             "guide/parallel_tempering.md",
             "guide/ground_states.md",
-            "guide/parallelism.md",
-            "guide/gpu.md",
             "guide/observables.md",
             "guide/checkpointing.md",
+            "guide/parallelism.md",
+            "guide/gpu.md",
         ],
         "Theory" => [
             "theory/updates.md",

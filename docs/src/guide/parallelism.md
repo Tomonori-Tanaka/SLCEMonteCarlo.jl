@@ -16,8 +16,10 @@ construct is the in-sweep `sweep_tasks` below). Each lane exclusively owns its
 chain state, scratch buffers, RNG, adaptive step, and measurement accumulators,
 so lanes never contend; an exchange synchronizes **only the two lanes of each
 attempted pair** (the ladder globally re-syncs just at checkpoint writes and
-phase ends) and swaps only the chain *payload* (configuration + energy — a
-reference swap, no copy). `ntasks = 1` selects the serial reference schedule;
+phase ends) and swaps only the chain *payload* — the physical state: spins,
+displacements and their re-centring record, the running energy, and on an NPT run
+the cell scale together with the lane's coefficient clone (all reference swaps, no
+copy). `ntasks = 1` selects the serial reference schedule;
 any `ntasks ≥ 2` (the default with threads available) runs every lane as its own
 task.
 

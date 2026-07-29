@@ -7,9 +7,10 @@ CurrentModule = SLCEMonteCarlo
 [`run_mc`](@ref) drives one Markov chain: per temperature it **thermalizes**
 (`sweeps_therm` sweeps, with the proposal step adapting), freezes the kernel, then
 **measures** (`sweeps_measure` sweeps, recording every `measure_interval`-th).
-One sweep is one single-spin Metropolis attempt per **active** site, scanned in
-the Hamiltonian's color-class order (inactive, non-magnetic sites stay frozen —
-see [`TiledHamiltonian`](@ref)) with the exact `ΔE` of the fitted Hamiltonian —
+One sweep is one single-spin Metropolis attempt per **spin-active** site, scanned
+in the Hamiltonian's color-class order (inactive and non-magnetic sites stay
+frozen — see [`TiledHamiltonian`](@ref)) with the exact `ΔE` of the fitted
+Hamiltonian —
 any body order, no linearization — optionally followed by `or_per_metropolis`
 overrelaxation sweeps and, on a joint spin–lattice model, `disp_per_metropolis`
 displacement sweeps. `sweep_tasks` executes each sweep on several concurrent
@@ -87,165 +88,13 @@ decorrelation. For strongly anisotropic models the `l ≥ 2` remainder makes
 reflections cost energy and the OR acceptance can collapse at low temperature —
 check `TempResult.acceptance_or`.
 
-## Displacement sweeps (joint spin–lattice models)
+## Beyond the spin sweep
 
-A model fitted with displacement sectors samples its atomic displacements too:
-each displacement sweep attempts one isotropic Gaussian shift of width `step_u`
-per displacement-active site, with the same exact-ΔE Metropolis rule.
-`disp_per_metropolis` sets how many of them follow each Metropolis spin sweep and
-**defaults to the model**: `1` on a joint model, `0` on a pure-spin one. Any fixed
-value samples the same ensemble (only the correlation times change); passing `0`
-on a joint model deliberately selects the clamped-ion ensemble instead, and
-passing a nonzero value to a pure-spin model is an error rather than a silent
-no-op.
+Two fields join the chain once the model has them, each with its own page:
 
-```julia
-r = run_mc(Hjoint; temperature = 300, step_u = 0.05, disp_per_metropolis = 2,
-           renorm_interval = 200)
-p = r.points[1]
-p.acceptance_disp    # displacement acceptance (NaN if no attempt was made)
-p.disp_rms           # √⟨|u|²⟩ over the phase, centre-of-mass-free
-p.disp_max           # largest single displacement anywhere in the phase
-p.disp_checks        # how many observations the two above rest on
-p.escaped            # ← check this before trusting any displacement number
-```
-
-`disp_rms` is a phase **average** and `disp_max` an extreme value over the same phase
-(so it grows with `disp_checks` and is not comparable between runs of different
-length); both are `NaN` when `disp_checks == 0`, which happens when the measurement
-phase is shorter than `renorm_interval`. They are diagnostics, not observables — they
-carry no error bars.
-
-On a joint model the standard set is joint-aware: `:specific_heat` is normalized by
-every active site (it is the **spin + lattice** heat capacity — the classical harmonic
-limit alone contributes 3/2 `k_B` per displacement-active site), while `χ` and the
-Binder cumulant stay per **spin**-active site. On a displacement-only model the
-magnetization observables are omitted rather than reported as `NaN`.
-
-!!! warning "The truncated expansion need not be bounded below"
-    `E(u)` is a finite polynomial, so `exp(−βE)` is a probability measure only when
-    the leading even form is positive definite — nothing in the fit guarantees it.
-    When it fails the chain has no stationary distribution and simply runs
-    downhill, with an *exact* incremental energy and an acceptance near 1: no
-    pre-existing diagnostic sees it. The sampler therefore measures recurrence
-    directly, warns, and sets `TempResult.escaped`. A set point is not "noisy
-    data" — it is a run whose displacement observables mean nothing. See
-    `docs/specs/updates-stationarity.md` U8, and screen the model's dynamical
-    stability (`SLCE.dynamical_matrix`) at the sampled spin configurations.
-
-    The detector's block test needs **15 renormalization checks per measurement
-    phase** before it can raise its three consecutive strikes, and the default
-    `renorm_interval = 1_000` against `sweeps_measure = 10_000` gives only 10 —
-    a joint run below the bar is warned about up front, and should lower
-    `renorm_interval`. Under it, `escaped == false` means *not screened*, not
-    *clean*; `disp_checks` is what tells the two apart.
-
-The centre of mass of each displacement-coupling component is a flat direction
-wherever the acoustic sum rule holds, so the sampler re-centres at every
-renormalization; displacements are reported in that centre-of-mass-free frame. A
-model built with `fixed_reference = true` (a substrate-clamped slab, a pinning
-defect) keeps its absolute frame along the directions the construction gate
-measured as pinned.
-
-## NPT: sampling the cell volume (strain moves)
-
-Passing a [`StrainSchedule`](@ref) turns a joint run isothermal–isobaric: an
-outer Metropolis move rescales the whole cell over a `SLCE.StrainedModels` volume
-grid, installing the grid's interpolated coefficients in place
-([`set_coefficients!`](@ref)) and rescaling the displacements affinely. Without
-it, a run samples the **constant-strain (fixed cell) ensemble** — a different
-ensemble (`F(T, ε)`: no volume Jacobian, no `P·V` term), which is what a
-fixed-geometry magnetostriction calculation wants; the two specific heats differ.
-
-```julia
-sm  = SLCE.StrainedModels(models, scales)   # fitted at, e.g., s ∈ [0.98, 1.02]
-H   = TiledHamiltonian(sm.models[2]; dims = (8, 8, 8), keep_zero_terms = true)
-sch = SLCEMonteCarlo.StrainSchedule(sm, H)
-
-r = run_mc(H; temperature = 300, strain = sch, pressure_GPa = 0.0,
-           observables = [standard_observables(H);
-                          Observable(:scale, 1, v -> SLCEMonteCarlo.strain(v))])
-r.points[1].acceptance_strain     # the outer move's acceptance
-```
-
-The pressure follows the `temperature` XOR `kT` discipline: **exactly one** of
-`pressure_GPa` (GPa) or `pressure` (model units, eV/Å³), explicitly — `0.0` is a
-physical choice, not a default — converted once at resolution and never again
-downstream. `strain_interval` (default: one attempt per compound sweep),
-`strain_proposal` (`:logvolume` or `:scale`) and `strain_step` (default: a tenth
-of the grid's domain; fixed for the run) tune the move; a poor width shows up in
-`acceptance_strain`, never in the sampled ensemble. Hydrostatic pressure only.
-
-[`run_pt`](@ref) takes the same NPT keywords: every lane becomes an
-isothermal–isobaric chain at the **same** pressure, sweeping its own coefficient
-clone of `H` (the lanes sit at different volumes concurrently), and the exchange
-rule generalizes to `(βᵢ−βⱼ)(Wᵢ−Wⱼ)` with `W = E + n_cells·j0(s) + P·V(s)` — the
-strain travels with the swapped payload. One caveat: `pressure_diagnostics` stays
-a `run_mc`-only check (its scratch assumes one serial chain; under `run_pt` it
-refuses loudly).
-
-One reading caveat for every strained run: `:energy` and `:specific_heat` are
-**configurational-only** — they omit the fluctuating `n_cells·j0(s) + P·V(s)`
-half of the NPT state energy, so the reported `C` is neither `C_V` nor the NPT
-`C_P`. Append [`npt_observables`](@ref) — **both** vectors, built with the
-run's own schedule and pressure — and read `:enthalpy` /
-`:npt_specific_heat` instead, the β-conjugate `W` itself and the isobaric heat
-capacity; being pure closures, they ride along under `run_pt`'s per-lane
-clones too (see the observables guide):
-
-```julia
-nw = SLCEMonteCarlo.npt_observables(sch, H; pressure_GPa = 1.0)
-r  = run_mc(H; temperature = 300, strain = sch, pressure_GPa = 1.0,
-            observables = [standard_observables(H); nw.observables],
-            evaluables  = [standard_evaluables(H); nw.evaluables])
-r.points[1].stats[:npt_specific_heat]   # C_P per active site, units of k_B
-```
-
-Inside an NPT run every measurement's [`MCView`](@ref) carries the cell scale
-(`SLCEMonteCarlo.strain(v)`, with `SLCEMonteCarlo.has_strain(v)` false on a
-fixed-cell run — a confident `1.0` would let a magnetostriction observable
-average a constant), so volume statistics are ordinary observables, as in the
-`:scale` example above. Checkpoints work as usual; resuming needs the same grid:
-`resume(path, H; strain = sch)`. A finished strained run also warm-starts the
-next one: `MCResult.final_strain` (per-lane `PTResult.final_strains`) records
-the end scale, and
-
-```julia
-r2 = run_mc(H; temperature = 350, strain = sch, pressure_GPa = 1.0,
-            strain_init = r.final_strain, init = r.final_config,
-            disps = r.final_disps, step = r.points[end].final_step,
-            step_u = r.points[end].final_step_u)
-```
-
-continues at the previous cell without re-thermalizing from the reference
-(`final_disps` are expressed at `final_strain`, so the triple is
-self-consistent, and forwarding the tuned proposal widths matters exactly when
-`sweeps_therm` is cut down — adaptation is thermalization-only; a warm start
-is a new chain — bit-identical continuation is `resume`'s job). The details —
-the energy contract, the measured
-Jacobian exponent, and the reference-scale fingerprint — live in
-`docs/specs/strain-move.md`.
-
-### Checking the run: the sampled pressure
-
-[`pressure_diagnostics`](@ref) packages the mechanical-equilibrium identity as
-observables: on an equilibrated NPT chain the jackknifed `:pressure` evaluable
-(`N_mob·kT·⟨1/V⟩ − ⟨dE_total/dV⟩`, in eV/Å³) must equal the applied pressure
-within its statistical uncertainty (a few error bars — a 1–2σ deviation is
-ordinary fluctuation) — a persistent disagreement means the elastic `j0` bookkeeping, the
-virial, the coefficient interpolation or the `P·V` term is wrong. The `dE/dV` estimator
-([`energy_volume_derivative`](@ref)) is exact, not a finite difference: the
-coefficient drift is the schedule's differentiated interpolant, and the
-displacement response is Euler's theorem on each factor's homogeneity degree.
-
-```julia
-pd = SLCEMonteCarlo.pressure_diagnostics(sch, H)
-r  = run_mc(H; temperature = 300, strain = sch, pressure_GPa = 1.0,
-            observables = [standard_observables(H); pd.observables],
-            evaluables  = [standard_evaluables(H); pd.evaluables])
-r.points[1].stats[:pressure]      # ×160.2176634 (GPA_PER_EV_A3) for GPa
-```
-
-Trust it only when the sampled volume distribution sits well inside
-[`strain_domain`](@ref) — the identity holds up to boundary terms of the bounded
-grid, and a chain pressed against a grid edge is answering a different question.
+- **Displacements** — a joint spin–lattice model samples its atomic displacements
+  in the same compound sweep (`disp_per_metropolis`, `step_u`, `renorm_interval`,
+  and the boundedness screens): [joint spin–lattice models](joint.md).
+- **The cell volume** — a [`StrainSchedule`](@ref) adds an outer isothermal–isobaric
+  strain move and changes which ensemble is being sampled, which changes how the
+  standard observables must be read: [NPT and strain moves](npt.md).
