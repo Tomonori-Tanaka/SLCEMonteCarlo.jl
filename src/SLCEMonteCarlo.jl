@@ -52,14 +52,15 @@ import SLCE.SolidHarmonics
 include("units.jl")
 include("hamiltonian.jl")
 include("coefficients.jl")
-# The sampler's form of a K(ε) volume grid: polynomial coefficients over the term list a
-# Hamiltonian was built from, converted once so a strain move costs a Horner pass and an
-# in-place rewrite rather than a model rebuild.
-include("strain.jl")
 include("energy.jl")
 include("binning.jl")
 include("observables.jl")
 include("state.jl")
+# The sampler's form of a K(ε) volume grid: polynomial coefficients over the term list a
+# Hamiltonian was built from, converted once so a strain move costs a Horner pass and an
+# in-place rewrite rather than a model rebuild — plus the outer NPT strain move itself
+# (it reads `ChainState` and the row fillers, hence the placement after `state.jl`).
+include("strain.jl")
 include("updates.jl")
 include("gpu/philox.jl")
 include("gpu/zlm_device.jl")
@@ -82,7 +83,7 @@ export TiledHamiltonian, n_sites, total_energy, set_coefficients!
 # K(ε) volume grids, sampler side (the move itself lands with the driver)
 export StrainSchedule
 public strain_domain, in_strain_domain, strain_coefficients, strain_coefficients!,
-       strain_j0, strain_volume, strain_delta_energy
+       strain_j0, strain_volume, strain_delta_energy, StrainScratch, strain_move!
 public has_strain, strain
 export MCView, Observable, Evaluable, ObservableStat, standard_observables,
        standard_evaluables

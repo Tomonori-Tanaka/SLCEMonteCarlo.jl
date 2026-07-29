@@ -215,6 +215,30 @@ function StrainSchedule(sm, H::TiledHamiltonian)
     end
 
     scales = collect(Float64, SLCE.scales(sm))
+    # ASR hard-error at conversion (design record §8): the sampler re-centres along
+    # H's flat directions and the NPT weight carries `D` — properties the WHOLE family
+    # must share, not just the node `H` was built from. Flatness is linear in the
+    # coefficients, so flat at every node ⇒ flat for every interpolated model; a fully
+    # invariant `H` therefore requires every node to build cleanly (the 1×1×1
+    # constructor measures and refuses). A pinned `H` (`fixed_reference`) declared an
+    # absolute frame, and its family's flatness pattern is the caller's contract.
+    if H.n_disp_comps > 0 && H.translation_invariant
+        for i = 1:npt
+            try
+                TiledHamiltonian(ms[i]; dims = (1, 1, 1), keep_zero_terms = true)
+            catch err
+                err isa ArgumentError || rethrow()
+                throw(ArgumentError(
+                    "grid point $i (scale $(scales[i])) is not translation-flat " *
+                    "while the Hamiltonian is: the strain move would sample a " *
+                    "re-centred, COM-free ensemble at a volume where a rigid shift " *
+                    "is not a symmetry. Refit that grid point under the ASR " *
+                    "(`fit(...; asr = true)`), or build the Hamiltonian with " *
+                    "`fixed_reference = true` if the absolute frame is physical.\n" *
+                    "  underlying: " * err.msg))
+            end
+        end
+    end
     v_train = abs(det(ms[1].basis.crystal.lattice.vectors)) / scales[1]^3
     natom = SLCE.n_atoms(ms[1].basis.crystal)
     ncell_f = H.n_sites / natom
@@ -334,4 +358,117 @@ function _strain_log_weight(sch::StrainSchedule, proposal::Symbol, s_old::Real,
                             s_new::Real, delta_e::Real, kt::Real)::Float64
     _strain_check_proposal(proposal)
     return 3 * _strain_power(sch, proposal) * log(s_new / s_old) - delta_e / kt
+end
+
+# --------------------------------------------------------------------------------------
+# The outer strain move.
+
+# Mutable: an accepted move SWAPS the proposal buffers with the chain's state arrays
+# (reference swaps, no copy), so the scratch's fields are rebound per acceptance.
+"""
+    StrainScratch(H::TiledHamiltonian)
+
+Preallocated buffers for [`strain_move!`](@ref): the raw-coefficient vector, the
+proposed displacements, a full proposed row table, and the solid-harmonic batch
+workspace. One per chain — the strain move is an outer, serial step, never run inside
+the color-parallel sweep layer.
+"""
+mutable struct StrainScratch
+    unew::Vector{SVector{3,Float64}}
+    zrows::Matrix{Float64}
+    const coef::Vector{Float64}
+    const rbuf::Vector{Float64}
+end
+
+StrainScratch(H::TiledHamiltonian) =
+    StrainScratch(Vector{SVector{3,Float64}}(undef, H.n_sites),
+                  Matrix{Float64}(undef, H.nrows, H.n_sites),
+                  Vector{Float64}(undef, H.n_input_terms),
+                  Vector{Float64}(undef, max(0, (H.disp_lmax + 1)^2)))
+
+"""
+    strain_move!(st::ChainState, H::TiledHamiltonian, sch::StrainSchedule,
+                 sc::StrainScratch, kt::Real, pressure::Real, step::Real;
+                 proposal::Symbol = :logvolume) -> Bool
+
+One isothermal–isobaric (NPT) strain move: propose a new linear cell scale by a
+symmetric step of width `step` in `proposal`'s variable, rescale the displacements
+**affinely** (`u → (s′/s)·u`, fixed scaled coordinates), install the schedule's
+coefficients for the proposed scale, and accept by `_strain_log_weight`'s Metropolis
+rule. Returns whether the move was accepted.
+
+The contract with the caller: on entry `H`'s coefficients are the schedule's at
+`st.strain`, and on exit they are the schedule's at the NEW `st.strain` — accepted or
+not, the pair `(H, st)` stays consistent, so the sweep layer can run in between with
+no knowledge that the cell moves. A proposal outside [`strain_domain`](@ref) is
+**rejected**, never clamped (a truncating clamp is an asymmetric proposal and biases
+the chain toward the boundary). Draws come from the chain-level `st.rng` only — one
+normal per attempt, plus one uniform when the proposal lands inside the domain.
+
+`pressure` is hydrostatic, in the model's units (eV/Å³): `P·V(ε)` is a state function
+with no strain-measure ambiguity, which is why v0 is hydrostatic-only — a general
+applied stress is work-conjugate to a specific strain measure and would reopen the
+measure choice. A run WITHOUT this move samples the constant-strain (fixed-cell)
+ensemble — a different ensemble giving `F(T, ε)` with neither the volume Jacobian nor
+the `P·V` term, which is what magnetostriction under fixed geometry wants; the two
+specific heats differ.
+
+An accepted move is a phase boundary for the escape detector (`_reset_escape!`): its
+radius statistics are absolute lengths, and the cell they are measured against has
+just changed.
+"""
+function strain_move!(st::ChainState, H::TiledHamiltonian, sch::StrainSchedule,
+                      sc::StrainScratch, kt::Real, pressure::Real, step::Real;
+                      proposal::Symbol = :logvolume)::Bool
+    _strain_check_proposal(proposal)
+    kt > 0 || throw(ArgumentError("kt must be > 0; got $kt"))
+    step > 0 || throw(ArgumentError("the strain proposal width must be > 0; got $step"))
+    s = st.strain
+    in_strain_domain(sch, s) || throw(ArgumentError(
+        "the chain sits at scale $s, outside the schedule's domain " *
+        "$(strain_domain(sch)): the Hamiltonian and the schedule disagree about " *
+        "which grid this chain samples"))
+    st.att_strain += 1
+    sp = _strain_s_of_y(proposal, _strain_y(proposal, s) + step * randn(st.rng))
+    in_strain_domain(sch, sp) || return false
+    lam = sp / s
+
+    # The proposed state: affinely rescaled displacements, their rows, the proposed
+    # scale's coefficients. Spin rows are untouched by a cell rescale, so the copy
+    # carries them and only the displacement blocks are refilled — the same fill
+    # `_zrows` runs, so the proposed table is bit-identical to a fresh build.
+    @inbounds for i in eachindex(st.disps)
+        sc.unew[i] = lam * st.disps[i]
+    end
+    copyto!(sc.zrows, st.zrows)
+    if has_disp(H)
+        for i = 1:H.n_sites
+            _disp_rows!(view(sc.zrows, :, i), H, sc.unew[i], sc.rbuf)
+        end
+    end
+    strain_coefficients!(sc.coef, sch, sp)
+    # Family flatness is established once, at `StrainSchedule` construction — the
+    # per-proposal recheck would re-measure a property linear in the coefficients.
+    set_coefficients!(H, sc.coef; recheck_translation = false)
+    e_new = _total_energy(H, sc.zrows)
+    de = strain_delta_energy(sch, st.energy, e_new, s, sp;
+                             pressure = Float64(pressure))
+    if log(rand(st.rng)) < _strain_log_weight(sch, proposal, s, sp, de, kt)
+        st.strain = sp
+        st.energy = e_new
+        st.disps, sc.unew = sc.unew, st.disps
+        st.zrows, sc.zrows = sc.zrows, st.zrows
+        # the re-centring record is a set of absolute lengths in the same frame
+        @inbounds for c in eachindex(st.com_removed)
+            st.com_removed[c] = lam * st.com_removed[c]
+        end
+        st.acc_strain += 1
+        _reset_escape!(st)
+        return true
+    end
+    # Reject: reinstall the CURRENT scale's coefficients. The Horner pass is
+    # deterministic, so the restore is bit-identical — no rollback buffer needed.
+    strain_coefficients!(sc.coef, sch, s)
+    set_coefficients!(H, sc.coef; recheck_translation = false)
+    return false
 end

@@ -63,6 +63,60 @@ _ss_cfg(n, seed) = MCs.SpinConfig([SVector{3,Float64}(normalize(randn(
 _ss_disps(n, seed) = [SVector{3,Float64}(0.03 .* randn(MersenneTwister(seed + 100s), 3))
                       for s = 1:n]
 
+# The NPT-marginal toy (design record §8 (γ)): a decoupled spin sector plus a PURE
+# lattice sector whose coefficients are IDENTICAL at every grid point, `j0 ≡ 0`. Held at
+# `u ≡ 0` and `P = 0`, the configurational ΔE of a strain move is then exactly zero and
+# the chain's stationary volume marginal is the bare Jacobian, `p(V) ∝ V^{D/3}` — an
+# analytically known target that measures the implemented exponent rather than asserting
+# it. `pinned = false` gives a translation-flat pair model (ASR-null-space
+# coefficients); on the (2, 1, 1) supercell the in-cutoff pairs are the cross-cell ones
+# only (the in-cell a1–a2 distance is 2.0s > 1.1s), so the four sites split into TWO
+# displacement components and `D = 3N − 3·n_comps = 6`. `pinned = true` shrinks the
+# cutoff below every pair, leaving on-site `|u|²` content that pins every rigid shift
+# (`D = 3N = 12`). The two targets differ by the full `count(comp_free)`, which is the
+# only test that isolates the per-(direction, component) COM bookkeeping in `D`.
+function _ss_toy_spec(cr, s, pinned)
+    return BasisSpec(cr; lmax = 1, pmax = 2, sectors = [
+        Sector(spin = (sites = 1:2,), cutoff = 1.1s),
+        Sector(disp = (degree = 2,), sites = 1:2, cutoff = (pinned ? 0.5 : 1.1) * s)])
+end
+
+_ss_toy_basis(s, pinned) = (cr = _ss_crystal(s); SLCEBasis(cr, _ss_toy_spec(cr, s, pinned)))
+
+function _ss_toy_grid(; pinned::Bool, scales = [0.85, 1.0, 1.15])
+    b1 = _ss_toy_basis(1.0, pinned)
+    rng = MersenneTwister(pinned ? 0x7001 : 0x7002)
+    jphi = if pinned
+        randn(rng, n_salcs(b1))
+    else
+        Z = (@test_logs (:warn,) match_mode = :any SLCE.build_asr(b1)).Z
+        Z * randn(rng, size(Z, 2))
+    end
+    models = [SLCEModel(_ss_toy_basis(s, pinned), 0.0, copy(jphi)) for s in scales]
+    return SLCE.StrainedModels(models, collect(Float64, scales))
+end
+
+# Run `nmoves` strain moves at `u ≡ 0` and return the empirical mean volume plus the
+# acceptance rate. The analytic mean of `p(V) ∝ V^k` on `[Va, Vb]` is `_ss_vk_mean`.
+function _ss_toy_chain(sm, pinned, proposal, step, nmoves, seed)
+    H = TiledHamiltonian(sm.models[2]; dims = (2, 1, 1), keep_zero_terms = true,
+                         fixed_reference = pinned)
+    sch = StrainSchedule(sm, H)
+    set_coefficients!(H, MCs.strain_coefficients(sch, 1.0))
+    st = MCs.ChainState(H, _ss_cfg(H.n_sites, seed), Xoshiro(seed), 0.3;
+                        disps = zeros(SVector{3,Float64}, H.n_sites))
+    sc = MCs.StrainScratch(H)
+    vsum = 0.0
+    for _ = 1:nmoves
+        MCs.strain_move!(st, H, sch, sc, 0.025, 0.0, step; proposal = proposal)
+        vsum += MCs.strain_volume(sch, st.strain)
+    end
+    return vsum / nmoves, st.acc_strain / st.att_strain, sch
+end
+
+_ss_vk_mean(k, va, vb) =
+    ((k + 1) / (k + 2)) * (vb^(k + 2) - va^(k + 2)) / (vb^(k + 1) - va^(k + 1))
+
 @testset "StrainSchedule: the sampler's view of a volume grid" begin
 
     @testset "exact at the nodes, exact between them, and it is the same Hamiltonian" begin
@@ -249,6 +303,145 @@ _ss_disps(n, seed) = [SVector{3,Float64}(0.03 .* randn(MersenneTwister(seed + 10
         for arm in (:logvolume, :scale)
             @test MCs._strain_s_of_y(arm, MCs._strain_y(arm, 1.013)) ≈ 1.013 rtol =
                 1e-14
+        end
+    end
+
+    @testset "strain_move!: invariants, rejection, and the (H, chain) contract" begin
+        sm, models = _ss_grid()
+        H = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        H2 = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        sch = StrainSchedule(sm, H)
+        set_coefficients!(H, MCs.strain_coefficients(sch, 1.0))
+        st = MCs.ChainState(H, _ss_cfg(H.n_sites, 31), Xoshiro(0x51), 0.3;
+                            disps = _ss_disps(H.n_sites, 31))
+        sc = MCs.StrainScratch(H)
+        st.com_removed[1] = SVector(1e-3, -2e-3, 5e-4)
+
+        # the contract, after EVERY move: H carries the schedule's coefficients at the
+        # chain's scale (bitwise — the reject path restores by re-running the same
+        # Horner pass), the cached rows are a fresh build's, the energy is the rows'
+        naccept = 0
+        for it = 1:40
+            u_before = copy(st.disps)
+            com_before = copy(st.com_removed)
+            s_before = st.strain
+            accepted = MCs.strain_move!(st, H, sch, sc, 0.05, 0.01, 0.06)
+            set_coefficients!(H2, MCs.strain_coefficients(sch, st.strain))
+            @test [t.coef for t in H.terms] == [t.coef for t in H2.terms]
+            @test st.zrows == MCs._zrows(H, st.config, st.disps)
+            @test st.energy == MCs._total_energy(H, st.zrows)
+            lam = st.strain / s_before
+            if accepted
+                naccept += 1
+                @test st.strain != s_before
+                @test st.disps == [lam * u for u in u_before]
+                @test st.com_removed == [lam * c for c in com_before]
+                @test st.disp_checks == 0        # accepted rescale resets the detector
+            else
+                @test st.strain == s_before
+                @test st.disps == u_before && st.com_removed == com_before
+            end
+        end
+        @test 0 < naccept < 40                   # both branches actually ran
+        @test st.att_strain == 40 && st.acc_strain == naccept
+
+        # out-of-domain proposal: rejected (never clamped), H untouched, and exactly
+        # ONE draw consumed — the uniform is only spent on an in-domain proposal
+        twin = copy(st.rng)
+        s_before = st.strain
+        coefs_before = [t.coef for t in H.terms]
+        @test !MCs.strain_move!(st, H, sch, sc, 0.05, 0.01, 50.0)
+        randn(twin)
+        @test MCs._rng_words(st.rng) == MCs._rng_words(twin)
+        @test st.strain == s_before
+        @test [t.coef for t in H.terms] == coefs_before
+
+        # validation: the named errors
+        @test_throws ArgumentError MCs.strain_move!(st, H, sch, sc, 0.0, 0.01, 0.05)
+        @test_throws ArgumentError MCs.strain_move!(st, H, sch, sc, 0.05, 0.01, 0.0)
+        @test_throws ArgumentError MCs.strain_move!(st, H, sch, sc, 0.05, 0.01, 0.05;
+                                                    proposal = :volume)
+        st.strain = 2.0
+        err = try
+            MCs.strain_move!(st, H, sch, sc, 0.05, 0.01, 0.05)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin("outside the schedule's domain", err.msg)
+    end
+
+    @testset "strain_move!: the NPT marginal is the bare Jacobian on the §8(γ) toy" begin
+        # At u ≡ 0, constant coefficients, j0 ≡ 0 and P = 0 the stationary volume
+        # marginal is p(V) ∝ V^{D/3} exactly — so the empirical mean volume MEASURES
+        # the implemented exponent. Each fixture must match its own D and reject a
+        # ±1 power error (the COM bookkeeping: the fixtures' D differ by the full
+        # count(comp_free) = 6), and both proposal arms must land on the SAME
+        # marginal even though their acceptance powers differ.
+        for pinned in (false, true)
+            sm = _ss_toy_grid(; pinned = pinned)
+            for (proposal, step) in ((:logvolume, 0.75), (:scale, 0.25))
+                vmean, arate, sch = _ss_toy_chain(sm, pinned, proposal, step, 150_000,
+                                                  pinned ? 0x11 : 0x12)
+                @test sch.d_dim == (pinned ? 12 : 6)
+                @test 0.15 < arate < 0.95
+                va, vb = MCs.strain_volume(sch, 0.85), MCs.strain_volume(sch, 1.15)
+                vmid = (va + vb) / 2
+                k = sch.d_dim / 3
+                # Thresholds calibrated over seeds {0x11, 0x12, 0x21} at this length:
+                # the correct power sits ≤ 0.006 of the mid volume, a ±1 power error
+                # (the other fixture's D — an off-by-one in the COM bookkeeping)
+                # shifts the mean by ≥ 0.024. The ±1/3 mixed-arm trap shifts it by
+                # only ~0.011, INSIDE this statistic's noise — it is excluded
+                # deterministically instead, by the closed-form arm gate above and
+                # the draw/weight pairing testset below.
+                @test abs(vmean - _ss_vk_mean(k, va, vb)) / vmid < 0.012
+                @test abs(vmean - _ss_vk_mean(k + 1, va, vb)) / vmid > 0.018
+                @test abs(vmean - _ss_vk_mean(k - 1, va, vb)) / vmid > 0.018
+            end
+        end
+    end
+
+    @testset "strain_move!: the draw and the weight use the SAME proposal arm" begin
+        # White-box replay: for every attempt, reconstruct by hand — from a cloned RNG
+        # — the proposal this arm should draw and the log weight this arm should apply,
+        # and predict the accept decision. Every decision matching the hand-paired
+        # computation is what excludes §8(β)'s mixed-arm trap EXACTLY, where the
+        # statistical marginal above cannot resolve its 1/3 power.
+        sm, models = _ss_grid()
+        for proposal in (:logvolume, :scale)
+            H = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+            sch = StrainSchedule(sm, H)
+            set_coefficients!(H, MCs.strain_coefficients(sch, 1.0))
+            st = MCs.ChainState(H, _ss_cfg(H.n_sites, 41), Xoshiro(0x61), 0.3;
+                                disps = _ss_disps(H.n_sites, 41))
+            sc = MCs.StrainScratch(H)
+            nacc = 0
+            for it = 1:80
+                twin = copy(st.rng)
+                s = st.strain
+                e_old = st.energy
+                u_old = copy(st.disps)
+                # the hand side, arm-paired throughout
+                sp = MCs._strain_s_of_y(proposal,
+                                        MCs._strain_y(proposal, s) + 0.06 * randn(twin))
+                want = false
+                if MCs.in_strain_domain(sch, sp)
+                    Hp = TiledHamiltonian(SLCE.model_at(sm, sp); dims = (2, 1, 1),
+                                          keep_zero_terms = true)
+                    e_new = total_energy(Hp, st.config, [(sp / s) * u for u in u_old])
+                    de = MCs.strain_delta_energy(sch, e_old, e_new, s, sp;
+                                                 pressure = 0.01)
+                    want = log(rand(twin)) <
+                           MCs._strain_log_weight(sch, proposal, s, sp, de, 0.05)
+                end
+                got = MCs.strain_move!(st, H, sch, sc, 0.05, 0.01, 0.06;
+                                       proposal = proposal)
+                @test got == want
+                @test st.strain == (want ? sp : s)
+                nacc += got
+            end
+            @test 0 < nacc < 80
         end
     end
 

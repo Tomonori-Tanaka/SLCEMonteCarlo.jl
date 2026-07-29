@@ -78,6 +78,11 @@ function _swap_payload!(a::ChainState, b::ChainState)
     # the ladder.
     a.zrows, b.zrows = b.zrows, a.zrows
     a.energy, b.energy = b.energy, a.energy
+    # The cell scale is payload too — it labels the physical state, exactly like the
+    # displacements it scales. In v0 both lanes are always at 1.0 (PT + strain is
+    # refused: one shared Hamiltonian cannot carry two coefficient sets), so this is
+    # the future-proof no-op, not a live channel.
+    a.strain, b.strain = b.strain, a.strain
     return nothing
 end
 

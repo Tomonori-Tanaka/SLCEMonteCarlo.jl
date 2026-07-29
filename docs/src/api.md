@@ -44,6 +44,8 @@ strain_coefficients!
 strain_j0
 strain_volume
 strain_delta_energy
+StrainScratch
+strain_move!
 ```
 
 ## Cell reduction

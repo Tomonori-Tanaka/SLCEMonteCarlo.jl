@@ -32,8 +32,12 @@ centre-of-mass shift `_recenter!` has taken out of each displacement-coupling
 component, so the uncentred displacement of a site in component `c` is
 `disps[s] + com_removed[c]`.
 
-`config`/`disps`/`zrows`/`energy`/`com_removed` are the swappable payload of a
-replica-exchange move (`_swap_payload!` exchanges the references); the RNG streams
+Since M5, the chain also carries its cell's linear scale `strain` (`s`, so the cell is
+`s·A₀`; `1.0` and never moved on a fixed-cell run) with acceptance counters for the
+outer strain move ([`strain_move!`](@ref)).
+
+`config`/`disps`/`zrows`/`energy`/`com_removed`/`strain` are the swappable payload of
+a replica-exchange move (`_swap_payload!` exchanges the references); the RNG streams
 and the proposal widths stay with the lane.
 """
 mutable struct ChainState
@@ -45,6 +49,7 @@ mutable struct ChainState
     const site_rngs::Vector{Xoshiro}
     step::Float64
     step_u::Float64
+    strain::Float64                  # linear cell scale s (1.0 on a fixed-cell chain)
     frozen::Bool
     acc_metro::Int
     att_metro::Int
@@ -52,6 +57,8 @@ mutable struct ChainState
     att_or::Int
     acc_disp::Int
     att_disp::Int
+    acc_strain::Int
+    att_strain::Int
     max_drift::Float64
     com_removed::Vector{SVector{3,Float64}}
     # escape detector (`_check_escape!`), all measured at renormalization points in the
@@ -83,7 +90,8 @@ function ChainState(H::TiledHamiltonian, config::SpinConfig, rng::Xoshiro,
     # collision — two sites sharing a proposal stream — has P ≈ n²/2⁶⁵).
     site_rngs = [Xoshiro(rand(rng, UInt64)) for _ = 1:H.n_sites]
     return ChainState(config, u, zrows, _total_energy(H, zrows), rng, site_rngs,
-                      Float64(step), Float64(step_u), false, 0, 0, 0, 0, 0, 0, 0.0,
+                      Float64(step), Float64(step_u), 1.0, false,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0.0,
                       zeros(SVector{3,Float64}, H.n_disp_comps),
                       0.0, 0.0, 0.0, 0, 0.0, 0.0, 0, 1, 0.0, 0, false)
 end

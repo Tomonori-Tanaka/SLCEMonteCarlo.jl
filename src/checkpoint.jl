@@ -195,10 +195,12 @@ function _read_chain(f, g::String, H::TiledHamiltonian)::ChainState
     site_rngs = [_rng_from_words(srw[:, s]) for s = 1:H.n_sites]
     ef = f["$g/escape_f"]
     ei = f["$g/escape_i"]
+    # Schema v3 predates the strain channel: a v3 chain is a fixed cell at s = 1 with
+    # no strain attempts (v4 stores the field; the version gate refuses a mismatch).
     return ChainState(config, disps, zrows, f["$g/energy"],
                       _rng_from_words(f["$g/rng"]), site_rngs, f["$g/step"],
-                      f["$g/step_u"], f["$g/frozen"], cnt[1], cnt[2], cnt[3], cnt[4],
-                      cnt[5], cnt[6], f["$g/max_drift"], com,
+                      f["$g/step_u"], 1.0, f["$g/frozen"], cnt[1], cnt[2], cnt[3],
+                      cnt[4], cnt[5], cnt[6], 0, 0, f["$g/max_drift"], com,
                       ef[1], ef[2], ef[3], ei[1], ef[4], ef[5], ei[2], ei[3], ef[6],
                       ei[4], f["$g/escape_warned"])
 end
