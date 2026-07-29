@@ -73,7 +73,11 @@ packages' dynamics; bitwise-gated against its lane reference, G7),
 `StrainSchedule`'s accessors (`strain_domain`, `in_strain_domain`,
 `strain_coefficients[!]`, `strain_j0`, `strain_volume`), the NPT energy contract
 `strain_delta_energy`, the move pair `StrainScratch` / `strain_move!`, the
-per-measurement `has_strain` / `strain` view accessors, and `GPA_PER_EV_A3`
+§8(ζ) mechanical-equilibrium diagnostic (`energy_volume_derivative` — exact
+`dE_total/dV` via differentiated Horner + Euler's theorem on the displacement
+degrees — and `pressure_diagnostics`, the `:pressure` evaluable whose mean must
+equal the applied pressure on an equilibrated NPT chain), the per-measurement
+`has_strain` / `strain` view accessors, and `GPA_PER_EV_A3`
 (GPa per eV/Å³ — the pressure analogue of `KB_EV`, applied exactly once at
 keyword resolution).
 

@@ -47,6 +47,8 @@ strain_volume
 strain_delta_energy
 StrainScratch
 strain_move!
+energy_volume_derivative
+pressure_diagnostics
 GPA_PER_EV_A3
 ```
 

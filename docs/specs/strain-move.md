@@ -178,7 +178,73 @@ is untouched — SLCEDynamics' checkpoint format depends on it.
 - **The chain starts at `s = 1`** (must be in the domain); warm-starting a
   strained chain from a previous run's final scale is not wired (`MCResult`
   carries no final strain) — resume from a checkpoint instead.
-- **Mechanical-equilibrium identity observable** (§8(ζ), with the corrected
-  exponent: `P = N_mob·kT/⟨V⟩ + ⟨−∂E/∂V⟩` via `grid_strain_derivative`) — the one
-  production-scale check; belongs in the observable set, not yet implemented.
+- **Mechanical-equilibrium identity observable** — DONE, see S9.
 - **PT + strain**, per S6.
+
+## S9 — the §8(ζ) mechanical-equilibrium observable (landed 2026-07-29)
+
+`energy_volume_derivative` + `pressure_diagnostics` (`src/strain.jl`); gates in
+`test/unit/test_strainschedule.jl` (the two §8(ζ) testsets).
+
+**The identity.** Stationarity of the NPT marginal
+`p(V) ∝ V^{N_mob}·e^{−β(E_total + P·V)}`, integrated by parts in `V` at fixed
+(spins, scaled displacements):
+
+    N_mob·kT·⟨1/V⟩ − ⟨dE_total/dV⟩ = P_applied
+
+up to boundary terms of the schedule's bounded domain — negligible exactly when
+the volume distribution is confined well inside the grid, the only regime a
+production NPT run is meaningful in. It is the one production-scale check of the
+`j0`/virial/`P·V` bookkeeping: a lost `n_cells` factor or a dropped virial bias
+it far beyond its error bar. Its sensitivity to the volume-power convention
+itself is only `kT·⟨1/V⟩` per unit of `N_mob` — on the shipped fixture ~1.3σ,
+i.e. often within an error bar — so `N_mob` vs `D/3` stays pinned by the §8(γ)
+marginal gate, not by this identity (the docstring says so too).
+
+**The estimator is exact, not a finite difference**, via two facts. (1) The
+coefficients are stored polynomials in the centred abscissa — `dJ/ds` is the
+same Horner pass differentiated (`_strain_dcoefficients!` / `_strain_dj0`, with
+the chain-rule factor `_sch_dz_ds` through the abscissa). (2) At fixed scaled
+coordinates the displacement content responds as `Φ(s·w)`, and every
+displacement factor `|u|^{2k} R_{l,m}(u)` is homogeneous of degree `2k + l`, so
+by Euler's theorem the virial `Σ_sites u·∂Φ/∂u` of a template is `deg·Φ` with
+`deg = Σ_disp-slots (2k + l)` — a per-template integer recovered from the slot's
+`row0` via the layout's `disp_starts` (`_term_disp_degrees`). No displacement
+gradient is ever formed; the walk is `_total_energy`'s loop with the effective
+coefficient `g_k = scale_k·(dJ_k/ds + deg_k·J_k/s)` (`_energy_with_coefs`, a
+deliberate mirror kept in lockstep so the pinned hot path stays untouched).
+NOT `grid_strain_derivative` — that upstream surface is `u = 0`,
+coefficient-drift only, and allocates a model per call; it survives here as the
+`u = 0` cross-gate. That gate pins the η-convention factor (`dE/dη = s·dE/ds`)
+and the drift path, not the interpolant itself (both sides build the same
+centred Vandermonde) and not the Euler half (all displacement rows are zero at
+`u = 0` — the finite-difference gate owns that, over ALL THREE abscissas, since
+`_sch_dz_ds`'s `:volume`/`:logvolume` chain-rule branches exist nowhere else).
+
+**Purity**: the kernel reads `J(s)` from the schedule, never from `H`'s
+currently installed coefficients — gated by installing two different scales
+around one call. **Gauge**: the view's displacements are COM-reduced; the virial
+is gauge-invariant exactly because certified-flat directions have zero force
+sum, so on a healthy schedule the reduction is invisible.
+
+**Packaging**: `pressure_diagnostics(sch, H)` returns two raw observables
+(`:strain_dEdV`, `:strain_invV`) plus the jackknifed `:pressure` evaluable —
+the `Evaluable` receives its point's own `kT`, which is what lets one
+diagnostic serve a multi-temperature run; jackknife over paired bins carries
+the covariance of the two means. Scratch is captured per instance and sized for
+the paired `H` (a view from any other Hamiltonian is refused), serial by
+construction — a strained run already is, and `run_pt` refuses schedules.
+
+**The statistical gate** (an Einstein-well fixture — the displacement energy
+must be bounded below or there is no stationary distribution to test; random
+ASR'd coefficients are a generically indefinite quadratic form, and the first
+fixture draft escaped exactly as U8 warns): kT = 0.05, P = 0.01 eV/Å³, domain
+s ∈ [0.9, 1.1] with the volume distribution ≥ 5σ from both edges. Measured:
+P_sampled = 0.01110 ± 0.00074 (1.5σ; a 10-seed review replication gave
+0.00980 ± 0.00028, −0.7σ, seed scatter 1.19× the jackknife errors — honest
+bars; a 120k-sweep chain gave 0.010133 ± 0.000125, +1.1σ).
+Decomposition: ideal +0.0038, drift −0.0007, virial +0.0039, j0 −(−0.0105) —
+the j0 and virial halves are the ones this gate constrains (≫ 5σ / ~7σ if
+broken); the drift (~1σ) is the FD gate's job. It does NOT discriminate the
+rejected `D/3` convention (the fixture is fully pinned, so
+`count(comp_free) = 0` makes the two coincide); that mutation is §8(γ)'s toy.

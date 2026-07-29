@@ -246,6 +246,23 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   the device side (the bitwise gate in `test_gpu.jl` holds the contract). The
   fixed-cell byte-neutrality pin (a pre-wiring trajectory asserted bit-identical in
   `test_strainschedule.jl`) catches any of these leaking into unstrained runs.
+- **The §8(ζ) pressure diagnostic: `_energy_with_coefs` ↔ `_total_energy`, and the
+  exact-derivative trio ↔ their Horner sources** (`strain.jl`,
+  `docs/specs/strain-move.md` S9): `energy_volume_derivative` is exact via (a) the
+  differentiated Horner passes (`_strain_dcoefficients!`/`_strain_dj0` must mirror
+  `strain_coefficients!`/`strain_j0` — change one pass's abscissa handling and the
+  derivative silently drifts by `_sch_dz_ds`'s chain-rule factor) and (b) Euler's
+  theorem on the per-template displacement degree `Σ (2k + l)`
+  (`_term_disp_degrees` reads `TermSlot.row0` against `layout.disp_starts` — a row
+  numbering change moves both together). `_energy_with_coefs` is a deliberate
+  MIRROR of `_total_energy`'s loop (external coefficient vector) so the pinned hot
+  path stays untouched — edit one and re-sync the other. The kernel must keep
+  reading `J(s)` from the schedule, never `H.progs.term_coef` (purity is gated).
+  `pressure_diagnostics`' `Evaluable` gets its point's own `kT` — do not bake a kT
+  into the closure. Gates: the two §8(ζ) testsets in `test_strainschedule.jl`
+  (FD exactness, upstream `grid_strain_derivative` cross-check at `u = 0`, and the
+  statistical identity on an Einstein-well fixture — kept bounded-below on
+  purpose; random ASR'd coefficients are indefinite and the chain escapes).
 - **Upstream BREAKING spec keywords ↔ this package's fixtures/benches/docs/assets**:
   `SLCE`'s `BasisSpec` keywords are consumed in `test/unit/fixtures.jl`,
   `bench/fixtures.jl`, `bench/assets/*.toml` (`[interaction]`) and every

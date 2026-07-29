@@ -544,3 +544,256 @@ function strain_move!(st::ChainState, H::TiledHamiltonian, sch::StrainSchedule,
     set_coefficients!(H, sc.coef; recheck_translation = false)
     return false
 end
+
+# --------------------------------------------------------------------------------------
+# The mechanical-equilibrium identity (design record §8 (ζ)): `dE_total/dV` at a sampled
+# state, exactly, and the observable pair + evaluable that turn it into the sampled
+# pressure. Stationarity of the NPT marginal `p(V) ∝ V^{N_mob}·e^{−β(E_total + P·V)}`
+# gives, by integration by parts in V at fixed (spins, scaled displacements),
+#
+#     N_mob·kT·⟨1/V⟩ − ⟨dE_total/dV⟩ = P_applied
+#
+# up to boundary terms of the schedule's bounded domain — negligible exactly when the
+# chain's volume distribution is confined well inside the grid, which is the only regime
+# a production NPT run is meaningful in anyway. This is the one production-scale check of
+# the whole strain channel: it exercises the volume power, the elastic j0, the coefficient
+# interpolation and the P·V term against each other in a single number.
+#
+# The derivative is EXACT, not a finite difference, via two facts. (1) The coefficients
+# are polynomials in the centred abscissa — differentiate the same Horner pass
+# `strain_coefficients!` runs. (2) At fixed scaled coordinates `w = u/s` the displacement
+# content's explicit `s`-dependence is `Φ(s·w)`, and every displacement factor
+# `|u|^{2k} R_{l,m}(u)` is homogeneous of degree `2k + l` — so by Euler's theorem the
+# virial `Σ_sites u·∂Φ/∂u` of a template's contraction is `deg·Φ` with
+# `deg = Σ_disp-slots (2k + l)`, a per-template integer. No displacement gradient is
+# ever formed.
+
+# d(centred abscissa)/ds — the chain-rule factor between the Horner variable `z` and the
+# linear scale. Differentiating in `z` alone would be silently wrong by `xw` (and by
+# `3·v·s²` on a :volume grid).
+_sch_dz_ds(sch::StrainSchedule, s::Real)::Float64 =
+    (sch.abscissa === :linear ? 1.0 :
+     sch.abscissa === :volume ? 3 * sch.v_train * Float64(s)^2 :
+     3.0 / Float64(s)) / sch.xw          # :logvolume — d ln(v·s³)/ds = 3/s
+
+# dJ_j/ds of every input term's interpolated raw coefficient — `strain_coefficients!`'s
+# Horner pass, differentiated. A degree-0 polynomial comes out exactly 0.0 (the leading
+# `(d − 1)·c_d` seed is zero).
+function _strain_dcoefficients!(dst::AbstractVector{Float64}, sch::StrainSchedule,
+                                s::Real)
+    n = size(sch.coefpoly, 2)
+    length(dst) == n || throw(DimensionMismatch(
+        "dst has $(length(dst)) entries for $n terms"))
+    z = _sch_z(sch, s)
+    dzds = _sch_dz_ds(sch, s)
+    d = size(sch.coefpoly, 1)
+    @inbounds for j = 1:n
+        acc = (d - 1) * sch.coefpoly[d, j]
+        for p = (d - 1):-1:2
+            acc = acc * z + (p - 1) * sch.coefpoly[p, j]
+        end
+        dst[j] = acc * dzds
+    end
+    return dst
+end
+
+# dj0/ds, per TRAINING cell — the derivative of `strain_j0`'s Horner pass.
+function _strain_dj0(sch::StrainSchedule, s::Real)::Float64
+    z = _sch_z(sch, s)
+    d = length(sch.j0poly)
+    acc = (d - 1) * sch.j0poly[d]
+    @inbounds for p = (d - 1):-1:2
+        acc = acc * z + (p - 1) * sch.j0poly[p]
+    end
+    return acc * _sch_dz_ds(sch, s)
+end
+
+# Per-template displacement homogeneity degree `Σ_disp-slots (2k + l)`. The `k` is
+# recovered from the slot's row block: `row0` IS the layout's `disp_starts` entry for
+# its `(k, l)` (`SLCE.row_index`), which holds on every model-built Hamiltonian. The
+# raw public constructor (`TiledHamiltonian(n, ::Vector{ScaledTerm}, layout)`) only
+# range-checks `row0`, so a hand-built slot pointing mid-block CAN reach the throws
+# below — but such a slot already reads wrong `(k, l)` rows in `_disp_rows!`, so the
+# loud error here is strictly better than the silent misread it accompanies.
+function _term_disp_degrees(H::TiledHamiltonian)::Vector{Int}
+    L = H.layout
+    deg = zeros(Int, length(H.terms))
+    for (t, term) in enumerate(H.terms)
+        d = 0
+        for sl in term.slots
+            sl.spin && continue
+            i = findfirst(==(sl.row0), L.disp_starts)
+            i === nothing && error("slot row block at $(sl.row0) is not a layout " *
+                                   "displacement block start; a model-built " *
+                                   "Hamiltonian cannot produce this — check any " *
+                                   "hand-built ScaledTerm slots")
+            k, l = L.disp_factors[i]
+            l == sl.l || error("slot has l = $(sl.l) but its layout block carries " *
+                               "l = $l; a model-built Hamiltonian cannot produce " *
+                               "this — check any hand-built ScaledTerm slots")
+            d += 2k + l
+        end
+        deg[t] = d
+    end
+    return deg
+end
+
+# `_total_energy` with an external per-template coefficient vector `g` in place of
+# `pr.term_coef` — same instances, same entries, same loop order. Kept as a separate
+# mirror rather than a parameterized `_total_energy` so the hot path stays untouched
+# (its trajectory is pinned byte-identical); keep the two in lockstep.
+function _energy_with_coefs(H::TiledHamiltonian, zrows::Matrix{Float64},
+                            g::Vector{Float64})::Float64
+    pr = H.progs
+    E = 0.0
+    @inbounds for i in eachindex(H.inst_term)
+        k = Int(H.inst_term[i])
+        off = Int(H.inst_ptr[i]) - 1
+        Ei = 0.0
+        for e = Int(pr.eprog_ptr[k]):(Int(pr.eprog_ptr[k + 1]) - 1)
+            p = 1.0
+            f0 = Int(pr.efac_ptr[e]) - 1
+            for m = 1:(Int(pr.efac_ptr[e + 1]) - 1 - f0)
+                f = f0 + m
+                p *= zrows[pr.efac_row[f], H.inst_sites[off + pr.efac_site[f]]]
+            end
+            Ei += pr.eent_w[e] * p
+        end
+        E += g[k] * Ei
+    end
+    return E
+end
+
+# The buffer-level kernel: `dE_total/dV` at scale `s` from a filled row table. Reads
+# NOTHING off `H`'s currently installed coefficients — `J(s)` comes from the schedule,
+# so the result is a pure function of (schedule, state, s) whatever the caller last
+# installed.
+function _energy_volume_derivative(sch::StrainSchedule, H::TiledHamiltonian,
+                                   zrows::Matrix{Float64}, s::Float64,
+                                   coefs::Vector{Float64}, dcoef::Vector{Float64},
+                                   g::Vector{Float64}, deg::Vector{Int})::Float64
+    in_strain_domain(sch, s) || throw(ArgumentError(
+        "scale $s is outside the schedule's domain $(strain_domain(sch)); the " *
+        "interpolant does not extrapolate"))
+    strain_coefficients!(coefs, sch, s)
+    _strain_dcoefficients!(dcoef, sch, s)
+    @inbounds for k in eachindex(g)
+        src = Int(H.term_source[k])
+        # d/ds of the SCALED coefficient, plus the Euler virial `deg·J/s` — both carry
+        # the same `(4π)` scale the constructor applied, so it factors out front
+        g[k] = H.term_scale[k] * (dcoef[src] + deg[k] * coefs[src] / s)
+    end
+    de_ds = _energy_with_coefs(H, zrows, g) + sch.n_cells * _strain_dj0(sch, s)
+    dv_ds = 3 * sch.n_cells * sch.v_train * s^2
+    return de_ds / dv_ds
+end
+
+"""
+    energy_volume_derivative(sch::StrainSchedule, H::TiledHamiltonian,
+                             config::SpinConfig, [disps,] s) -> Float64
+
+`dE_total/dV` of the NPT energy at a state and linear scale `s`, in the model's units
+(eV/Å³ for a DFT-fitted model): the exact derivative, at fixed spins and fixed **scaled**
+displacements `w = u/s`, of `E_config + n_cells·j0(s)` with respect to the supercell
+volume `V(s)`. `disps` are the Cartesian displacements **at scale `s`** (the state as
+sampled); they are required exactly when `H` carries displacement rows, like
+[`total_energy`](@ref).
+
+Exact, not a finite difference: the coefficient drift is the schedule's differentiated
+Horner pass, and the displacement content's affine response is Euler's theorem on each
+factor's homogeneity degree `2k + l` — no displacement gradient is formed. The result
+does not depend on which scale's coefficients `H` currently holds.
+
+This is the estimator half of the §8(ζ) mechanical-equilibrium identity
+`N_mob·kT·⟨1/V⟩ − ⟨dE_total/dV⟩ = P` — see [`pressure_diagnostics`](@ref) for the
+packaged observable form. Multiply by [`GPA_PER_EV_A3`](@ref) for GPa.
+"""
+function energy_volume_derivative(sch::StrainSchedule, H::TiledHamiltonian,
+                                  config::SpinConfig, s::Real)::Float64
+    _check_strain_pairing(H, sch)      # BEFORE the O(nrows·n_sites) row-table build,
+                                       # so a mispaired (sch, H) gets the pairing
+                                       # message, not a zrows shape error
+    return _evd_alloc(sch, H, _zrows(H, config), Float64(s))
+end
+
+function energy_volume_derivative(sch::StrainSchedule, H::TiledHamiltonian,
+                                  config::SpinConfig,
+                                  disps::Vector{SVector{3,Float64}}, s::Real)::Float64
+    _check_strain_pairing(H, sch)
+    return _evd_alloc(sch, H, _zrows(H, config, disps), Float64(s))
+end
+
+function _evd_alloc(sch::StrainSchedule, H::TiledHamiltonian, zrows::Matrix{Float64},
+                    s::Float64)::Float64
+    n = size(sch.coefpoly, 2)
+    return _energy_volume_derivative(sch, H, zrows, s,
+                                     Vector{Float64}(undef, n),
+                                     Vector{Float64}(undef, n),
+                                     Vector{Float64}(undef, length(H.terms)),
+                                     _term_disp_degrees(H))
+end
+
+"""
+    pressure_diagnostics(sch::StrainSchedule, H::TiledHamiltonian)
+        -> (; observables::Vector{Observable}, evaluables::Vector{Evaluable})
+
+The §8(ζ) mechanical-equilibrium check, packaged for a strained [`run_mc`](@ref): two
+raw observables — `:strain_dEdV` ([`energy_volume_derivative`](@ref) at the sampled
+state) and `:strain_invV` (`1/V`) — plus the jackknifed evaluable
+
+    :pressure  =  N_mob·kT·⟨1/V⟩ − ⟨dE_total/dV⟩
+
+in the model's units (eV/Å³; multiply by [`GPA_PER_EV_A3`](@ref) for GPa). On an
+equilibrated NPT chain its mean equals the applied pressure — a disagreement beyond its
+error bar means the elastic `j0` bookkeeping, the virial, the coefficient interpolation
+or the `P·V` term is wrong, which is what makes this the production-scale gate of the
+strain channel. (Its sensitivity to the volume-power convention itself is only
+`kT·⟨1/V⟩` per unit of `N_mob` — often within an error bar; that convention is pinned
+by the §8(γ) marginal gate, not here.) Append both vectors to the run's
+`observables` / `evaluables`.
+
+Two validity conditions, both properties of the run rather than of this code. The
+identity holds up to **boundary terms of the schedule's bounded domain** — trust it only
+when the sampled volume distribution is confined well inside [`strain_domain`](@ref)
+(a chain pressed against a grid edge is answering a different question). And the virial
+half reads the view's **gauge-reduced** displacements; it is gauge-invariant exactly
+because the flat directions certified at schedule construction have zero force sum, so
+on a healthy schedule the reduction is invisible here.
+
+Build the diagnostic from the **same `sch` the run uses**: the view carries no
+schedule, so a second, pairing-compatible schedule would silently supply its own
+`J(s)` against a chain sampling the other — only the Hamiltonian identity is
+checkable at measurement time.
+
+The observables capture preallocated scratch sized for **this** `H` (a view from any
+other Hamiltonian is refused) and are therefore serial — one chain at a time, which a
+strained run already is ([`run_pt`](@ref) refuses schedules). Each `:strain_dEdV`
+measurement rebuilds the state's full row table, an `O(nrows·n_sites)` cost comparable
+to one fresh [`total_energy`](@ref); at the default measurement cadence this is noise.
+"""
+function pressure_diagnostics(sch::StrainSchedule, H::TiledHamiltonian)
+    _check_strain_pairing(H, sch)
+    deg = _term_disp_degrees(H)
+    n = size(sch.coefpoly, 2)
+    coefs = Vector{Float64}(undef, n)
+    dcoef = Vector{Float64}(undef, n)
+    g = Vector{Float64}(undef, length(H.terms))
+    dedv = Observable(:strain_dEdV, 1, v -> begin
+        v.H === H || throw(ArgumentError(
+            "this pressure diagnostic was built against a different Hamiltonian; " *
+            "build it with the `H` the run uses"))
+        s = strain(v)                      # throws on a fixed-cell view, by design
+        zr = has_disp(H) ? _zrows(H, v.config, v.disps) : _zrows(H, v.config)
+        _energy_volume_derivative(sch, H, zr, s, coefs, dcoef, g, deg)
+    end)
+    invv = Observable(:strain_invV, 1, v -> 1.0 / strain_volume(sch, strain(v)))
+    nmob = sch.n_mobile
+    # The captured `nmob` is deliberate and the injected `n` is deliberately UNUSED:
+    # the identity's count is the volume power's `N_mob = n_disp_active`, while the
+    # Evaluable-scope `n` is `n_active` (`:energy`) — the two coincide on an all-mobile
+    # model and diverge on any model with spin-only sites. Do not "simplify" to `n`.
+    press = Evaluable(:pressure, [:strain_dEdV, :strain_invV],
+                      (m, kT, n) -> nmob * kT * m.strain_invV - m.strain_dEdV;
+                      scope = :energy)
+    return (; observables = [dedv, invv], evaluables = [press])
+end

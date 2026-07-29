@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — the §8(ζ) mechanical-equilibrium diagnostic (`docs/specs/strain-move.md` S9)
+
+`energy_volume_derivative(sch, H, config[, disps], s)` — `dE_total/dV` at a sampled
+state, **exact**: the coefficient drift is the schedule's differentiated Horner pass
+(with the chain-rule factor through the interpolation abscissa) and the displacement
+response is Euler's theorem on each factor's homogeneity degree `2k + l`, so no
+displacement gradient and no finite difference is ever formed. A pure function of
+(schedule, state, scale) — `H`'s currently installed coefficients are never read.
+`pressure_diagnostics(sch, H)` packages it for a strained `run_mc`: raw observables
+`:strain_dEdV` / `:strain_invV` plus the jackknifed `:pressure` evaluable
+`N_mob·kT·⟨1/V⟩ − ⟨dE_total/dV⟩`, whose mean on an equilibrated NPT chain equals the
+applied pressure (eV/Å³; `× GPA_PER_EV_A3` for GPa) — the production-scale check of
+the whole strain channel. Gates: finite-difference exactness on the joint fixture, a
+cross-implementation check against upstream `grid_strain_derivative` at `u = 0`,
+purity under coefficient reinstalls, the pure-spin drift-only path, and the
+statistical identity itself on an Einstein-well fixture (measured
+0.01110 ± 0.00074 vs P = 0.01; the j0 and virial halves are what it
+constrains — the coefficient drift sits at ~1σ there and is owned by the
+finite-difference gate).
+
 ### Added — the outer NPT strain move (M5-4 slice 2; `docs/specs/strain-move.md`)
 
 The energy contract and the acceptance weight are pure functions with one elastic

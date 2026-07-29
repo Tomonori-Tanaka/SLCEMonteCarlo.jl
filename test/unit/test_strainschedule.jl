@@ -769,4 +769,206 @@ _ss_vk_mean(k, va, vb) =
         @test occursin("strain", sprint(show, strained))
         @test_throws ArgumentError MCView(H, cfg, u, 1.5, -1.0)
     end
+
+    @testset "§8(ζ) dE/dV: exact vs finite differences, upstream, and purity" begin
+        sm, models = _ss_grid()
+        H = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        sch = StrainSchedule(sm, H)
+        cfg = _ss_cfg(H.n_sites, 21)
+        w = _ss_disps(H.n_sites, 21)          # scaled coordinates, held fixed below
+
+        # the fixture must exercise the k ≥ 1 half of the Euler degree (the |u|^{2k}
+        # prefactor) or the `2k` term of `2k + l` is structurally untested
+        @test any(kl -> kl[1] >= 1, H.layout.disp_factors)
+        deg = MCs._term_disp_degrees(H)
+        @test any(>(0), deg)
+
+        # central finite difference of the SAME interpolated family, at fixed scaled
+        # coordinates: coefficients from the schedule, displacements affinely rescaled,
+        # the elastic j0 included (dE_total/dV covers config + j0; P·V is separate).
+        # Parameterized over ALL THREE interpolation abscissas — `_sch_dz_ds`'s
+        # :volume and :logvolume chain-rule branches exist only here, and a fixture
+        # family that never leaves the default :linear would leave them ungated (a
+        # dropped `/xw` or a wrong dx/ds is a 1e6× FD discriminator on this fixture).
+        Ht = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        etot = function (scha, sp)
+            set_coefficients!(Ht, MCs.strain_coefficients(scha, sp))
+            return total_energy(Ht, cfg, [sp .* x for x in w]) +
+                   scha.n_cells * MCs.strain_j0(scha, sp)
+        end
+        h = 1e-5
+        for ab in (:linear, :volume, :logvolume)
+            sma = SLCE.StrainedModels(sm.models, [0.98, 1.0, 1.02]; abscissa = ab)
+            scha = StrainSchedule(sma, H)
+            for s in (0.985, 1.0, 1.013)
+                uphys = [s .* x for x in w]    # the state as sampled at scale s
+                dedv = MCs.energy_volume_derivative(scha, H, cfg, uphys, s)
+                dv_ds = 3 * scha.n_cells * scha.v_train * s^2
+                fd = (etot(scha, s + h) - etot(scha, s - h)) / (2h) / dv_ds
+                @test dedv ≈ fd rtol = 1e-6
+            end
+        end
+
+        # a pure function of (schedule, state, s) — H's installed coefficients are
+        # never read, so whatever the caller last installed cannot move the answer
+        up1 = [1.0 .* x for x in w]
+        set_coefficients!(H, MCs.strain_coefficients(sch, 0.99))
+        v1 = MCs.energy_volume_derivative(sch, H, cfg, up1, 1.0)
+        set_coefficients!(H, MCs.strain_coefficients(sch, 1.02))
+        @test MCs.energy_volume_derivative(sch, H, cfg, up1, 1.0) === v1
+
+        # upstream cross-gate at u = 0 on the training cell: the grid derivative is
+        # dE/dη = s·dE/ds per CELL, and ours is dE/dV. Both sides build the same
+        # centred Vandermonde, so what this pins is the η-convention factor
+        # (`dE/dη = s·dE/ds`) and the coefficient-drift path — at u = 0 every
+        # displacement row is zero and the Euler half contributes nothing (the FD
+        # gate above owns that half)
+        H1 = TiledHamiltonian(models[2]; dims = (1, 1, 1), keep_zero_terms = true)
+        sch1 = StrainSchedule(sm, H1)
+        cfg1 = _ss_cfg(H1.n_sites, 33)
+        for s in (0.99, 1.008)
+            dedv = MCs.energy_volume_derivative(sch1, H1, cfg1,
+                                                zeros(SVector{3,Float64}, H1.n_sites), s)
+            dv_ds = 3 * sch1.v_train * s^2
+            @test s * dv_ds * dedv ≈
+                  SLCE.grid_strain_derivative(sm, s; spins = MCs.to_matrix(cfg1)) rtol =
+                  1e-8
+        end
+
+        # a pure-spin grid takes the disps-free method and is drift-only (deg ≡ 0)
+        pspec(cr, s) = BasisSpec(cr; lmax = 1, pmax = 0,
+                                 sectors = [Sector(spin = (sites = 1:2,),
+                                                   cutoff = 1.1s)])
+        pmk = function (s)
+            cr = _ss_crystal(s)
+            b = SLCEBasis(cr, pspec(cr, s))
+            return SLCEModel(b, 0.1 * (s - 1)^2,
+                             (0.2 + 0.05 * (s - 1)) .* ones(n_salcs(b)))
+        end
+        msp = [pmk(s) for s in [0.95, 1.0, 1.05]]
+        smp = SLCE.StrainedModels(msp, [0.95, 1.0, 1.05])
+        Hp = TiledHamiltonian(msp[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        schp = StrainSchedule(smp, Hp)
+        @test all(==(0), MCs._term_disp_degrees(Hp))
+        cfgp = _ss_cfg(Hp.n_sites, 47)
+        Hpt = TiledHamiltonian(msp[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        ep = function (sp)
+            set_coefficients!(Hpt, MCs.strain_coefficients(schp, sp))
+            return total_energy(Hpt, cfgp) + schp.n_cells * MCs.strain_j0(schp, sp)
+        end
+        sps = 1.02
+        @test MCs.energy_volume_derivative(schp, Hp, cfgp, sps) ≈
+              (ep(sps + h) - ep(sps - h)) / (2h) /
+              (3 * schp.n_cells * schp.v_train * sps^2) rtol = 1e-6
+
+        # refusals: out-of-domain scale, and a schedule paired with a different H
+        @test_throws ArgumentError MCs.energy_volume_derivative(sch, H, cfg, up1, 0.5)
+        @test_throws ArgumentError MCs.energy_volume_derivative(sch1, H, cfg, up1, 1.0)
+
+        # gauge invariance under re-centring: on a translation-flat model a rigid
+        # shift of one whole displacement component along a free direction must not
+        # move dE/dV — certified-flat directions have zero force sum, which is the
+        # property the MCView's COM-reduced `disps` rely on, and the one that would
+        # break silently if the Euler argument or `_term_disp_degrees` were touched
+        smf = _ss_toy_grid(pinned = false)
+        Hf = TiledHamiltonian(smf.models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        schf = StrainSchedule(smf, Hf)
+        @test Hf.n_disp_comps == 2 && all(Hf.comp_free)
+        cfgf = _ss_cfg(Hf.n_sites, 61)
+        uf = _ss_disps(Hf.n_sites, 61)
+        sg = 1.04
+        d0 = MCs.energy_volume_derivative(schf, Hf, cfgf, uf, sg)
+        ushift = copy(uf)
+        tshift = SVector(0.21, -0.13, 0.08)
+        for q = Int(Hf.disp_comp_ptr[1]):(Int(Hf.disp_comp_ptr[2]) - 1)
+            sidx = Int(Hf.disp_comp_sites[q])
+            ushift[sidx] = ushift[sidx] + tshift
+        end
+        @test ushift != uf
+        @test MCs.energy_volume_derivative(schf, Hf, cfgf, ushift, sg) ≈ d0 rtol = 1e-12
+    end
+
+    @testset "§8(ζ) pressure_diagnostics: the NPT mechanical-equilibrium identity" begin
+        # A stiff elastic well centred well inside a wide domain: the identity
+        #     N_mob·kT·⟨1/V⟩ − ⟨dE_total/dV⟩ = P_applied
+        # holds up to boundary terms of the bounded grid, so the fixture confines the
+        # volume distribution ≥ 5σ from both edges. Measured decomposition at
+        # P = 0.01: ideal +0.0038, coefficient drift −0.0007, virial +0.0039,
+        # j0 −(−0.0105), err ≈ 0.0007 — so a lost j0/n_cells factor (≫ 5σ) or a
+        # dropped virial (~7σ) bias it past the gate, while the drift term (~1σ) and
+        # the volume-power convention (kT·⟨1/V⟩ ≈ 1.3σ per unit of N_mob) are below
+        # its resolution here: those are owned by the FD gate above and the §8(γ)
+        # marginal toy respectively. (`D/3` vs `N_mob` is indistinguishable on this
+        # fully pinned fixture anyway — `count(comp_free) = 0` makes them coincide.)
+        #
+        # The displacement energy must be bounded below or the chain has no stationary
+        # distribution at all (random ASR'd coefficients are a generically indefinite
+        # quadratic form — the U8 escape warning fires): so the coefficients are keyed
+        # off the basis — a stiff POSITIVE on-site |u|² (an Einstein well) dominating
+        # small smooth spin / quadrupole / pair couplings, everything linear in η.
+        zeta_model = function (s)
+            cr = _ss_crystal(s)
+            b = SLCEBasis(cr, _ss_spec(cr, s))
+            η = s - 1
+            rng = MersenneTwister(0x2ee7)   # the SAME draw at every scale → smooth in η
+            jphi = map(b.salc_basis.keys) do k
+                r = 2 * rand(rng) - 1
+                onsite_u2 = k.body == 1 && length(k.decors) == 1 &&
+                            k.decors[1].spin_l == 0 && k.decors[1].disp_k == 1 &&
+                            k.decors[1].disp_l == 0
+                onsite_u2 ? 2.0 + 0.5 * η : 0.05 * r * (1 + 0.3 * η)
+            end
+            n_u2 = count(k -> k.body == 1 && length(k.decors) == 1 &&
+                              k.decors[1].disp_k == 1 && k.decors[1].disp_l == 0 &&
+                              k.decors[1].spin_l == 0, b.salc_basis.keys)
+            @test n_u2 > 0                  # the well actually exists in this basis
+            return SLCEModel(b, 40.0 * η^2, collect(Float64, jphi))
+        end
+        zscales = [0.9, 1.0, 1.1]
+        zsm = SLCE.StrainedModels([zeta_model(s) for s in zscales], zscales)
+        zmodels = zsm.models
+        # the well pins the rigid shift — that is the point (an absolute reference
+        # frame, no re-centring, no ASR machinery in the fixture's way)
+        H = TiledHamiltonian(zmodels[2]; dims = (2, 1, 1), keep_zero_terms = true,
+                             fixed_reference = true)
+        sch = StrainSchedule(zsm, H)
+        pd = MCs.pressure_diagnostics(sch, H)
+        @test [o.name for o in pd.observables] == [:strain_dEdV, :strain_invV]
+        @test [e.name for e in pd.evaluables] == [:pressure]
+
+        P = 0.01                               # eV/Å³ ≈ 1.6 GPa
+        r = run_mc(H; kT = 0.05, sweeps_therm = 500, sweeps_measure = 4000,
+                   seed = 0x0857, renorm_interval = 50, strain = sch, pressure = P,
+                   observables = [standard_observables(H); pd.observables],
+                   evaluables = [standard_evaluables(H); pd.evaluables])
+        pt = r.points[1]
+        @test 0.0 < pt.acceptance_strain < 1.0
+        pst = pt.stats[:pressure]
+        @test isfinite(pst.mean[1]) && isfinite(pst.err[1])
+        # the gate must be able to fail: the error bar is small against P itself.
+        # 4σ, not 5: the pinned seed sits at 1.5σ (10 seeds: −0.7σ), and the
+        # tighter bound is what gives the dropped-virial mutation (a 5.3σ shift)
+        # real headroom instead of a 6% margin
+        @test pst.err[1] < P / 3
+        @test abs(pst.mean[1] - P) < 4 * pst.err[1]
+        # the ideal-gas term genuinely participates (same order as P on this fixture)
+        ideal = sch.n_mobile * 0.05 * pt.stats[:strain_invV].mean[1]
+        @test ideal > P / 5
+
+        # view-level refusals: a different Hamiltonian, and a fixed-cell view
+        cfg = _ss_cfg(H.n_sites, 5)
+        u0 = zeros(SVector{3,Float64}, H.n_sites)
+        Hother = TiledHamiltonian(zmodels[2]; dims = (2, 1, 1), keep_zero_terms = true,
+                                  fixed_reference = true)
+        vother = MCView(Hother, cfg, u0, 0.0, 1.0)
+        @test_throws ArgumentError pd.observables[1].f(vother)
+        vfixed = MCView(H, cfg, u0, 0.0)
+        @test_throws ArgumentError pd.observables[1].f(vfixed)
+        @test_throws ArgumentError pd.observables[2].f(vfixed)
+
+        # construction-level pairing refusal
+        Hsmall = TiledHamiltonian(zmodels[2]; dims = (1, 1, 1), keep_zero_terms = true,
+                                  fixed_reference = true)
+        @test_throws ArgumentError MCs.pressure_diagnostics(sch, Hsmall)
+    end
 end

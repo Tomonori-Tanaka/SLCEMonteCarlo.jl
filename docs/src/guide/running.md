@@ -185,3 +185,27 @@ average a constant), so volume statistics are ordinary observables, as in the
 `resume(path, H; strain = sch)`. The details — the energy contract, the measured
 Jacobian exponent, and the reference-scale fingerprint — live in
 `docs/specs/strain-move.md`.
+
+### Checking the run: the sampled pressure
+
+[`pressure_diagnostics`](@ref) packages the mechanical-equilibrium identity as
+observables: on an equilibrated NPT chain the jackknifed `:pressure` evaluable
+(`N_mob·kT·⟨1/V⟩ − ⟨dE_total/dV⟩`, in eV/Å³) must equal the applied pressure
+within its statistical uncertainty (a few error bars — a 1–2σ deviation is
+ordinary fluctuation) — a persistent disagreement means the elastic `j0` bookkeeping, the
+virial, the coefficient interpolation or the `P·V` term is wrong. The `dE/dV` estimator
+([`energy_volume_derivative`](@ref)) is exact, not a finite difference: the
+coefficient drift is the schedule's differentiated interpolant, and the
+displacement response is Euler's theorem on each factor's homogeneity degree.
+
+```julia
+pd = SLCEMonteCarlo.pressure_diagnostics(sch, H)
+r  = run_mc(H; temperature = 300, strain = sch, pressure_GPa = 1.0,
+            observables = [standard_observables(H); pd.observables],
+            evaluables  = [standard_evaluables(H); pd.evaluables])
+r.points[1].stats[:pressure]      # ×160.2176634 (GPA_PER_EV_A3) for GPa
+```
+
+Trust it only when the sampled volume distribution sits well inside
+[`strain_domain`](@ref) — the identity holds up to boundary terms of the bounded
+grid, and a chain pressed against a grid edge is answering a different question.
