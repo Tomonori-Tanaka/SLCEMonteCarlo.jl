@@ -69,7 +69,9 @@ rewritten; the verdict they summarize is what gets re-checked.
 
 Two things become stale elsewhere and are the caller's responsibility:
 
-- a `GPUTiledHamiltonian` uploaded from `H` keeps the old device tables — re-upload;
+- a `GPUTiledHamiltonian` uploaded from `H` keeps the old device weights — call
+  [`sync_coefficients!`](@ref) on it (a `sent_w`-only copy; the structural tables
+  are coefficient-independent and stay valid);
 - the checkpoint fingerprint changes with the coefficients (by design), so a file
   written before the swap will correctly refuse to resume after it.
 

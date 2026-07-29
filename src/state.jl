@@ -235,6 +235,8 @@ function _freeze_and_reset!(st::ChainState)::ChainState
     st.att_or = 0
     st.acc_disp = 0
     st.att_disp = 0
+    st.acc_strain = 0
+    st.att_strain = 0
     st.max_drift = 0.0
     _reset_escape!(st)
     return st

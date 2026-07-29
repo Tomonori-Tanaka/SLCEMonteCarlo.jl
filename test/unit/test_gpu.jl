@@ -355,6 +355,47 @@ end
     end
 end
 
+@testset "gpu: sync_coefficients! re-uploads a host coefficient swap (bitwise)" begin
+    # A host `set_coefficients!` mutates `H.progs.sent_w` in place; the device copy
+    # is from construction time and goes stale silently. The sync is a `sent_w`-only
+    # copy because every other table is coefficient-independent by design.
+    m = _biquadratic_model(3)
+    H = TiledHamiltonian(m; dims = (2, 2, 2))
+    st, gH, _ = _gpu_setup(H)
+    coefs = [1.17 * t.coef for t in SLCE.spin_multipole_terms(m)]
+    MC.set_coefficients!(H, coefs)
+    @test gH.dev.sent_w != gH.host.progs.sent_w      # stale, and detectably so
+    @test MC.sync_coefficients!(gH) === gH
+    @test gH.dev.sent_w == gH.host.progs.sent_w      # the one array a swap moves
+    # ...and the synced device sweeps bitwise against the keyed reference, which
+    # reads the host tables fresh and therefore carries the NEW weights
+    β = 1 / 0.05
+    gst = MC.GPUChainState(gH, st; seed = UInt64(0xc0ffee))
+    cfg2 = copy(st.config)
+    zr2 = copy(st.zrows)
+    dE2 = zeros(H.n_sites)
+    acc2 = zeros(Int32, H.n_sites)
+    E0 = gst.energy
+    naccs = [MC.gpu_metropolis_sweep!(gst, gH, β; workgroupsize = 32) for _ = 1:3]
+    E_ref, naccs_ref = _ref_sweeps!(cfg2, zr2, dE2, acc2, H, β, st.step, gst.seed,
+                                    E0, 3, 32)
+    MC.to_host!(st, gst)
+    @test st.config == cfg2
+    @test st.zrows == zr2
+    @test gst.energy == E_ref
+    @test naccs == naccs_ref
+
+    # the joint fixture goes through `decorated_terms`; the same one-array contract
+    mj, _ = _joint_model(5)
+    Hj = TiledHamiltonian(mj; dims = (2, 2, 2))
+    gHj = MC.GPUTiledHamiltonian(CPU(), Hj)
+    MC.set_coefficients!(Hj, [0.9 * t.coef for t in SLCE.decorated_terms(mj)];
+                         recheck_translation = false)
+    @test gHj.dev.sent_w != gHj.host.progs.sent_w
+    MC.sync_coefficients!(gHj)
+    @test gHj.dev.sent_w == gHj.host.progs.sent_w
+end
+
 @testset "gpu: repeated-run identity" begin
     H = TiledHamiltonian(_biquadratic_model(3); dims = (2, 2, 2))
     β = 1 / 0.05

@@ -114,6 +114,7 @@ gpu_metropolis_sweep!
 gpu_displacement_sweep!
 gpu_run_sweeps!
 to_host!
+sync_coefficients!
 ```
 
 ## Observables

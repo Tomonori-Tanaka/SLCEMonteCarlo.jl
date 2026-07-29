@@ -13,3 +13,15 @@
 # infinite-temperature run.
 
 using SLCE: KB_EV, resolve_kt
+
+"""
+    GPA_PER_EV_A3
+
+GPa per one eV/Å³: exactly `160.2176634` (from the exact SI elementary charge
+`e = 1.602176634e-19` C, since 1 eV/Å³ = `e`·10³⁰ J/m³). The pressure analogue of
+`KB_EV`, applied exactly once, at keyword resolution (`pressure_GPa` →
+model units); nothing downstream of the resolver ever converts. Defined here for
+now — if another family package grows a pressure keyword, move it upstream to
+`SLCE.units` exactly as `KB_EV` was.
+"""
+const GPA_PER_EV_A3 = 160.2176634

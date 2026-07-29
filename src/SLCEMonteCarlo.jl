@@ -79,6 +79,7 @@ include("geometry.jl")
 include("reduce.jl")
 
 export KB_EV
+public GPA_PER_EV_A3
 export TiledHamiltonian, n_sites, total_energy, set_coefficients!
 # K(ε) volume grids, sampler side (the move itself lands with the driver)
 export StrainSchedule
@@ -107,6 +108,7 @@ public to_matrix, from_matrix
 # GPU sweep API (exported 2026-07-19: A100 GO 30.1x + l02/l044 production
 # validation landed; the gradient tier below stays public-unexported — it is the
 # inter-package seam consumed by SLCEDynamics, not an end-user surface)
+export sync_coefficients!
 export GPUTiledHamiltonian, GPUChainState, gpu_metropolis_sweep!,
        gpu_displacement_sweep!, gpu_run_sweeps!, to_host!
 public GPUGradientScratch, gpu_energy_gradient!, gpu_zlm_rows!

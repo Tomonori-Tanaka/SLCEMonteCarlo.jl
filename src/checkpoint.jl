@@ -245,6 +245,7 @@ function _write_point(f, g::String, p::TempResult)
     f["$g/acceptance_metropolis"] = p.acceptance_metropolis
     f["$g/acceptance_or"] = p.acceptance_or
     f["$g/acceptance_disp"] = p.acceptance_disp
+    f["$g/acceptance_strain"] = p.acceptance_strain
     f["$g/final_step"] = p.final_step
     f["$g/final_step_u"] = p.final_step_u
     f["$g/max_drift"] = p.max_drift
@@ -270,8 +271,11 @@ function _read_point(f, g::String)::TempResult
                                   f["$g/stats/$k/tau_int"], f["$g/stats/$k/count"])
     end
     kt = f["$g/kT"]
+    # points written before the strain channel carry no strain acceptance; a
+    # fixed-cell NaN is exactly what they mean
+    acc_s = haskey(f, "$g/acceptance_strain") ? f["$g/acceptance_strain"] : NaN
     return TempResult(kt, kt / KB_EV, stats, f["$g/acceptance_metropolis"],
-                      f["$g/acceptance_or"], f["$g/acceptance_disp"],
+                      f["$g/acceptance_or"], f["$g/acceptance_disp"], acc_s,
                       f["$g/final_step"], f["$g/final_step_u"], f["$g/max_drift"],
                       f["$g/disp_rms"], f["$g/disp_max"], f["$g/disp_checks"],
                       f["$g/escaped"])

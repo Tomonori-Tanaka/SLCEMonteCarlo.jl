@@ -445,6 +445,84 @@ _ss_vk_mean(k, va, vb) =
         end
     end
 
+    @testset "run_mc drives the NPT chain: wiring, resolution, byte-neutrality" begin
+        sm, models = _ss_grid()
+        H = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        sch = StrainSchedule(sm, H)
+
+        # THE BYTE-NEUTRALITY PIN: this fixed-cell trajectory was captured before the
+        # strain wiring landed (at commit d038b86) and must stay bit-identical — the
+        # strain channel consumes no randomness and changes no code path when absent.
+        # If an intentional sampler change moves it, recapture; anything else moving
+        # it is the regression this pin exists to catch.
+        r0 = run_mc(H; kT = 0.05, sweeps_therm = 50, sweeps_measure = 100,
+                    seed = 0x5150, renorm_interval = 25)
+        @test r0.points[1].stats[:energy].mean[1] === -12.866452813199738
+        @test sum(sum, r0.final_config) === -0.17069256709356861
+        @test sum(x -> sum(abs, x), r0.final_disps) === 1.4251564417024021
+        @test isnan(r0.points[1].acceptance_strain)
+
+        # the NPT run: moves fire, the measurement view carries the scale (checked
+        # through the observable path, not the internals), the chain stays in domain
+        seen = Float64[]
+        obs = [standard_observables(H);
+               Observable(:scale, 1, v -> (push!(seen, MCs.strain(v)); MCs.strain(v)))]
+        r1 = run_mc(H; kT = 0.05, sweeps_therm = 60, sweeps_measure = 120,
+                    seed = 0x5151, renorm_interval = 30, strain = sch,
+                    pressure = 0.0, observables = obs)
+        @test 0.0 < r1.points[1].acceptance_strain < 1.0
+        @test !isempty(seen) && all(s -> MCs.in_strain_domain(sch, s), seen)
+        @test length(unique(seen)) > 1          # the cell actually moved
+        st = r1.points[1].stats[:scale]
+        @test MCs.in_strain_domain(sch, st.mean[1])
+
+        # pressure changes the sampled volume the right way: a strong positive
+        # pressure pushes the mean scale DOWN relative to a strong negative one
+        mean_scale = P -> begin
+            empty!(seen)
+            run_mc(H; kT = 0.05, sweeps_therm = 60, sweeps_measure = 240,
+                   seed = 0x5152, renorm_interval = 60, strain = sch, pressure = P,
+                   observables = obs)
+            sum(seen) / length(seen)
+        end
+        @test mean_scale(2.0) < mean_scale(-2.0)
+
+        # resolution: the named contradictions
+        @test_throws ArgumentError run_mc(H; kT = 0.05, sweeps_therm = 1,
+                                          sweeps_measure = 2, strain_interval = 2)
+        @test_throws ArgumentError run_mc(H; kT = 0.05, sweeps_therm = 1,
+                                          sweeps_measure = 2, strain = sch,
+                                          pressure = 0.0, strain_interval = 0)
+        @test_throws ArgumentError run_mc(H; kT = 0.05, sweeps_therm = 1,
+                                          sweeps_measure = 2, pressure = 0.0)
+        @test_throws ArgumentError run_mc(H; kT = 0.05, sweeps_therm = 1,
+                                          sweeps_measure = 2, strain = sch)
+        @test_throws ArgumentError run_mc(H; kT = 0.05, sweeps_therm = 1,
+                                          sweeps_measure = 2, strain = sch,
+                                          pressure = 0.0, pressure_GPa = 0.0)
+        @test_throws ArgumentError run_mc(H; kT = 0.05, sweeps_therm = 1,
+                                          sweeps_measure = 2, strain = sch,
+                                          pressure = 0.0, checkpoint = "x.jld2")
+        # ...the schedule of a DIFFERENT Hamiltonian is refused by the pairing check
+        H1 = TiledHamiltonian(models[2]; dims = (1, 1, 1), keep_zero_terms = true)
+        @test_throws ArgumentError run_mc(H1; kT = 0.05, sweeps_therm = 1,
+                                          sweeps_measure = 2, strain = sch,
+                                          pressure = 0.0)
+        # ...and the GPa conversion is the exact constant, applied once
+        @test MCs.GPA_PER_EV_A3 === 160.2176634
+        @test MCs._resolve_pressure(sch, 160.2176634, nothing) ≈ 1.0 rtol = 1e-15
+
+        # run_pt refuses a strain schedule by name (v0 scope: shared H + NVT swaps)
+        err = try
+            run_pt(H; kT = [0.05, 0.06], sweeps_therm = 1, sweeps_measure = 2,
+                   strain = sch)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin("swap rule", err.msg)
+    end
+
     @testset "MCView carries the strain, and refuses to invent one" begin
         _, models = _ss_grid()
         H = TiledHamiltonian(models[2]; dims = (1, 1, 1), keep_zero_terms = true)

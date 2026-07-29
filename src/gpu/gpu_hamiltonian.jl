@@ -166,3 +166,24 @@ end
 Number of supercell sites of the wrapped [`TiledHamiltonian`](@ref).
 """
 n_sites(gH::GPUTiledHamiltonian)::Int = gH.host.n_sites
+
+"""
+    sync_coefficients!(gH::GPUTiledHamiltonian) -> gH
+
+Re-upload the term-coefficient weights after a host-side
+[`set_coefficients!`](@ref) on the wrapped Hamiltonian (a strain move, an
+active-learning hot-swap). The device tables are copied once at construction, so a
+host rewrite leaves the device sweeping the OLD coefficients silently; this copies
+back the one array a rewrite touches — `sent_w`, the fused per-entry weights.
+Every other table is coefficient-independent by design (the site-program skip
+tests `folded`, never `coef · folded`), which is exactly what makes the sync a
+single `copyto!` instead of a rebuild.
+
+Call it after **every** `set_coefficients!` whose Hamiltonian has a live device
+wrapper. Forgetting it is not detectable from the device side — the sweep stays
+type-correct and bit-stable against the stale weights.
+"""
+function sync_coefficients!(gH::GPUTiledHamiltonian)
+    copyto!(gH.dev.sent_w, gH.host.progs.sent_w)
+    return gH
+end

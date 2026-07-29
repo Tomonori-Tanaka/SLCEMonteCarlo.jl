@@ -18,6 +18,15 @@ struct UpdatePlan
     carryover::Bool
     sweep_tasks::Int
     seed::UInt64
+    # The NPT strain channel (all inert when `strain_interval == 0`, the fixed-cell
+    # default): the outer move fires every `strain_interval`-th compound sweep, with a
+    # symmetric step of width `strain_step` in `strain_proposal`'s variable, against a
+    # hydrostatic `pressure` in MODEL units (eV/Å³ — the GPa conversion happens once,
+    # at keyword resolution, never here).
+    strain_interval::Int
+    strain_proposal::Symbol
+    strain_step::Float64
+    pressure::Float64
 
     function UpdatePlan(kts::Vector{Float64}; sweeps_therm::Integer,
                         sweeps_measure::Integer, measure_interval::Integer,
@@ -25,7 +34,9 @@ struct UpdatePlan
                         step::Real, step_u::Real, adapt_target::Real,
                         adapt_interval::Integer, renorm_interval::Integer,
                         nbins::Integer, carryover::Bool, seed::Integer,
-                        sweep_tasks::Integer = 1)
+                        sweep_tasks::Integer = 1, strain_interval::Integer = 0,
+                        strain_proposal::Symbol = :logvolume,
+                        strain_step::Real = 0.0, pressure::Real = 0.0)
         isempty(kts) && throw(ArgumentError("the temperature ladder is empty"))
         sweeps_therm >= 0 ||
             throw(ArgumentError("sweeps_therm must be ≥ 0; got $sweeps_therm"))
@@ -49,11 +60,21 @@ struct UpdatePlan
         seed >= 0 || throw(ArgumentError("seed must be ≥ 0; got $seed"))
         sweep_tasks >= 1 ||
             throw(ArgumentError("sweep_tasks must be ≥ 1; got $sweep_tasks"))
+        strain_interval >= 0 || throw(ArgumentError(
+            "strain_interval must be ≥ 0; got $strain_interval"))
+        if strain_interval > 0
+            _strain_check_proposal(strain_proposal)
+            strain_step > 0 || throw(ArgumentError(
+                "strain_step must be > 0 on a strained run; got $strain_step"))
+            isfinite(pressure) || throw(ArgumentError(
+                "pressure must be finite; got $pressure"))
+        end
         return new(kts, sweeps_therm, sweeps_measure, measure_interval,
                    or_per_metropolis, disp_per_metropolis, Float64(step),
                    Float64(step_u), Float64(adapt_target),
                    adapt_interval, renorm_interval, nbins, carryover,
-                   Int(sweep_tasks), UInt64(seed))
+                   Int(sweep_tasks), UInt64(seed), Int(strain_interval),
+                   strain_proposal, Float64(strain_step), Float64(pressure))
     end
 end
 
@@ -104,6 +125,7 @@ struct TempResult
     acceptance_metropolis::Float64
     acceptance_or::Float64
     acceptance_disp::Float64
+    acceptance_strain::Float64       # NaN on a fixed-cell run
     final_step::Float64
     final_step_u::Float64
     max_drift::Float64
@@ -121,6 +143,7 @@ function _chain_summary(st::ChainState, joint::Bool)
     return (; acc_m = st.att_metro == 0 ? NaN : st.acc_metro / st.att_metro,
             acc_o = st.att_or == 0 ? NaN : st.acc_or / st.att_or,
             acc_d = st.att_disp == 0 ? NaN : st.acc_disp / st.att_disp,
+            acc_s = st.att_strain == 0 ? NaN : st.acc_strain / st.att_strain,
             step_u = joint ? st.step_u : NaN,
             # the PHASE AVERAGE, not the last snapshot: on a handful of sites the
             # single-check r.m.s. scatters by ~1/√(6·n_disp) and would be read off the
@@ -245,7 +268,10 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
                            phase0::Symbol = :therm, sweep0::Int = 0,
                            accs0::Union{Nothing,Vector{ObsAccumulator}} = nothing,
                            ck = nothing, temp_index::Int = 1,
-                           points::Vector{TempResult} = TempResult[])::TempResult
+                           points::Vector{TempResult} = TempResult[],
+                           sctx::Union{Nothing,
+                                       Tuple{StrainSchedule,StrainScratch}} = nothing,
+                           )::TempResult
     β = 1.0 / kt
     scs = [SweepScratch(H) for _ = 1:plan.sweep_tasks]
     local accs::Vector{ObsAccumulator}
@@ -259,6 +285,13 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
         sweep0 == 0 && (st.max_drift = 0.0; _reset_escape!(st))
         for sweep = (sweep0 + 1):plan.sweeps_therm
             _compound_sweep!(st, H, β, scs, plan)
+            # The strain move runs during thermalization too — volume equilibration is
+            # exactly what a fresh NPT chain needs — with a FIXED width (no
+            # adaptation: the outer move fires too rarely to adapt on, and a wrong
+            # width shows in `acceptance_strain` rather than a wrong ensemble).
+            sctx !== nothing && sweep % plan.strain_interval == 0 &&
+                strain_move!(st, H, sctx[1], sctx[2], kt, plan.pressure,
+                             plan.strain_step; proposal = plan.strain_proposal)
             sweep % plan.adapt_interval == 0 && _adapt_step!(st, plan.adapt_target)
             sweep % plan.renorm_interval == 0 && _renormalize!(st, H, scs[1])
             _ck_mc!(ck, H, st, points, temp_index, :therm, sweep, nothing)
@@ -276,9 +309,15 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
     end
     for sweep = (msweep0 + 1):plan.sweeps_measure
         _compound_sweep!(st, H, β, scs, plan)
+        sctx !== nothing && sweep % plan.strain_interval == 0 &&
+            strain_move!(st, H, sctx[1], sctx[2], kt, plan.pressure,
+                         plan.strain_step; proposal = plan.strain_proposal)
         sweep % plan.renorm_interval == 0 && _renormalize!(st, H, scs[1])
         if sweep % plan.measure_interval == 0
-            view = MCView(H, st.config, st.disps, st.energy)
+            # a strained run's view carries the cell scale; a fixed cell has no
+            # strain DoF and the view says so with `nothing`, never a confident 1.0
+            view = sctx === nothing ? MCView(H, st.config, st.disps, st.energy) :
+                   MCView(H, st.config, st.disps, st.energy, st.strain)
             for acc in accs
                 _measure!(acc, view)
             end
@@ -287,9 +326,9 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
     end
     s = _chain_summary(st, has_disp(H))
     stats = _finalize_stats(accs, evaluables, kt, H.n_spin_active, H.n_active)
-    return TempResult(kt, kt / KB_EV, stats, s.acc_m, s.acc_o, s.acc_d, st.step,
-                      s.step_u, st.max_drift, s.disp_rms, s.disp_max, s.disp_checks,
-                      s.escaped)
+    return TempResult(kt, kt / KB_EV, stats, s.acc_m, s.acc_o, s.acc_d, s.acc_s,
+                      st.step, s.step_u, st.max_drift, s.disp_rms, s.disp_max,
+                      s.disp_checks, s.escaped)
 end
 
 # The shared temperature loop of `run_mc` and a "mc"-kind `resume`: run temperatures
@@ -299,10 +338,20 @@ function _mc_loop!(points::Vector{TempResult}, st::ChainState, H::TiledHamiltoni
                    plan::UpdatePlan, observables::Vector{Observable},
                    evaluables::Vector{Evaluable}, start_index::Int, phase0::Symbol,
                    sweep0::Int, accs0::Union{Nothing,Vector{ObsAccumulator}},
-                   ck)::MCResult
+                   ck,
+                   sctx::Union{Nothing,Tuple{StrainSchedule,StrainScratch}} = nothing,
+                   )::MCResult
     for i = start_index:length(plan.kts)
         resuming = i == start_index && (phase0 !== :therm || sweep0 > 0)
         if !resuming && i > 1 && !plan.carryover
+            # an independent restart is independent in EVERY channel: the cell returns
+            # to the reference scale (coefficients first, so the energy recompute
+            # below sees them), then the state resets
+            if sctx !== nothing && st.strain != 1.0
+                set_coefficients!(H, strain_coefficients!(sctx[2].coef, sctx[1], 1.0);
+                                  recheck_translation = false)
+                st.strain = 1.0
+            end
             _reset_config!(st, H, _initial_config(H, nothing, st.rng))
             st.step = plan.step0
             st.step_u = plan.step_u0     # both widths restart with the chain
@@ -311,7 +360,7 @@ function _mc_loop!(points::Vector{TempResult}, st::ChainState, H::TiledHamiltoni
                               phase0 = resuming ? phase0 : :therm,
                               sweep0 = resuming ? sweep0 : 0,
                               accs0 = resuming ? accs0 : nothing, ck = ck,
-                              temp_index = i, points = points)
+                              temp_index = i, points = points, sctx = sctx)
         push!(points, p)
         # boundary checkpoint: the next temperature starts fresh from this state
         ck === nothing ||
@@ -377,6 +426,32 @@ independent random restart per temperature.
   resumed run is bit-identical to an uninterrupted one.
 - `checkpoint_interval = 0`: sweeps between periodic checkpoint writes
   (`0` ⇒ write only at temperature boundaries).
+
+# NPT (fluctuating cell) keyword arguments
+
+Passing a [`StrainSchedule`](@ref) as `strain` turns the run isothermal–isobaric:
+an outer strain move ([`strain_move!`](@ref)) rescales the cell over the schedule's
+volume grid. Without it the run samples the **constant-strain (fixed cell)
+ensemble** — a different ensemble (`F(T, ε)`, no volume Jacobian, no `P·V`), which
+is what a fixed-geometry magnetostriction calculation wants. The chain starts at
+the reference scale `s = 1`, which must lie inside the schedule's domain.
+
+- `strain = nothing`: the sampler-side volume grid, built by
+  [`StrainSchedule(sm, H)`](@ref) against **this** Hamiltonian (checked).
+- `pressure_GPa` XOR `pressure`: the hydrostatic pressure, in GPa or in the model's
+  own units (eV/Å³ for an eV/Å-fitted model). An NPT run requires **exactly one**,
+  explicitly — `0.0` is a physical choice, not a default; a fixed-cell run accepts
+  neither. Hydrostatic only in v0: `P·V(ε)` is a state function with no
+  strain-measure ambiguity, while a general applied stress is work-conjugate to a
+  specific strain measure.
+- `strain_interval = nothing`: compound sweeps between strain attempts (resolves to
+  `1` with a schedule, `0` without; an explicit value contradicting the schedule's
+  presence is an error, mirroring `disp_per_metropolis`).
+- `strain_proposal = :logvolume`: the symmetric proposal variable — `:logvolume`
+  (step in `ln V`) or `:scale` (step in the linear scale `s`).
+- `strain_step = nothing`: proposal width in that variable; defaults to a tenth of
+  the schedule's domain. Fixed for the whole run (never adapted) — a poor width
+  shows up in `TempResult.acceptance_strain`, not in the sampled ensemble.
 """
 function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                 sweeps_therm::Integer = 2_000, sweeps_measure::Integer = 10_000,
@@ -391,8 +466,19 @@ function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                 init = nothing, disps = nothing, carryover::Bool = true,
                 sweep_tasks::Integer = 1, seed::Integer = rand(UInt64),
                 checkpoint::Union{Nothing,AbstractString} = nothing,
-                checkpoint_interval::Integer = 0)::MCResult
+                checkpoint_interval::Integer = 0,
+                strain::Union{Nothing,StrainSchedule} = nothing,
+                strain_interval::Union{Nothing,Integer} = nothing,
+                strain_proposal::Symbol = :logvolume,
+                strain_step::Union{Nothing,Real} = nothing,
+                pressure_GPa::Union{Nothing,Real} = nothing,
+                pressure::Union{Nothing,Real} = nothing)::MCResult
     ndisp = _resolve_disp_passes(H, disp_per_metropolis)
+    nstrain = _resolve_strain_moves(strain, strain_interval)
+    p_model = _resolve_pressure(strain, pressure_GPa, pressure)
+    sstep = strain === nothing ? 0.0 :
+            strain_step === nothing ? _default_strain_step(strain, strain_proposal) :
+            Float64(strain_step)
     plan = UpdatePlan(resolve_kt(temperature, kT); sweeps_therm = sweeps_therm,
                       sweeps_measure = sweeps_measure,
                       measure_interval = measure_interval,
@@ -401,20 +487,35 @@ function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                       adapt_target = adapt_target, adapt_interval = adapt_interval,
                       renorm_interval = renorm_interval, nbins = nbins,
                       carryover = carryover, sweep_tasks = sweep_tasks,
-                      seed = seed)
+                      seed = seed, strain_interval = nstrain,
+                      strain_proposal = strain_proposal, strain_step = sstep,
+                      pressure = p_model)
     _check_observables(observables)
     _warn_escape_cadence(H, plan)
     sweep_tasks > Threads.nthreads() && @warn(
         "sweep_tasks = $sweep_tasks exceeds the $(Threads.nthreads()) available " *
         "threads; the run stays correct and bit-identical but oversubscribed",
         maxlog = 1)
+    sctx = nothing
+    if strain !== nothing
+        checkpoint === nothing || throw(ArgumentError(
+            "checkpointing a strained (NPT) run needs checkpoint schema v4 " *
+            "(the chain's scale and the grid identity are not in v3); not wired " *
+            "yet — run without `checkpoint` for now"))
+        _check_strain_pairing(H, strain)
+        sc = StrainScratch(H)
+        # establish the (H, s = 1) contract the move maintains — with the one-time
+        # translation-flatness recheck, since this install is the run's anchor
+        set_coefficients!(H, strain_coefficients!(sc.coef, strain, 1.0))
+        sctx = (strain, sc)
+    end
     ck = _make_checkpointer(checkpoint, checkpoint_interval, H, plan, observables,
                             "mc", 0)
     rng = Xoshiro(plan.seed)
     st = ChainState(H, _initial_config(H, init, rng), rng, plan.step0;
                     disps = disps, step_u = plan.step_u0)
     return _mc_loop!(TempResult[], st, H, plan, observables, evaluables, 1, :therm,
-                     0, nothing, ck)
+                     0, nothing, ck, sctx)
 end
 
 function _check_observables(observables::Vector{Observable})
@@ -504,4 +605,71 @@ function _resolve_disp_passes(H::TiledHamiltonian,
         "describes the clamped-ion (u = 0) energy only, so the displacement sweeps " *
         "would have no site to attempt"))
     return n
+end
+
+# Resolve the strain cadence, mirroring `_resolve_disp_passes`: `nothing` means
+# "whatever the schedule's presence implies", and an explicit value contradicting it
+# is named rather than silently reconciled.
+function _resolve_strain_moves(sch::Union{Nothing,StrainSchedule},
+                               strain_interval::Union{Nothing,Integer})::Int
+    strain_interval === nothing && return sch === nothing ? 0 : 1
+    n = Int(strain_interval)
+    n > 0 && sch === nothing && throw(ArgumentError(
+        "strain_interval = $n, but no strain schedule was passed: there is no volume " *
+        "grid to move the cell on. Pass `strain = StrainSchedule(sm, H)`."))
+    n == 0 && sch !== nothing && throw(ArgumentError(
+        "a strain schedule was passed but strain_interval = 0 would never move the " *
+        "cell — the run would sample the fixed-cell ensemble at s = 1 while looking " *
+        "like an NPT run. Drop `strain`, or use strain_interval ≥ 1."))
+    return n
+end
+
+# Resolve the hydrostatic pressure to MODEL units. The `temperature` XOR `kT`
+# discipline, applied to pressure (design record §8 (ε)): an NPT run states its
+# pressure in exactly one named unit — `0.0` included, it is a physical choice and
+# not a default — and a fixed-cell run has no `P·V` term to accept one for.
+function _resolve_pressure(sch::Union{Nothing,StrainSchedule},
+                           pressure_GPa::Union{Nothing,Real},
+                           pressure::Union{Nothing,Real})::Float64
+    if sch === nothing
+        pressure_GPa === nothing && pressure === nothing || throw(ArgumentError(
+            "a pressure was passed without a strain schedule; a fixed-cell run " *
+            "samples the constant-strain ensemble, which has no P·V term"))
+        return 0.0
+    end
+    (pressure_GPa === nothing) == (pressure === nothing) && throw(ArgumentError(
+        "an NPT run needs exactly one of `pressure_GPa` (GPa) or `pressure` " *
+        "(model units, eV/Å³ for an eV/Å-fitted model) — 0.0 is a physical choice, " *
+        "not a default"))
+    p = pressure === nothing ? Float64(pressure_GPa) / GPA_PER_EV_A3 : Float64(pressure)
+    isfinite(p) || throw(ArgumentError("the pressure must be finite; got $p"))
+    return p
+end
+
+# A tenth of the schedule's domain in the proposal's own variable — wide enough to
+# cross the grid in a few accepted moves, narrow enough for a usable acceptance.
+function _default_strain_step(sch::StrainSchedule, proposal::Symbol)::Float64
+    _strain_check_proposal(proposal)
+    lo, hi = strain_domain(sch)
+    return (_strain_y(proposal, hi) - _strain_y(proposal, lo)) / 10
+end
+
+# The schedule stores neither the models nor `H`, so the run driver re-checks the
+# cheap identifying invariants — the deep term-by-term check happened at
+# `StrainSchedule(sm, H)` construction, against SOME Hamiltonian; these four catch
+# handing the result to a different one.
+function _check_strain_pairing(H::TiledHamiltonian, sch::StrainSchedule)
+    size(sch.coefpoly, 2) == H.n_input_terms &&
+        sch.n_mobile == H.n_disp_active &&
+        sch.d_dim == 3 * H.n_disp_active - count(H.comp_free) &&
+        H.n_sites % sch.n_cells == 0 || throw(ArgumentError(
+        "this strain schedule does not describe this Hamiltonian (terms " *
+        "$(size(sch.coefpoly, 2)) vs $(H.n_input_terms), mobile atoms " *
+        "$(sch.n_mobile) vs $(H.n_disp_active), D $(sch.d_dim) vs " *
+        "$(3 * H.n_disp_active - count(H.comp_free))); build it with " *
+        "`StrainSchedule(sm, H)` against the Hamiltonian the run uses"))
+    in_strain_domain(sch, 1.0) || throw(ArgumentError(
+        "the chain starts at the reference scale s = 1, which is outside this " *
+        "schedule's domain $(strain_domain(sch)); regrid around the reference"))
+    return nothing
 end

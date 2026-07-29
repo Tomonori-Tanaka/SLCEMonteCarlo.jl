@@ -335,7 +335,7 @@ function _pt_run!(lanes::Vector{_PTLane}, H::TiledHamiltonian, plan::UpdatePlan,
                   TempResult(lane.kt, lane.kt / KB_EV,
                              _finalize_stats(lane.accs, evaluables, lane.kt,
                                              H.n_spin_active, H.n_active),
-                             s.acc_m, s.acc_o, s.acc_d, st.step, s.step_u,
+                             s.acc_m, s.acc_o, s.acc_d, s.acc_s, st.step, s.step_u,
                              st.max_drift, s.disp_rms, s.disp_max, s.disp_checks,
                              s.escaped)
               end
@@ -397,7 +397,18 @@ function run_pt(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                 init = nothing, disps = nothing, sweep_tasks::Integer = 1,
                 seed::Integer = rand(UInt64),
                 checkpoint::Union{Nothing,AbstractString} = nothing,
-                checkpoint_interval::Integer = 0)::PTResult
+                checkpoint_interval::Integer = 0,
+                strain::Union{Nothing,StrainSchedule} = nothing)::PTResult
+    # v0 scope refusal (design record §8): every lane sweeps ONE shared
+    # `TiledHamiltonian` by reference while a strain move rewrites its coefficients
+    # in place — per-lane strain is a data race before it is a physics question —
+    # and `_attempt_swap!` is the NVT rule, where NPT needs
+    # (β_a − β_b)[(E_b + P·V_b) − (E_a + P·V_a)] with the strain in the payload.
+    strain === nothing || throw(ArgumentError(
+        "run_pt does not support a strain schedule yet: the lanes share one " *
+        "Hamiltonian whose coefficients a strain move rewrites in place, and the " *
+        "swap rule is the fixed-cell (NVT) one. Run NPT chains with run_mc, one " *
+        "per temperature."))
     kts = resolve_kt(temperature, kT)
     R = length(kts)
     R >= 2 || throw(ArgumentError("parallel tempering needs a ladder of ≥ 2 " *
