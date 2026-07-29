@@ -247,3 +247,91 @@ _sch_abscissa(abscissa::Symbol, v_train::Float64, s::Real)::Float64 =
     abscissa === :volume ? v_train * s^3 :
     abscissa === :logvolume ? log(v_train * s^3) :
     throw(ArgumentError("unknown abscissa $abscissa"))
+
+# --------------------------------------------------------------------------------------
+# The energy contract and the NPT weight — pure arithmetic, no chain state. The strain
+# move composes these; the gates compare them against from-scratch total energies and a
+# hand-derived closed form (design record §8, §12 gate (l)).
+
+"""
+    strain_delta_energy(sch::StrainSchedule, e_old, e_new, s_old, s_new;
+                        pressure::Float64) -> Float64
+
+The full energy difference entering the NPT accept step for a strain proposal
+`s_old → s_new`:
+
+    ΔE = (e_new − e_old) + n_cells·[j0(s_new) − j0(s_old)] + P·[V(s_new) − V(s_old)]
+
+`e_old` / `e_new` are the **configurational** energies ([`total_energy`](@ref)) of the
+same Hamiltonian with the schedule's coefficients installed at each scale and the
+displacements rescaled **affinely** by `s_new/s_old` — at fixed scaled coordinates the
+configurational measure is unchanged, which is what makes the acceptance Jacobian a
+pure volume power rather than `(V′/V)^N`.
+
+The lattice's elastic energy has exactly ONE source: the grid's `j0(s)`, interpolated
+per training cell and multiplied up by `n_cells` here. There is no separate elastic
+term anywhere in this package, by design — each grid point's fit already contains the
+lattice energy of its own cell, and an explicit `(V/2)·εᵀCε` on top would count it
+twice with every gate green.
+
+`pressure` is in the model's units (eV/Å³ for a DFT-fitted model) and multiplies the
+**supercell** volume. Driver keywords accept GPa and convert once, at resolution —
+this function never converts.
+"""
+function strain_delta_energy(sch::StrainSchedule, e_old::Real, e_new::Real,
+                             s_old::Real, s_new::Real; pressure::Float64)::Float64
+    isfinite(pressure) || throw(ArgumentError("pressure must be finite; got $pressure"))
+    dj0 = sch.n_cells * (strain_j0(sch, s_new) - strain_j0(sch, s_old))
+    pdv = pressure * (strain_volume(sch, s_new) - strain_volume(sch, s_old))
+    return (e_new - e_old) + dj0 + pdv
+end
+
+# The two proposal arms. A strain proposal is a symmetric step in a variable `y`; the
+# accept weight then carries the volume power `D/3` from the configurational measure
+# PLUS `ln|dV/dy|` from the proposal variable itself:
+#
+#     :logvolume   y = ln V   power D/3 + 1
+#     :scale       y = s      power D/3 + 2/3
+#
+# so `ln A = 3·power·ln(s′/s) − ΔE/kT` with ΔE from `strain_delta_energy`. The three
+# functions below branch on the SAME symbol and sit adjacent on purpose: drawing in one
+# arm's `y` while weighting with the other arm's power is §8(β)'s live trap — the grid
+# is labelled by `s`, so "uniform in s with the volume-uniform exponent" is off by
+# `(V′/V)^{2/3}`, invisible on a production cell and percent-level on the fixtures the
+# gates run on.
+
+const _STRAIN_PROPOSALS = (:logvolume, :scale)
+
+function _strain_check_proposal(proposal::Symbol)
+    proposal in _STRAIN_PROPOSALS || throw(ArgumentError(
+        "unknown strain proposal $proposal; use :logvolume (symmetric step in ln V) " *
+        "or :scale (symmetric step in the linear scale s)"))
+    return proposal
+end
+
+# `y(s)` and its inverse — the move draws `y′ = y(s) + step·ξ` and maps back. For
+# :logvolume the additive constant `ln(n_cells·v_train)` is dropped: a symmetric random
+# walk is invariant under it.
+_strain_y(proposal::Symbol, s::Real)::Float64 =
+    proposal === :logvolume ? 3 * log(s) : Float64(s)
+
+_strain_s_of_y(proposal::Symbol, y::Real)::Float64 =
+    proposal === :logvolume ? exp(y / 3) : Float64(y)
+
+_strain_power(sch::StrainSchedule, proposal::Symbol)::Float64 =
+    sch.d_dim / 3 + (proposal === :logvolume ? 1.0 : 2 / 3)
+
+"""
+    _strain_log_weight(sch, proposal, s_old, s_new, delta_e, kt) -> Float64
+
+The log of the Metropolis acceptance ratio for a strain proposal drawn symmetrically in
+`proposal`'s variable: `3·power·ln(s_new/s_old) − delta_e/kt`, where `delta_e` is
+[`strain_delta_energy`](@ref)'s full ΔE and the power is `D/3 + 1` (`:logvolume`) or
+`D/3 + 2/3` (`:scale`) with `D = 3·n_mobile − count(comp_free)`. Accept with
+probability `min(1, exp(·))`.
+"""
+function _strain_log_weight(sch::StrainSchedule, proposal::Symbol, s_old::Real,
+                            s_new::Real, delta_e::Real, kt::Real)::Float64
+    _strain_check_proposal(proposal)
+    return 3 * _strain_power(sch, proposal) * log(s_new / s_old) - delta_e / kt
+end

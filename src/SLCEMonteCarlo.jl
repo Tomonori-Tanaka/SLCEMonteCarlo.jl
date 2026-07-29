@@ -82,7 +82,7 @@ export TiledHamiltonian, n_sites, total_energy, set_coefficients!
 # K(ε) volume grids, sampler side (the move itself lands with the driver)
 export StrainSchedule
 public strain_domain, in_strain_domain, strain_coefficients, strain_coefficients!,
-       strain_j0, strain_volume
+       strain_j0, strain_volume, strain_delta_energy
 public has_strain, strain
 export MCView, Observable, Evaluable, ObservableStat, standard_observables,
        standard_evaluables

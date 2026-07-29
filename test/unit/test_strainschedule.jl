@@ -173,6 +173,85 @@ _ss_disps(n, seed) = [SVector{3,Float64}(0.03 .* randn(MersenneTwister(seed + 10
         @test total_energy(a, cfg, u) === total_energy(b, cfg, u)
     end
 
+    @testset "energy contract: ΔE ≡ from-scratch totals, j0 the single elastic source" begin
+        sm, models = _ss_grid()
+        H = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        sch = StrainSchedule(sm, H)
+        cfg = _ss_cfg(H.n_sites, 21)
+        u = _ss_disps(H.n_sites, 21)
+        s, sp = 1.0, 1.015
+        up = [(sp / s) .* x for x in u]     # the affine rescale the move performs
+        P = 0.013                            # model units — the P·ΔV term must fire
+
+        set_coefficients!(H, MCs.strain_coefficients(sch, s))
+        e_old = total_energy(H, cfg, u)
+        set_coefficients!(H, MCs.strain_coefficients(sch, sp))
+        e_new = total_energy(H, cfg, up)
+        dE = MCs.strain_delta_energy(sch, e_old, e_new, s, sp; pressure = P)
+
+        # gate (l), strain half: against from-scratch totals at BOTH scales — a fresh
+        # Hamiltonian per scale, the interpolated j0, and the PV term, none shared with
+        # the hot-swap path being tested
+        etot = (scale, disp) -> begin
+            Hf = TiledHamiltonian(SLCE.model_at(sm, scale); dims = (2, 1, 1),
+                                  keep_zero_terms = true)
+            total_energy(Hf, cfg, disp) + sch.n_cells * MCs.strain_j0(sch, scale) +
+                P * MCs.strain_volume(sch, scale)
+        end
+        @test dE ≈ etot(sp, up) - etot(s, u) rtol = 1e-10
+
+        # the pieces, against hand-written arithmetic
+        want = (e_new - e_old) +
+               sch.n_cells * (MCs.strain_j0(sch, sp) - MCs.strain_j0(sch, s)) +
+               P * sch.n_cells * sch.v_train * (sp^3 - s^3)
+        @test dE ≈ want rtol = 1e-12
+        @test_throws ArgumentError MCs.strain_delta_energy(sch, 0.0, 0.0, s, sp;
+                                                           pressure = NaN)
+
+        # the strained reconstruction identity that pins j0 as the ONLY elastic source:
+        # configurational + n_cells·j0(s) = the model's full predicted energy, at both
+        # scales — an explicit elastic term anywhere would break this at s ≠ 1
+        H1 = TiledHamiltonian(models[2]; dims = (1, 1, 1), keep_zero_terms = true)
+        sch1 = StrainSchedule(sm, H1)
+        cfg1 = _ss_cfg(H1.n_sites, 23)
+        u1 = _ss_disps(H1.n_sites, 23)
+        for scale in (1.0, 1.015)
+            m = SLCE.model_at(sm, scale)
+            set_coefficients!(H1, MCs.strain_coefficients(sch1, scale))
+            full = total_energy(H1, cfg1, u1) +
+                   sch1.n_cells * MCs.strain_j0(sch1, scale)
+            @test full ≈ SLCE.predict_energy(m, MCs.to_matrix(cfg1),
+                                             _disp_matrix(u1)) rtol = 1e-10
+        end
+    end
+
+    @testset "NPT log weight: hand-derived closed form in both proposal arms" begin
+        sm, models = _ss_grid()
+        H = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        sch = StrainSchedule(sm, H)
+        D = 3 * H.n_disp_active - count(H.comp_free)
+        @test sch.d_dim == D
+        s, sp, dE, kt = 0.99, 1.017, 0.37, 0.025
+        lw_logv = MCs._strain_log_weight(sch, :logvolume, s, sp, dE, kt)
+        lw_s = MCs._strain_log_weight(sch, :scale, s, sp, dE, kt)
+        # hand-derived: (D + 3)·ln(s′/s) − ΔE/kT uniform in ln V, (D + 2)·ln(s′/s) −
+        # ΔE/kT uniform in s — written as integer powers of s, independently of the
+        # implementation's D/3-power-of-V form
+        @test lw_logv ≈ (D + 3) * log(sp / s) - dE / kt rtol = 1e-13
+        @test lw_s ≈ (D + 2) * log(sp / s) - dE / kt rtol = 1e-13
+        # the arms differ by exactly ln(s′/s) — §8(γ)'s differential check
+        @test lw_logv - lw_s ≈ log(sp / s) rtol = 1e-12
+        # detailed-balance antisymmetry of the Jacobian half
+        @test MCs._strain_log_weight(sch, :logvolume, sp, s, -dE, kt) ≈ -lw_logv rtol =
+            1e-12
+        @test_throws ArgumentError MCs._strain_log_weight(sch, :volume, s, sp, dE, kt)
+        # y(s) ↔ s(y) round-trip in both arms — the draw's map and its inverse
+        for arm in (:logvolume, :scale)
+            @test MCs._strain_s_of_y(arm, MCs._strain_y(arm, 1.013)) ≈ 1.013 rtol =
+                1e-14
+        end
+    end
+
     @testset "MCView carries the strain, and refuses to invent one" begin
         _, models = _ss_grid()
         H = TiledHamiltonian(models[2]; dims = (1, 1, 1), keep_zero_terms = true)
