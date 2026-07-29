@@ -107,6 +107,11 @@ end
     e3 = find_ground_state(H; kw..., seed = 6, cycles = 3).energy
     @test e3 < e1 - 1e-6      # measured: −4.884 vs −4.328 (deterministic at seed 6,
                               # re-picked after the colored-sweep RNG change)
+    # ...and not merely "better than one frozen seed": the cycled single start
+    # reaches the SAME basin the 16-start multistart search finds independently,
+    # so the claim survives future RNG-stream changes as "cycling recovers the
+    # global minimum here", not "seed 6 happened to improve"
+    @test e3 ≈ find_ground_state(H; nstarts = 16, seed = 7).energy atol = 1e-6
 end
 
 @testset "bit determinism across ntasks" begin

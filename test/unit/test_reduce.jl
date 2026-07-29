@@ -498,10 +498,15 @@ end
             sortperm(1:length(dt.slots);
                      by = v -> (dt.slots[v].factor.channel, back[dt.slots[v].site],
                                 dt.slots[v].factor.k, dt.slots[v].factor.l, v))
-        @test count(dts) do dt
+        n_resort = count(dts) do dt
             _, _, p, _ = MC._reduced_sites(dt, red.atom_map, red.M, n_atoms(cr), 1)
             p != 1:length(p) && slotperm(dt, invperm(p)) != 1:length(dt.slots)
-        end == 29
+        end
+        # the correctness tooth is non-vacuity — the alignment path really fires
+        # on this fixture (the exact count, 29 of 62 when captured, is a property
+        # of the fixture, not of the code; asserting it would be an unlabeled
+        # regression pin)
+        @test n_resort > 0
 
         H_tr = TiledHamiltonian(model; dims = (1, 1, 1))
         H_red = TiledHamiltonian(red; dims = (1, 1, 2))

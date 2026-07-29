@@ -1059,7 +1059,14 @@ _ss_vk_mean(k, va, vb) =
         # the SAME association as `_swap_dweight` — sum of differences, never
         # per-lane totals differenced (the totals form loses `ulp(|W|)` vs
         # `ulp(|ΔW|)`, a conditioning gap growing with n_cells; bitwise pairing
-        # with the implementation is the point of this gate)
+        # with the implementation is the point of this gate).
+        # Oracle scoping: `strain_j0`/`strain_volume` here are the
+        # implementation's own helpers — what this gate pins is the RULE
+        # STRUCTURE (which terms enter, the n_cells/P placement, the β factor,
+        # the sign), not their values. Those inputs are trustworthy because they
+        # are independently gated above: exact-quadratic interpolation of
+        # independently built models (the conversion testset) and the
+        # Frenkel–Smit closed-form log-weight gate.
         dW = (a.st.energy - b.st.energy) +
              sch.n_cells * (MCs.strain_j0(sch, a.st.strain) -
                             MCs.strain_j0(sch, b.st.strain)) +
