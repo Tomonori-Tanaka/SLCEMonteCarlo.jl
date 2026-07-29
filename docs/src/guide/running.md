@@ -146,3 +146,42 @@ renormalization; displacements are reported in that centre-of-mass-free frame. A
 model built with `fixed_reference = true` (a substrate-clamped slab, a pinning
 defect) keeps its absolute frame along the directions the construction gate
 measured as pinned.
+
+## NPT: sampling the cell volume (strain moves)
+
+Passing a [`StrainSchedule`](@ref) turns a joint run isothermal–isobaric: an
+outer Metropolis move rescales the whole cell over a `SLCE.StrainedModels` volume
+grid, installing the grid's interpolated coefficients in place
+([`set_coefficients!`](@ref)) and rescaling the displacements affinely. Without
+it, a run samples the **constant-strain (fixed cell) ensemble** — a different
+ensemble (`F(T, ε)`: no volume Jacobian, no `P·V` term), which is what a
+fixed-geometry magnetostriction calculation wants; the two specific heats differ.
+
+```julia
+sm  = SLCE.StrainedModels(models, scales)   # fitted at, e.g., s ∈ [0.98, 1.02]
+H   = TiledHamiltonian(sm.models[2]; dims = (8, 8, 8), keep_zero_terms = true)
+sch = SLCEMonteCarlo.StrainSchedule(sm, H)
+
+r = run_mc(H; temperature = 300, strain = sch, pressure_GPa = 0.0,
+           observables = [standard_observables(H);
+                          Observable(:scale, 1, v -> SLCEMonteCarlo.strain(v))])
+r.points[1].acceptance_strain     # the outer move's acceptance
+```
+
+The pressure follows the `temperature` XOR `kT` discipline: **exactly one** of
+`pressure_GPa` (GPa) or `pressure` (model units, eV/Å³), explicitly — `0.0` is a
+physical choice, not a default — converted once at resolution and never again
+downstream. `strain_interval` (default: one attempt per compound sweep),
+`strain_proposal` (`:logvolume` or `:scale`) and `strain_step` (default: a tenth
+of the grid's domain; fixed for the run) tune the move; a poor width shows up in
+`acceptance_strain`, never in the sampled ensemble. Hydrostatic pressure only,
+and `run_pt` does not take a schedule yet — run NPT chains with `run_mc`.
+
+Inside an NPT run every measurement's [`MCView`](@ref) carries the cell scale
+(`SLCEMonteCarlo.strain(v)`, with `SLCEMonteCarlo.has_strain(v)` false on a
+fixed-cell run — a confident `1.0` would let a magnetostriction observable
+average a constant), so volume statistics are ordinary observables, as in the
+`:scale` example above. Checkpoints work as usual; resuming needs the same grid:
+`resume(path, H; strain = sch)`. The details — the energy contract, the measured
+Jacobian exponent, and the reference-scale fingerprint — live in
+`docs/specs/strain-move.md`.

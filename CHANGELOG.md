@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — the outer NPT strain move (M5-4 slice 2; `docs/specs/strain-move.md`)
+
+The energy contract and the acceptance weight are pure functions with one elastic
+source: `strain_delta_energy` carries `ΔE_config + n_cells·Δj0 + P·ΔV` — each grid
+point's `j0(ε)` already contains its cell's lattice energy, so there is no elastic-term
+keyword anywhere, by design — and the log weight's volume power (`D/3 + 1` uniform in
+`ln V`, `D/3 + 2/3` uniform in `s`) branches on the SAME symbol as the proposal draw,
+because drawing in one arm's variable while weighting with the other's is off by
+`(V′/V)^{2/3}` and invisible on a production cell. Gates: ΔE against from-scratch totals
+at both scales, the reconstruction identity pinning `j0` as the only elastic term,
+hand-derived closed forms in both arms, and a white-box replay in which every accept
+decision must match a hand-paired reconstruction.
+
+`strain_move!` (with `StrainScratch`, and `ChainState` gaining the cell scale as
+replica payload): affine displacement rescale at fixed scaled coordinates, in-place
+coefficient swap, bit-identical Horner restore on reject, reject-never-clamp outside
+the grid, one chain-level draw per attempt plus one uniform in domain, and an escape-
+detector reset on every accepted rescale (the radius statistics are absolute lengths
+against a cell that just changed). The Jacobian exponent is *measured*, not asserted:
+on the constant-coefficient toy the stationary volume marginal is `p(V) ∝ V^{D/3}`,
+and each of two fixtures — translation-flat vs on-site-pinned, whose `D` differ by the
+full `count(comp_free)` — matches its own power and rejects the other's, isolating the
+per-(direction, component) COM bookkeeping. `StrainSchedule` construction now also
+hard-errors on a grid node that is not translation-flat while the Hamiltonian is
+(flatness is linear in the coefficients, so the nodes certify the family).
+
+`run_mc` drives it: `strain = StrainSchedule(sm, H)` plus **exactly one** of
+`pressure_GPa` / `pressure` (the `temperature` XOR `kT` discipline applied to
+pressure; converted once through the exact `GPA_PER_EV_A3 = 160.2176634` and never
+again downstream), `strain_interval` / `strain_proposal` / `strain_step` resolved like
+the displacement passes, a pairing check against the Hamiltonian the run uses, the
+measurement `MCView` carrying the cell scale, and `TempResult.acceptance_strain`.
+`run_pt` refuses a schedule by name (one shared Hamiltonian mutated in place + the NVT
+swap rule — design record §8's v0 scope refusal). Fixed-cell byte-neutrality is
+pinned against a trajectory captured before the wiring landed. `sync_coefficients!`
+re-uploads the one device array a host `set_coefficients!` moves (`sent_w`), gated
+bitwise against the keyed reference on the new weights.
+
+Checkpoint schema v4: `chain/strain` + strain acceptance counters + the plan's strain
+fields + `grid_fingerprint`. On a strained run the model fingerprint is pinned at the
+reference scale (it mixes coefficient values, and a strained chain's move with its
+volume); `resume(path, H; strain = sch)` checks the grid, reinstalls the reference
+before comparing, then installs the checkpointed scale — bit-identical continuation
+from a mid-measure checkpoint written at `s ≠ 1`, with the caller's `H` arriving in
+any coefficient state. v3 files refuse by name.
+
 ### Added — the strain schedule, and the other half of the support freeze
 
 `StrainSchedule` is the sampler's form of a `SLCE.StrainedModels` volume grid: the grid is

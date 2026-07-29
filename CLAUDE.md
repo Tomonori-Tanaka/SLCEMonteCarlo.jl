@@ -205,6 +205,37 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   `3·n_disp_active − count(comp_free)`, not `3(N−1)`, because re-centring is per
   (direction, component) and there are `n_disp_comps` independent centres of mass.
   Gates: `test_strainschedule.jl`.
+- **The NPT strain move: `strain_move!` ↔ `strain_delta_energy`/`_strain_log_weight` ↔
+  `ChainState.strain` ↔ the run drivers ↔ checkpoint v4 ↔ `sync_coefficients!`**
+  (`strain.jl`, `run.jl`, `pt.jl`, `checkpoint.jl`, `gpu/gpu_hamiltonian.jl`,
+  `docs/specs/strain-move.md`). Six rules that move together. (1) The elastic energy
+  has ONE source — the grid's `j0(s)`, times `n_cells` — and there is deliberately no
+  elastic-term keyword anywhere; adding one double-counts with every gate green
+  (the reconstruction identity in `test_strainschedule.jl` is the fence). (2) The
+  proposal draw (`_strain_y`/`_strain_s_of_y`) and the acceptance power
+  (`_strain_power`: `D/3 + 1` for `:logvolume`, `D/3 + 2/3` for `:scale`) branch on
+  the SAME symbol and sit adjacent — drawing in one arm and weighting with the other
+  is off by `(V′/V)^{2/3}`, below the statistical gate's resolution; the closed-form
+  and white-box-replay gates exclude it exactly, so touch one branch and re-check
+  both. (3) The `(H, chain)` contract — `H` carries the schedule's coefficients at
+  `st.strain` before and after every move, accepted or not (the reject path restores
+  by re-running the same deterministic Horner pass) — is what the sweep layer,
+  `run_mc`'s reference install, `carryover = false`'s cell reset, and `resume`'s
+  scale reinstall all assume; break it anywhere and the sweeps sample one volume's
+  displacements against another's coefficients. (4) On a strained run the checkpoint
+  `model_fingerprint` is defined AT THE REFERENCE scale: the writer captures it while
+  `H` holds `s = 1` (order of `_make_checkpointer` vs the install in `run_mc` is
+  load-bearing) and `resume` reinstalls the reference from the supplied schedule
+  before comparing — reorder either and every strained resume refuses or, worse,
+  accepts a wrong model. (5) An accepted rescale is a phase boundary:
+  `_reset_escape!`, and `disps` AND `com_removed` rescale together (both are absolute
+  lengths in the same frame). (6) `run_pt` refuses a schedule (one shared `H` mutated
+  in place + the NVT swap rule), and a host `set_coefficients!` under a live
+  `GPUTiledHamiltonian` needs `sync_coefficients!` — `sent_w` is the ONE
+  coefficient-dependent device array, and forgetting the call is undetectable from
+  the device side (the bitwise gate in `test_gpu.jl` holds the contract). The
+  fixed-cell byte-neutrality pin (a pre-wiring trajectory asserted bit-identical in
+  `test_strainschedule.jl`) catches any of these leaking into unstrained runs.
 - **Upstream BREAKING spec keywords ↔ this package's fixtures/benches/docs/assets**:
   `SLCE`'s `BasisSpec` keywords are consumed in `test/unit/fixtures.jl`,
   `bench/fixtures.jl`, `bench/assets/*.toml` (`[interaction]`) and every
