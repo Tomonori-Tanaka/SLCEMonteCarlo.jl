@@ -801,3 +801,93 @@ function pressure_diagnostics(sch::StrainSchedule, H::TiledHamiltonian)
                       scope = :energy)
     return (; observables = [dedv, invv], evaluables = [press])
 end
+
+"""
+    npt_observables(sch::StrainSchedule, H::TiledHamiltonian;
+                    pressure_GPa = nothing, pressure = nothing)
+        -> (; observables::Vector{Observable}, evaluables::Vector{Evaluable})
+
+The β-conjugate state energy of a strained (NPT) run, packaged as observables. Two raw
+observables —
+
+    :enthalpy   =  W  =  E_config + n_cells·j0(s) + P·V(s)
+    :enthalpy2  =  W²
+
+(model units) — where `W` is the **configurational enthalpy**: exactly the state energy
+whose Boltzmann factor the strain move accepts against and the strained PT exchange rule
+weighs (`docs/specs/strain-move.md` S10/S11). Plus the jackknifed evaluable
+
+    :npt_specific_heat  =  (⟨W²⟩ − ⟨W⟩²) / (n_active (k_BT)²)
+
+the **isobaric specific heat** per active site, in units of ``k_B``. The sampled NPT
+measure is `p ∝ V^{N_mob}·e^{−βW}` with a temperature-independent volume-Jacobian
+factor, so `C/k_B = var(W)/(k_BT)² = d⟨W⟩/d(k_BT)` holds exactly in this ensemble —
+including on a volume domain truncated by the schedule's grid, since the domain is
+β-independent too. On a strained run this is the quantity `:specific_heat` is **not**:
+that evaluable sees `var(E_config)` alone, which is neither `C_V` nor `C_P` (see the
+observables guide). Append both vectors to the run's `observables` / `evaluables`.
+
+Two interpretation caveats, both properties of the run. The identity stays exact on
+the truncated measure, but the truncated measure is a **constrained system**: read the
+number as the physical `C_P` only while the sampled volume distribution is confined
+well inside [`strain_domain`](@ref) — a chain pressed against a grid edge measures the
+heat capacity of a volume-clamped cell, and a broad `p(V)` (near a transition, where
+`C_P` peaks) is exactly when that bites. And v0 samples the isotropic scale only, so
+this is the isobaric `C` of the sampled **hydrostatic, fixed-shape ensemble** — the
+five homogeneous shear degrees of freedom are frozen (their classical contribution is
+`O(1) k_B` per supercell).
+
+Pass the **same pressure the run uses** (`pressure_GPa` XOR `pressure`, resolved exactly
+like [`run_mc`](@ref)'s keywords) and build from the **same `sch`**: the view carries
+neither, so a mismatched pressure would silently weigh another run's target. The
+Hamiltonian itself IS checked at measurement time, by identity on a structural array —
+a view from any other `H` is refused, while a strained [`run_pt`](@ref)'s per-lane
+coefficient clones share the array by reference and pass; after [`resume`](@ref),
+rebuild the observables against the `H` handed to it (closures are not serialized).
+
+Unlike [`pressure_diagnostics`](@ref), these observables capture no per-measurement
+scratch — the closures are pure functions of the view, the immutable schedule and the
+resolved pressure — so they are usable under a strained `run_pt` too (each measurement
+costs two `j0` Horner passes — `:enthalpy2` re-evaluates `W` — not a row table). On a
+**fixed-cell** run both drivers refuse `:enthalpy` / `:enthalpy2` by name at entry
+(there is no volume degree of freedom, and the [`strain`](@ref) accessor's per-view
+throw would otherwise fire only after a spent thermalization phase).
+
+Configurational, like every energy of this sampler: no momenta are carried. For an
+absolute heat capacity add the classical kinetic term analytically — `(3/2) k_B` per
+mobile atom, identical at constant `V` and constant `P`, i.e. add
+`(3/2)·n_disp_active/n_active` to the reported per-active-site value (the two counts
+differ exactly on a model with spin-only sites).
+"""
+function npt_observables(sch::StrainSchedule, H::TiledHamiltonian;
+                         pressure_GPa::Union{Nothing,Real} = nothing,
+                         pressure::Union{Nothing,Real} = nothing)
+    _check_strain_pairing(H, sch)
+    p = _resolve_pressure(sch, pressure_GPa, pressure)
+    # Identity on a shared STRUCTURAL array, not `===` on `H` (pressure_diagnostics'
+    # guard) and not counts: a strained `run_pt` measures through per-lane
+    # coefficient clones, which share `inst_term` by reference — while a same-shape
+    # Hamiltonian built from another grid point's model has its own copy, and counts
+    # alone cannot tell the two apart (the `_check_strain_pairing` hazard, reopened
+    # at measurement time). `W` reads only the view's energy and strain against the
+    # immutable schedule, so a clone's view is exactly as good as the parent's.
+    guard = H.inst_term
+    w = function (v::MCView)
+        v.H.inst_term === guard || throw(ArgumentError(
+            "this npt_observables was built against a different Hamiltonian; " *
+            "build it with the `H` the run uses (a run_pt lane's coefficient " *
+            "clone shares its structure and passes; after `resume`, rebuild the " *
+            "observables against the `H` handed to it)"))
+        s = strain(v)                  # throws on a fixed-cell view, by design
+        in_strain_domain(sch, s) || throw(ArgumentError(
+            "scale s = $s is outside this schedule's domain " *
+            "$(strain_domain(sch)); evaluating the interpolant there would " *
+            "silently extrapolate"))
+        return v.energy + sch.n_cells * strain_j0(sch, s) + p * strain_volume(sch, s)
+    end
+    obs = [Observable(:enthalpy, 1, w), Observable(:enthalpy2, 1, v -> w(v)^2)]
+    cp = Evaluable(:npt_specific_heat, [:enthalpy, :enthalpy2],
+                   (m, kT, n) -> (m.enthalpy2 - m.enthalpy^2) / (n * kT^2);
+                   scope = :energy)
+    return (; observables = obs, evaluables = [cp])
+end

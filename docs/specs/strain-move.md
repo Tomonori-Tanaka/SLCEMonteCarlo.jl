@@ -185,10 +185,8 @@ is untouched — SLCEDynamics' checkpoint format depends on it.
   and both `j0(s)` and `P·V(s)` fluctuate with the sampled volume, so the
   reported `C = var(E_config)/(n·kT²)` is neither `C_V` nor the NPT `C_P`
   (measured 3.4 % low on the Einstein-well fixture; `C_P − C_V = TVα²B` is
-  percent-to-tens-of-percent on a real solid near melting). Documented in the
-  observables conventions and both run drivers; a strain-aware `W` observable
-  (needs the schedule and the pressure captured, `pressure_diagnostics`-style)
-  is deferred work.
+  percent-to-tens-of-percent on a real solid near melting). The strain-aware
+  `W` observable — DONE, see S11 (`npt_observables`).
 
 ## S9 — the §8(ζ) mechanical-equilibrium observable (landed 2026-07-29)
 
@@ -345,3 +343,72 @@ deliver, so a strained lane's `disp_rms` series mixes scales — diagnostic-only
 and PT already breaks that series at every swap. Memory: R clones of
 `sent_w`/`term_coef`/`terms` per run — O(model) each; revisit only if a
 production model's program streams make it matter.
+
+## S11 — the strain-aware `W` observable (landed 2026-07-29)
+
+`npt_observables(sch, H; pressure_GPa XOR pressure)` (`src/strain.jl`): raw
+`:enthalpy = W = E_config + n_cells·j0(s) + P·V(s)` and `:enthalpy2 = W²`, plus
+the jackknifed `:npt_specific_heat = var(W)/(n_active·kT²)` (`scope = :energy`),
+closing S8's configurational-only caveat. `W` is exactly `_swap_dweight`'s
+content evaluated on one lane — the NPT target's β-conjugate state energy.
+
+**Why `var(W)/(k_BT)²` is the isobaric `C/k_B`.** The sampled measure is
+`p ∝ V^{N_mob}·e^{−βW}` on the schedule's bounded volume domain. Both the
+Jacobian factor and the domain truncation are β-independent, so
+`−d⟨W⟩/dβ = var(W)` holds **exactly** (equivalently
+`var(W)/(k_BT)² = d⟨W⟩/d(k_BT)` — note the conjugate variable is `k_BT`, not
+`T`) — no boundary terms, unlike the S9 identity, which integrates by parts in
+`V`. Two interpretation limits the identity does NOT remove: the truncated
+measure is a volume-constrained system, so the number reads as the physical
+`C_P` only while `p(V)` is confined well inside the grid (a broad `p(V)` near a
+transition is exactly when the wall bites); and v0 samples the isotropic scale
+only, so it is the `C` of the hydrostatic fixed-shape ensemble (the five frozen
+shear DOFs would classically add `O(1) k_B` per supercell). It is
+configurational: no momenta are sampled, so the classical kinetic `(3/2)k_B`
+per mobile atom (identical at constant `V` and `P`) is absent — per ACTIVE
+site, the analytic add-back is `(3/2)·n_disp_active/n_active`, the two counts
+differing exactly on a model with spin-only sites.
+
+One recorded numerical remark: unlike `:energy`, `W` carries the absolute
+offset `n_cells·j0 + P·V`, so `⟨W²⟩ − ⟨W⟩²` cancels `~(W/σ_W)²` digits. At
+production scale (`n_cells·j0 ~ 10⁶ eV`, `σ_W ~ 30 eV`) the binned variance
+keeps a relative error `~ eps·√bin·(W/σ_W)² ≈ 10⁻⁵–10⁻⁴`, growing `∝ n_cells`
+— acceptable, and deliberately NOT "fixed" by referencing `j0`/`V` to `s = 1`
+inside `W`, which would change `:enthalpy`'s reported zero point.
+
+**Gate scoping** (`test_strainschedule.jl` "npt_observables"). The FORMULA is
+owned by an exact anchor: the zeta fixture's `j0(s) = 40η²` (a quadratic the
+3-node interpolant reproduces to roundoff everywhere in the domain) and
+`V(s) = n_cells·27·s³` from the a = 3 Å cell — machine-precision agreement,
+so dropped-`j0` / dropped-`P·V` / misplaced-`n_cells` / wrong-unit mutations
+all die there. The FDT cross-gate (central FD of `⟨W⟩` over kT = 0.04…0.06 vs
+the evaluable at the midpoint, 4σ; measured over 4 seed sets: −0.2σ … 2.7σ)
+checks the ensemble-level consistency of the `⟨W⟩`/`var(W)` pair; its
+resolution (σ ≈ 0.6–1.0 k_B against C ≈ 10–12) can NOT see the config-only
+mutation — `var(E_config)` sits ≈ 0.3–0.6 k_B ≡ 3–6 % below `var(W)` across
+the gate's three kT on this fixture — which is the same
+statistics-cannot-carry-the-rule split as S10's bracket-vs-marginal gates.
+(Nor can the fixture fence `scope = :energy`: every site carries both channels,
+so `n_active ≡ n_disp_active` there.) The strained-PT rung-marginal testset
+carries `:enthalpy` in its 4σ PT ≡ run_mc comparison and evaluates the
+per-rung isobaric `C` through the lane clones.
+
+**PT-safety by construction.** Unlike `pressure_diagnostics` (per-instance
+scratch, `v.H === H` identity, run_mc-only), the closures are pure functions of
+the view, the immutable schedule, and the resolved pressure — each measurement
+costs two `j0` Horner passes (`:enthalpy2` re-evaluates `W`). The per-view
+guard is IDENTITY on a shared structural array (`inst_term`): a lane's
+coefficient clone shares it by reference and passes, while a same-shape
+Hamiltonian built from another grid point's model — which every count-based
+check accepts — is refused instead of silently getting this run's `j0`/`P·V`
+applied to its energy. Corollary: after `resume`, rebuild the observables
+against the `H` handed to it (closures are not serialized, so this is the
+natural usage anyway). A FIXED-CELL run refuses `:enthalpy`/`:enthalpy2` by
+name at entry in both drivers (`_refuse_npt_observables`) — the per-view
+`strain(v)` throw would otherwise fire only after a spent thermalization
+phase, the same argument as S10's `pressure_diagnostics` entry refusal. The
+residual seam is the user's contract: the factory's `sch` and `P` must be the
+run's own — the view carries neither, and a pairing-compatible second schedule
+or a different pressure is undetectable at measurement time (docstring warns,
+S9 precedent; the drivers hold both, so a `strain_observables = true` run
+keyword would close the class if it ever bites).

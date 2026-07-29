@@ -460,6 +460,11 @@ scale.
 - `strain_step = nothing`: proposal width in that variable; defaults to a tenth of
   the schedule's domain. Fixed for the whole run (never adapted) — a poor width
   shows up in `TempResult.acceptance_strain`, not in the sampled ensemble.
+
+On a strained run `:energy` / `:specific_heat` are configurational-only (neither
+`C_V` nor the NPT `C_P`); append [`npt_observables`](@ref) — built with this run's
+schedule and pressure — for the β-conjugate `:enthalpy` and the isobaric
+`:npt_specific_heat`.
 """
 function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                 sweeps_therm::Integer = 2_000, sweeps_measure::Integer = 10_000,
@@ -499,6 +504,7 @@ function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                       strain_proposal = strain_proposal, strain_step = sstep,
                       pressure = p_model)
     _check_observables(observables)
+    strain === nothing && _refuse_npt_observables(observables)
     _warn_escape_cadence(H, plan)
     sweep_tasks > Threads.nthreads() && @warn(
         "sweep_tasks = $sweep_tasks exceeds the $(Threads.nthreads()) available " *
@@ -538,6 +544,21 @@ function _check_observables(observables::Vector{Observable})
     isempty(observables) && throw(ArgumentError("the observable list is empty"))
     allunique(o.name for o in observables) ||
         throw(ArgumentError("observable names must be unique"))
+    return nothing
+end
+
+# Refuse `npt_observables` on a FIXED-CELL run at entry, by observable name (the
+# run_pt/pressure_diagnostics precedent): the per-view `strain(v)` throw is loud but
+# fires only at the first measurement — after the whole thermalization phase is spent.
+function _refuse_npt_observables(observables::Vector{Observable})
+    for o in observables
+        o.name in (:enthalpy, :enthalpy2) && throw(ArgumentError(
+            "npt_observables (`:$(o.name)`) needs a strained run: a fixed-cell run " *
+            "has no volume degree of freedom, so there is no `j0(s)` or `P·V(s)` to " *
+            "measure — its `:energy` / `:specific_heat` are already the ensemble's " *
+            "conjugate pair. Pass the run's `strain` schedule, or rename a " *
+            "same-named observable of your own."))
+    end
     return nothing
 end
 

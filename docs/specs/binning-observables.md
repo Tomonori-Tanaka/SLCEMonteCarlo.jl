@@ -97,11 +97,30 @@ Derived (`standard_evaluables`, jackknifed):
   **On a strained (NPT) run this is configurational-only — neither `C_V` nor the
   NPT `C_P`.** The β-conjugate state energy of the NPT target is
   `W = E_config + n_cells·j0(s) + P·V(s)` (strain-move.md S10), whose `j0` and
-  `P·V` halves fluctuate with the sampled volume, and
-  `C_P = var(W)/(n (k_BT)²)`; `var(E_config)` alone measured 3.4 % low on the
-  Einstein-well fixture, and `C_P − C_V = TVα²B` reaches tens of percent on real
-  solids near melting. `:energy` likewise omits the varying `j0(s)`. A
-  strain-aware `W` observable is deferred (strain-move.md S8).
+  `P·V` halves fluctuate with the sampled volume; `var(E_config)` alone measured
+  3.4 % low on the Einstein-well fixture, and `C_P − C_V = TVα²B` reaches tens of
+  percent on real solids near melting. `:energy` likewise omits the varying
+  `j0(s)`. On a strained run use `npt_observables` (next bullet) instead.
+- **Configurational enthalpy and isobaric specific heat** (`npt_observables(sch,
+  H; pressure...)`, strained runs only — an optional add-on, not part of the
+  standard set): raw `:enthalpy = W` and `:enthalpy2 = W²` with the same
+  `W = E_config + n_cells·j0(s) + P·V(s)` the strain move and
+  the strained-PT exchange rule weigh, and the evaluable (`scope = :energy`)
+  `:npt_specific_heat = (⟨W²⟩ − ⟨W⟩²)/(n_active (k_BT)²)`.
+  *Why this is the isobaric C*: the sampled measure `p ∝ V^{N_mob} e^{−βW}` has a
+  β-independent Jacobian and a β-independent (grid-truncated) volume domain, so
+  `C/k_B = var(W)/(k_BT)² = d⟨W⟩/d(k_BT)` exactly — gated by a finite-difference
+  cross-check in `test_strainschedule.jl`; the formula itself is pinned at
+  machine precision against the fixture's analytic `j0`/`V`. Read it as the
+  physical `C_P` only while the sampled `p(V)` sits well inside the grid (the
+  truncated measure is a volume-constrained system), and note v0's cell shape is
+  frozen (hydrostatic-only). Configurational like everything here: no momenta,
+  so for an absolute value add the classical kinetic term analytically —
+  `(3/2)·n_disp_active/n_active` in the reported per-active-site units (`3/2`
+  per *mobile* atom; the counts differ on a model with spin-only sites). The
+  factory must be given the run's own schedule and pressure — the view carries
+  neither (the Hamiltonian itself is identity-checked per view; lane clones
+  pass). Details: `strain-move.md` S11.
 - **Susceptibility, |m|-connected, per spin-active site** (`scope = :spin`):
   `χ = n_spin_active (⟨m²⟩ − ⟨|m|⟩²) / k_BT`.
   *Why*: on a finite system with continuous symmetry `⟨m⟩ = 0` exactly, so the

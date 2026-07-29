@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — the strain-aware `W` observable (`docs/specs/strain-move.md` S11)
+
+`npt_observables(sch, H; pressure_GPa XOR pressure)` packages the NPT target's
+β-conjugate state energy as observables: raw `:enthalpy = W = E_config +
+n_cells·j0(s) + P·V(s)` / `:enthalpy2`, and the jackknifed `:npt_specific_heat =
+var(W)/(n_active·(k_BT)²)` — the **isobaric** specific heat the
+configurational-only `:specific_heat` is not on a strained run (the caveat S8
+documented; measured 3–6 % low across the gate's temperatures on the
+Einstein-well fixture). `C/k_B = var(W)/(k_BT)² = d⟨W⟩/d(k_BT)` holds exactly in
+the sampled ensemble (the `V^{N_mob}` Jacobian and the grid-truncated domain are
+both β-independent), gated by a finite-difference cross-check; the formula is
+pinned at machine precision against the fixture's analytic `j0(s) = 40η²` and
+`V(s) = n_cells·27·s³`. Pure closures over the immutable schedule — usable under
+`run_pt`'s per-lane coefficient clones (the per-view guard is identity on the
+shared structural `inst_term` array, which clones share and a foreign
+Hamiltonian — same-shape included — does not), unlike `pressure_diagnostics`.
+Build it with the run's own schedule and pressure; a **fixed-cell** run refuses
+`:enthalpy` / `:enthalpy2` by name at entry in both drivers. Read the `C_P` only
+with the sampled volume distribution confined well inside the grid, and note the
+cell shape is frozen (hydrostatic v0); no momenta are sampled — add
+`(3/2)·n_disp_active/n_active` per active site for the classical kinetic term.
+
 ### Added — PT + strain (`docs/specs/strain-move.md` S10)
 
 `run_pt` takes the full NPT keyword set (`strain`, `pressure_GPa` XOR `pressure`,
@@ -41,9 +63,10 @@ same values today, but the totals form loses `ulp(|W|)` vs `ulp(|ΔW|)` with
 growing `n_cells`. Documented, not changed: on ANY strained run `:energy` /
 `:specific_heat` are configurational-only (neither `C_V` nor the NPT `C_P` —
 the fluctuating `n_cells·j0(s) + P·V(s)` is not in them; measured 3.4 % on the
-test fixture); a strain-aware `W` observable is recorded as deferred work
-(`strain-move.md` S8), and `PTResult`, like `MCResult`, carries no final cell
-scale — a strained ladder warm-starts only through its checkpoint.
+test fixture); the strain-aware `W` observable was deferred then and has since
+landed as `npt_observables` (S11, the entry above), and `PTResult`, like
+`MCResult`, carries no final cell scale — a strained ladder warm-starts only
+through its checkpoint.
 
 ### Changed — **BREAKING**: checkpoint schema v5
 

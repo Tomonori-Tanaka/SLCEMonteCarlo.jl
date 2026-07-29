@@ -76,7 +76,10 @@ packages' dynamics; bitwise-gated against its lane reference, G7),
 §8(ζ) mechanical-equilibrium diagnostic (`energy_volume_derivative` — exact
 `dE_total/dV` via differentiated Horner + Euler's theorem on the displacement
 degrees — and `pressure_diagnostics`, the `:pressure` evaluable whose mean must
-equal the applied pressure on an equilibrated NPT chain), the per-measurement
+equal the applied pressure on an equilibrated NPT chain), `npt_observables`
+(the β-conjugate `:enthalpy = E + n_cells·j0(s) + P·V(s)` and the isobaric
+`:npt_specific_heat = var(W)/(n_active·kT²)`; lane-clone-safe pure closures,
+S11), the per-measurement
 `has_strain` / `strain` view accessors, and `GPA_PER_EV_A3`
 (GPa per eV/Å³ — the pressure analogue of `KB_EV`, applied exactly once at
 keyword resolution).

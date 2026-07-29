@@ -49,6 +49,7 @@ StrainScratch
 strain_move!
 energy_volume_derivative
 pressure_diagnostics
+npt_observables
 GPA_PER_EV_A3
 ```
 

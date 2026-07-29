@@ -208,7 +208,7 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
 - **The NPT strain move: `strain_move!` ↔ `strain_delta_energy`/`_strain_log_weight` ↔
   `ChainState.strain` ↔ the run drivers ↔ the checkpoint schema ↔ `sync_coefficients!`**
   (`strain.jl`, `run.jl`, `pt.jl`, `checkpoint.jl`, `gpu/gpu_hamiltonian.jl`,
-  `docs/specs/strain-move.md`). Seven rules that move together. (1) The elastic energy
+  `docs/specs/strain-move.md`). Eight rules that move together. (1) The elastic energy
   has ONE source — the grid's `j0(s)`, times `n_cells` — and there is deliberately no
   elastic-term keyword anywhere; adding one double-counts with every gate green
   (the reconstruction identity in `test_strainschedule.jl` is the fence). (2) The
@@ -265,6 +265,25 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   fixed-cell byte-neutrality pins (pre-wiring `run_mc` and `run_pt` trajectories
   asserted bit-identical in
   `test_strainschedule.jl`) catch any of these leaking into unstrained runs.
+  (8) The NPT target's `W = E_config + n_cells·j0(s) + P·V(s)` now lives in
+  THREE places — the strain move's acceptance pieces (`strain_delta_energy` +
+  `_strain_log_weight`), the exchange weight (`_swap_dweight`), and
+  `npt_observables`' `:enthalpy` — and a change to the target must move all
+  three. The observable's formula is pinned at machine precision against the
+  zeta fixture's ANALYTIC `j0 = 40η²` / `V = n_cells·27·s³` (the anchor gate in
+  `test_strainschedule.jl` "npt_observables"), which is what actually kills a
+  dropped or misplaced term — the FDT cross-gate there
+  (`var(W)/(k_BT)² ≡ d⟨W⟩/d(k_BT)`, 4σ) cannot resolve one (the config-only
+  mutation is ≈ 3–6 % of C on that fixture), the same
+  statistics-cannot-carry-the-rule split as rule (7)'s bracket.
+  `npt_observables`' closures must STAY pure (immutable schedule + resolved
+  constants; the per-view guard is IDENTITY on the shared `inst_term` array —
+  clones share it, any foreign `H`, same-shape included, does not — rather than
+  `v.H === H`): that purity is the entire reason they are legal under
+  `run_pt`'s concurrently-measuring lane clones while `pressure_diagnostics`
+  is refused by name. On a FIXED-CELL run both drivers refuse
+  `:enthalpy`/`:enthalpy2` at entry (`_refuse_npt_observables`) — keep that in
+  sync if the observable names change.
 - **The §8(ζ) pressure diagnostic: `_energy_with_coefs` ↔ `_total_energy`, and the
   exact-derivative trio ↔ their Horner sources** (`strain.jl`,
   `docs/specs/strain-move.md` S9): `energy_volume_derivative` is exact via (a) the

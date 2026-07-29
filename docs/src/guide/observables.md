@@ -50,7 +50,21 @@ Derived (`standard_evaluables(H)`):
   elastic and pressure halves fluctuate with the sampled volume and are not in
   ``E`` (`:energy` omits the varying ``j_0(s)`` for the same reason). Measured
   3.4 % low on the test fixture; the gap is ``C_P − C_V = TVα²B``-sized on real
-  solids.
+  solids. On a strained run, append [`npt_observables`](@ref) (both vectors —
+  the evaluable needs its raw inputs measured) and read `:enthalpy` /
+  `:npt_specific_heat` instead: the raw ``W`` with error bars, and the isobaric
+  ``C_P/k_B = (⟨W²⟩ − ⟨W⟩²)/(n_{\mathrm{active}}(k_BT)²)`` — an exact
+  derivative ``d⟨W⟩/d(k_BT)`` in the sampled ensemble, since the volume
+  Jacobian and the grid-truncated domain are both β-independent. Build it with
+  the run's own schedule and pressure; it works under `run_pt` too (pure
+  closures, unlike `pressure_diagnostics`). Two caveats: trust the ``C_P``
+  reading only while the sampled volume distribution sits well inside
+  [`strain_domain`](@ref) (the truncated measure is a volume-constrained
+  system), and the cell **shape** is frozen in v0 (hydrostatic-only). No
+  momenta are sampled, so the classical kinetic term is absent from every heat
+  capacity here — for an absolute value add
+  ``(3/2)\,n_{\mathrm{disp}}/n_{\mathrm{active}}`` to the reported
+  per-active-site number (``3/2\,k_B`` per *mobile* atom).
 - `:susceptibility` — |m|-connected, per spin-active site:
   ``χ = n_{\mathrm{spin}}(⟨m²⟩ − ⟨|m|⟩²)/k_BT``. On a finite system with
   continuous symmetry ``⟨\boldsymbol m⟩ = 0`` exactly, so the textbook connected

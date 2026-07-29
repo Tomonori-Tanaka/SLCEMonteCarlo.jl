@@ -479,7 +479,9 @@ scratch assumes one serial chain, and its views come from the lane clones), and 
 refused by name at entry; run the identity on an NPT `run_mc` chain instead. And as
 on every strained run, `:energy` / `:specific_heat` are **configurational-only**:
 they omit the fluctuating `n_cells·j0(s) + P·V(s)`, so the reported `C` is neither
-`C_V` nor the NPT `C_P` (see the observables guide).
+`C_V` nor the NPT `C_P` — append [`npt_observables`](@ref) (same schedule and
+pressure as the run; its pure closures are lane-clone-safe) and read `:enthalpy` /
+`:npt_specific_heat` instead.
 """
 function run_pt(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                 exchange_interval::Integer = 10,
@@ -530,6 +532,7 @@ function run_pt(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                       strain_interval = nstrain, strain_proposal = strain_proposal,
                       strain_step = sstep, pressure = p_model)
     _check_observables(observables)
+    strain === nothing && _refuse_npt_observables(observables)
     _warn_escape_cadence(H, plan)
     nt * sweep_tasks > Threads.nthreads() && @warn(
         "ntasks · sweep_tasks = $(nt * sweep_tasks) exceeds the " *

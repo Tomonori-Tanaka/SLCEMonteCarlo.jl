@@ -187,7 +187,19 @@ refuses loudly).
 One reading caveat for every strained run: `:energy` and `:specific_heat` are
 **configurational-only** — they omit the fluctuating `n_cells·j0(s) + P·V(s)`
 half of the NPT state energy, so the reported `C` is neither `C_V` nor the NPT
-`C_P` (see the observables guide).
+`C_P`. Append [`npt_observables`](@ref) — **both** vectors, built with the
+run's own schedule and pressure — and read `:enthalpy` /
+`:npt_specific_heat` instead, the β-conjugate `W` itself and the isobaric heat
+capacity; being pure closures, they ride along under `run_pt`'s per-lane
+clones too (see the observables guide):
+
+```julia
+nw = SLCEMonteCarlo.npt_observables(sch, H; pressure_GPa = 1.0)
+r  = run_mc(H; temperature = 300, strain = sch, pressure_GPa = 1.0,
+            observables = [standard_observables(H); nw.observables],
+            evaluables  = [standard_evaluables(H); nw.evaluables])
+r.points[1].stats[:npt_specific_heat]   # C_P per active site, units of k_B
+```
 
 Inside an NPT run every measurement's [`MCView`](@ref) carries the cell scale
 (`SLCEMonteCarlo.strain(v)`, with `SLCEMonteCarlo.has_strain(v)` false on a

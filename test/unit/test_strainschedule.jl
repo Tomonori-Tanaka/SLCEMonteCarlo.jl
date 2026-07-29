@@ -993,6 +993,139 @@ _ss_vk_mean(k, va, vb) =
         @test_throws ArgumentError MCs.pressure_diagnostics(sch, Hsmall)
     end
 
+    @testset "npt_observables: W = E + n_cells·j0 + P·V and the isobaric C" begin
+        zsm, zmodels = _ss_zeta_grid()
+        H = TiledHamiltonian(zmodels[2]; dims = (2, 1, 1), keep_zero_terms = true,
+                             fixed_reference = true)
+        sch = StrainSchedule(zsm, H)
+        P = 0.015
+        nw = MCs.npt_observables(sch, H; pressure = P)
+        @test [o.name for o in nw.observables] == [:enthalpy, :enthalpy2]
+        @test [e.name for e in nw.evaluables] == [:npt_specific_heat]
+
+        # The formula, against the FIXTURE's analytics rather than the schedule's
+        # helpers: `_ss_zeta_grid` builds its models with j0(s) = 40η² per training
+        # cell — a quadratic the 3-node interpolant must reproduce to roundoff at
+        # nodes and between them alike — and `_ss_crystal(1)` is the cubic a = 3 Å
+        # cell, so V(s) = n_cells·27·s³. This anchor owns the formula structure
+        # (the n_cells placement on j0, the supercell V, the s³, the pressure-unit
+        # conversion): every dropped/misplaced-term mutation dies here at machine
+        # precision, which the statistical FDT gate below cannot resolve.
+        cfg = _ss_cfg(H.n_sites, 21)
+        us = _ss_disps(H.n_sites, 22)
+        E = -0.375
+        for s in (0.93, 1.0, 1.045)
+            η = s - 1
+            # n_cells hardcoded to the fixture's hand-counted 2 (4 sites / 2 cell
+            # atoms on dims = (2, 1, 1)) so the anchor is independent of
+            # `sch.n_cells` too
+            Wref = E + 2 * 40.0 * η^2 + P * 2 * 27.0 * s^3
+            v = MCView(H, cfg, us, E, s)
+            @test nw.observables[1].f(v) ≈ Wref rtol = 1e-12
+            @test nw.observables[2].f(v) ≈ Wref^2 rtol = 1e-12
+        end
+        # the GPa arm resolves through the same conversion the run keywords use
+        nwg = MCs.npt_observables(sch, H; pressure_GPa = P * MCs.GPA_PER_EV_A3)
+        vg = MCView(H, cfg, us, E, 0.97)
+        @test nwg.observables[1].f(vg) ≈ nw.observables[1].f(vg) rtol = 1e-14
+        # a per-lane coefficient clone's view is as good as the parent's (what makes
+        # these usable under a strained run_pt, unlike pressure_diagnostics)
+        Hc = MCs._coefficient_clone(H)
+        @test nw.observables[1].f(MCView(Hc, cfg, us, E, 1.02)) ==
+              nw.observables[1].f(MCView(H, cfg, us, E, 1.02))
+
+        # Fluctuation–response: the sampled measure is p ∝ V^{N_mob}·e^{−βW} with a
+        # β-independent Jacobian AND a β-independent (truncated) volume domain, so
+        #     var(W)/(k_BT)² = d⟨W⟩/d(k_BT)  (= C/k_B)
+        # exactly — the ensemble-level identity that makes :npt_specific_heat the
+        # enthalpy's temperature derivative. Gate: central FD of ⟨W⟩ across
+        # kT = 0.04..0.06 vs the evaluable at the midpoint. Measured over 4 seed
+        # sets: deviations −0.2σ, 0.8σ, 2.7σ, 0.0σ (pinned set: −0.2σ); 4σ gate.
+        # The central-difference truncation bias (Δ²/6)·d³⟨W⟩/d(kT)³ is
+        # unresolvable against σ at this cost (C's own kT-trend is inside the
+        # noise) and is absorbed in the 4σ headroom.
+        # Scoping: the resolution σ ≈ 0.6–1.0 k_B cannot see the config-only
+        # mutation (var(E_config) sits ≈ 0.3–0.6 k_B ≡ 3–6 % below var(W) across
+        # the three kT here — the measured caveat the observable exists to fix),
+        # so this gate checks the ensemble consistency of the ⟨W⟩/var(W) pair; the
+        # formula itself is owned by the exact anchor above and the chain-side
+        # weights by the closed-form log-weight and swap-bracket gates. Nor can
+        # any gate on THIS fixture fence `scope = :energy`: n_active ==
+        # n_spin_active == n_disp_active == 4 (every site carries both channels),
+        # so a :spin-scope mutation is invisible here — and the FD comparison
+        # re-multiplies by n_active, cancelling the injected count entirely. The
+        # scope convention is held by the docs and by the einstein-terms C gate
+        # of the standard :specific_heat, not by this testset.
+        kts = (0.04, 0.05, 0.06)
+        sts = map(enumerate(kts)) do (i, kt)
+            r = run_mc(H; kT = kt, sweeps_therm = 500, sweeps_measure = 6000,
+                       seed = 0x33c0 + i, renorm_interval = 50, strain = sch,
+                       pressure = P,
+                       observables = [standard_observables(H); nw.observables],
+                       evaluables = [standard_evaluables(H); nw.evaluables])
+            r.points[1].stats
+        end
+        fd = (sts[3][:enthalpy].mean[1] - sts[1][:enthalpy].mean[1]) /
+             (kts[3] - kts[1])
+        fd_err = sqrt(sts[3][:enthalpy].err[1]^2 + sts[1][:enthalpy].err[1]^2) /
+                 (kts[3] - kts[1])
+        cst = sts[2][:npt_specific_heat]
+        C = H.n_active * cst.mean[1]
+        σ = sqrt(fd_err^2 + (H.n_active * cst.err[1])^2)
+        @test isfinite(C) && C > 0
+        @test σ < C / 8                    # the gate can fail: ≥ 8σ resolution on C
+        @test abs(fd - C) < 4σ
+        # the strained-run caveat is real on this very fixture: W ≠ E_config as a
+        # random variable (⟨W⟩ − ⟨E⟩ = n_cells·⟨j0⟩ + P·⟨V⟩ > 0 — j0 ≥ 0 and V > 0
+        # pointwise), so the pair is not redundant
+        @test sts[2][:enthalpy].mean[1] > sts[2][:energy].mean[1]
+
+        # refusals: the pressure XOR (as in run_mc), the construction pairing (with
+        # a valid pressure, so the pairing check is what throws), the foreign-view
+        # guard, the fixed-cell view, and the out-of-domain scale
+        @test_throws ArgumentError MCs.npt_observables(sch, H)
+        @test_throws ArgumentError MCs.npt_observables(sch, H; pressure = P,
+                                                       pressure_GPa = 1.0)
+        Hsmall = TiledHamiltonian(zmodels[2]; dims = (1, 1, 1),
+                                  keep_zero_terms = true, fixed_reference = true)
+        @test_throws ArgumentError MCs.npt_observables(sch, Hsmall; pressure = P)
+        vsmall = MCView(Hsmall, _ss_cfg(Hsmall.n_sites, 3),
+                        zeros(SVector{3,Float64}, Hsmall.n_sites), 0.0, 1.0)
+        @test_throws ArgumentError nw.observables[1].f(vsmall)
+        # the guard is identity on a shared structural array, so a SAME-SHAPE
+        # Hamiltonian from another grid point's model — which passes every count —
+        # is refused too, instead of silently getting H's j0/P·V applied to its
+        # own energy (the `_check_strain_pairing` hazard at measurement time)
+        Hforeign = TiledHamiltonian(zmodels[1]; dims = (2, 1, 1),
+                                    keep_zero_terms = true, fixed_reference = true)
+        @test_throws ArgumentError nw.observables[1].f(MCView(Hforeign, cfg, us,
+                                                              E, 1.0))
+        vfixed = MCView(H, cfg, us, 0.0)
+        @test_throws ArgumentError nw.observables[1].f(vfixed)
+        @test_throws ArgumentError nw.observables[2].f(vfixed)
+        lo, hi = MCs.strain_domain(sch)
+        @test_throws ArgumentError nw.observables[1].f(MCView(H, cfg, us, E,
+                                                              hi + 0.05))
+        # ...and a FIXED-CELL run refuses the observables by name at ENTRY, in both
+        # drivers, rather than throwing after a spent thermalization phase
+        err = try
+            run_mc(H; kT = 0.05, sweeps_therm = 1, sweeps_measure = 2,
+                   observables = [standard_observables(H); nw.observables])
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin("needs a strained run", err.msg)
+        err = try
+            run_pt(H; kT = [0.05, 0.08], sweeps_therm = 1, sweeps_measure = 2,
+                   observables = [standard_observables(H); nw.observables])
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin("needs a strained run", err.msg)
+    end
+
     @testset "PT + strain: coefficient clones and the NPT swap rule" begin
         sm, models = _ss_grid()
         H = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
@@ -1120,12 +1253,18 @@ _ss_vk_mean(k, va, vb) =
         sch = StrainSchedule(zsm, H)
         ref = MCs.strain_coefficients(sch, 1.0)
         P = 0.01
-        obsc = [standard_observables(H); Observable(:scale, 1, v -> MCs.strain(v))]
+        # npt_observables ride along: they are pure closures over the immutable
+        # schedule, so concurrent per-lane measurement through coefficient clones
+        # is exactly the case they must support (unlike pressure_diagnostics)
+        nw = MCs.npt_observables(sch, H; pressure = P)
+        obsc = [standard_observables(H); Observable(:scale, 1, v -> MCs.strain(v));
+                nw.observables]
         kts = [0.05, 0.08]
 
         kw = (; kT = kts, sweeps_therm = 300, sweeps_measure = 3000, seed = 0xa7,
               renorm_interval = 50, exchange_interval = 2, strain = sch,
-              pressure = P, observables = obsc)
+              pressure = P, observables = obsc,
+              evaluables = [standard_evaluables(H); nw.evaluables])
         pt = run_pt(H; kw..., ntasks = 2)
         # the wiring is live: strain moves fire on every lane, exchanges happen
         # (in-domain sampling needs no assert — `strain_move!` rejects rather than
@@ -1144,6 +1283,8 @@ _ss_vk_mean(k, va, vb) =
               [p.stats[:energy].mean[1] for p in pts.points]
         @test [p.stats[:scale].mean[1] for p in pt.points] ==
               [p.stats[:scale].mean[1] for p in pts.points]
+        @test [p.stats[:enthalpy].mean[1] for p in pt.points] ==
+              [p.stats[:enthalpy].mean[1] for p in pts.points]
         @test pt.final_configs == pts.final_configs
         @test pt.final_disps == pts.final_disps
         @test pt.swap_acceptance == pts.swap_acceptance
@@ -1158,12 +1299,16 @@ _ss_vk_mean(k, va, vb) =
             mc = run_mc(H; kT = kt, sweeps_therm = 300, sweeps_measure = 3000,
                         seed = 0x91 + i, renorm_interval = 50, strain = sch,
                         pressure = P, observables = obsc)
-            for name in (:scale, :energy)
+            for name in (:scale, :energy, :enthalpy)
                 m = mc.points[1].stats[name]
                 p = pt.points[i].stats[name]
                 @test abs(m.mean[1] - p.mean[1]) <
                       4 * sqrt(m.err[1]^2 + p.err[1]^2)
             end
+            # the per-rung isobaric C evaluates finite through the lane clones,
+            # at the rung's own kT
+            c = pt.points[i].stats[:npt_specific_heat]
+            @test isfinite(c.mean[1]) && c.mean[1] > 0 && isfinite(c.err[1])
         end
 
         # keyword resolution mirrors run_mc, each contradiction by name
