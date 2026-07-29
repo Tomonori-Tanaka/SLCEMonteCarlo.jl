@@ -206,7 +206,23 @@ Inside an NPT run every measurement's [`MCView`](@ref) carries the cell scale
 fixed-cell run — a confident `1.0` would let a magnetostriction observable
 average a constant), so volume statistics are ordinary observables, as in the
 `:scale` example above. Checkpoints work as usual; resuming needs the same grid:
-`resume(path, H; strain = sch)`. The details — the energy contract, the measured
+`resume(path, H; strain = sch)`. A finished strained run also warm-starts the
+next one: `MCResult.final_strain` (per-lane `PTResult.final_strains`) records
+the end scale, and
+
+```julia
+r2 = run_mc(H; temperature = 350, strain = sch, pressure_GPa = 1.0,
+            strain_init = r.final_strain, init = r.final_config,
+            disps = r.final_disps, step = r.points[end].final_step,
+            step_u = r.points[end].final_step_u)
+```
+
+continues at the previous cell without re-thermalizing from the reference
+(`final_disps` are expressed at `final_strain`, so the triple is
+self-consistent, and forwarding the tuned proposal widths matters exactly when
+`sweeps_therm` is cut down — adaptation is thermalization-only; a warm start
+is a new chain — bit-identical continuation is `resume`'s job). The details —
+the energy contract, the measured
 Jacobian exponent, and the reference-scale fingerprint — live in
 `docs/specs/strain-move.md`.
 

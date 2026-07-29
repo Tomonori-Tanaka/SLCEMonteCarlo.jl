@@ -619,8 +619,12 @@ _ss_vk_mean(k, va, vb) =
               renorm_interval = 30, nbins = 4, seed = 0x71, strain = sch,
               pressure = 0.01)
         a = run_mc(H; kw...)
-        # writing consumes no RNG; the last periodic tick lands mid-measure of the
-        # second temperature, with the chain generally away from s = 1
+        # writing consumes no RNG. KNOWN VACUITY of the resume half (S12): the
+        # unconditional end-of-temperature boundary write leaves this file
+        # COMPLETED, so `resume` below exercises the strained handshake
+        # (grid fingerprint, reference reinstall, refusals) and the early
+        # return — not a mid-run continuation; that needs the S12
+        # interrupted-writer pattern (pending here, landed for warm starts).
         b = run_mc(H; kw..., checkpoint = path, checkpoint_interval = 100)
         @test [p.stats[:energy].mean[1] for p in a.points] ==
               [p.stats[:energy].mean[1] for p in b.points]
@@ -1431,5 +1435,246 @@ _ss_vk_mean(k, va, vb) =
         end
         @test err isa Exception &&
               occursin("grid fingerprint", sprint(showerror, err))
+    end
+
+    @testset "strained warm start: final scales and strain_init (S12)" begin
+        zsm, zmodels = _ss_zeta_grid()
+        H = TiledHamiltonian(zmodels[2]; dims = (2, 1, 1), keep_zero_terms = true,
+                             fixed_reference = true)
+        sch = StrainSchedule(zsm, H)
+        P = 0.01
+        ref = MCs.strain_coefficients(sch, 1.0)
+        _at_reference(h) = h.progs.term_coef ==
+                           [ref[h.term_source[k]] * h.term_scale[k]
+                            for k in eachindex(h.terms)]
+
+        # (1) recording. `final_strain` is exactly the strain of the LAST
+        # measurement view: with measure_interval = 1 the last measurement sees
+        # the state after the final sweep and nothing moves afterwards, so the
+        # trace's tail is an independent public witness of the recorded value.
+        seen = Float64[]
+        trace = Observable(:strace, 1, v -> (push!(seen, MCs.strain(v)); 1.0))
+        # ...and the (H, chain) contract is asserted at EVERY measurement, on the
+        # live view: the installed coefficients must be the schedule's at the
+        # view's own strain. This is the standing-contract gate warm start must
+        # not break; what it deliberately cannot see is a wrong ENTRY install
+        # alone, because the first strain move re-installs at `st.strain` on
+        # accept and reject alike (the Horner restore) — the desync self-heals
+        # within one sweep, which is why the entry is additionally pinned by (2).
+        contract = Observable(:contract, 1, v -> begin
+            expect = MCs.strain_coefficients(sch, MCs.strain(v))
+            v.H.progs.term_coef ==
+            [expect[v.H.term_source[k]] * v.H.term_scale[k]
+             for k in eachindex(v.H.terms)] ? 1.0 : 0.0
+        end)
+        r = run_mc(H; kT = 0.05, sweeps_therm = 200, sweeps_measure = 600,
+                   seed = 0xd51, renorm_interval = 50, strain = sch, pressure = P,
+                   observables = [standard_observables(H); trace; contract])
+        @test r.final_strain isa Float64
+        @test r.final_strain == seen[end]
+        @test MCs.in_strain_domain(sch, r.final_strain)
+        # non-vacuity, with the mutation size gate (2) must resolve: an ignored
+        # `strain_init` reads ≈ 1.0 there, so `|s0 − 1|` must stay well above
+        # gate (2)'s 1e-6 walk bound (measured 1.9e-2 at this seed)
+        @test abs(r.final_strain - 1.0) > 1e-3
+        @test r.points[1].stats[:contract].mean[1] == 1.0
+        @test _at_reference(H)               # handed back at the reference
+        # fixed-cell: `nothing`, not 1.0 (the MCView discipline)
+        rf = run_mc(H; kT = 0.05, sweeps_therm = 2, sweeps_measure = 4, seed = 1)
+        @test rf.final_strain === nothing
+
+        # (2) the warm start actually STARTS at s0: with a microscopic proposal
+        # width the strain channel is frozen at the entry scale up to a ~1e-8
+        # random walk, so the first measured strain pins the start (an ignored
+        # `strain_init` reads ≈ 1.0 here, 4 decades above the bound) and the
+        # contract observable holds at s0's coefficients throughout.
+        s0 = r.final_strain
+        empty!(seen)
+        rb = run_mc(H; kT = 0.05, sweeps_therm = 0, sweeps_measure = 400,
+                    seed = 0xd52, renorm_interval = 50, strain = sch,
+                    pressure = P, strain_step = 1e-8, strain_init = s0,
+                    init = r.final_config, disps = r.final_disps,
+                    observables = [standard_observables(H); trace; contract])
+        @test abs(seen[1] - s0) < 1e-6
+        @test abs(rb.final_strain - s0) < 1e-4
+        @test rb.points[1].stats[:contract].mean[1] == 1.0
+        @test _at_reference(H)
+        # statistical continuation: a therm-free warm start from an equilibrated
+        # parent reproduces the parent's measured marginals (same (kT, P), full
+        # strain step). Measured over 3 seed sets: 0.7–1.5σ across
+        # {scale, energy} (pinned set 0.8/1.4σ); 4σ gate. This is an ensemble
+        # check — entry-install mutations self-heal (above) and are below its
+        # resolution by construction.
+        rc = run_mc(H; kT = 0.05, sweeps_therm = 0, sweeps_measure = 3000,
+                    seed = 0xd53, renorm_interval = 50, strain = sch,
+                    pressure = P, strain_init = s0, init = r.final_config,
+                    disps = r.final_disps,
+                    observables = [standard_observables(H);
+                                   Observable(:scale, 1, v -> MCs.strain(v))])
+        ra = run_mc(H; kT = 0.05, sweeps_therm = 500, sweeps_measure = 3000,
+                    seed = 0xd54, renorm_interval = 50, strain = sch,
+                    pressure = P,
+                    observables = [standard_observables(H);
+                                   Observable(:scale, 1, v -> MCs.strain(v))])
+        for name in (:scale, :energy)
+            a = ra.points[1].stats[name]
+            c = rc.points[1].stats[name]
+            @test abs(a.mean[1] - c.mean[1]) < 4 * sqrt(a.err[1]^2 + c.err[1]^2)
+        end
+
+        # (3) checkpoint interplay, on a GENUINELY interrupted run: a finished
+        # run's file ends at the completed marker (resume then merely returns the
+        # stored result), so continuation teeth need a run that actually stops
+        # mid-measure — a poison observable throws at measurement 100, leaving
+        # the file at the last periodic write (measure sweep 60 of 120), and
+        # `resume` must (a) ACCEPT the warm-started file at all — the stored
+        # fingerprint is the REFERENCE-scale identity because the checkpointer
+        # runs before the s0 install, order load-bearing — and (b) reproduce the
+        # uninterrupted run bit for bit from mid-measure, final strain included.
+        dir = mktempdir()
+        path = joinpath(dir, "warm.jld2")
+        nmeas = Ref(0)
+        poison = Observable(:poison, 1,
+                            v -> (nmeas[] += 1) >= 100 ?
+                                 error("poison interrupt") : 0.0)
+        benign = Observable(:poison, 1, v -> 0.0)
+        obsA = [standard_observables(H); benign]
+        kwB = (; kT = 0.05, sweeps_therm = 40, sweeps_measure = 120,
+               renorm_interval = 30, nbins = 4, seed = 0xd55, strain = sch,
+               pressure = P, strain_init = s0, init = r.final_config,
+               disps = r.final_disps)
+        a = run_mc(H; kwB..., observables = obsA)
+        err = try
+            run_mc(H; kwB..., observables = [standard_observables(H); poison],
+                   checkpoint = path, checkpoint_interval = 50)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ErrorException && occursin("poison", err.msg)
+        @test isfile(path)
+        mid = MCs.jldopen(path, "r") do f
+            (f["progress/phase"], f["progress/sweep"])
+        end
+        @test mid[1] == "measure" && 0 < mid[2] < 120   # non-vacuity: mid-run
+        # the interrupt skipped run_mc's hand-back; resume revalidates from any
+        # coefficient state, so knock H further off the reference first
+        set_coefficients!(H, MCs.strain_coefficients(sch, 1.03);
+                          recheck_translation = false)
+        c = resume(path, H; observables = obsA, strain = sch)
+        @test c.final_config == a.final_config
+        @test c.final_disps == a.final_disps
+        @test c.final_strain == a.final_strain
+        @test c.points[1].stats[:energy].mean[1] ==
+              a.points[1].stats[:energy].mean[1]
+        @test _at_reference(H)
+
+        # (4) run_pt: per-lane strain_init (a vector), broadcast (a scalar), the
+        # recorded per-lane finals, determinism, and the fixed-cell `nothing`.
+        s0s = [0.97, 1.03]
+        # exchanges are deliberately OUT of this run (an accepted swap trades the
+        # strain payload between rungs, folding 0.97 ↔ 1.03 into both marginals —
+        # measured 6e-3 mean shift); the pin wants each lane's own entry scale.
+        # Warm start WITH live exchanges is covered by the resume block below.
+        kwP = (; kT = [0.05, 0.08], sweeps_therm = 0, sweeps_measure = 200,
+               seed = 0xd56, renorm_interval = 50, exchange_interval = 10_000,
+               strain = sch, pressure = P, strain_step = 1e-8,
+               strain_init = s0s,
+               observables = [standard_observables(H);
+                              Observable(:scale, 1, v -> MCs.strain(v))])
+        pt = run_pt(H; kwP..., ntasks = 2)
+        @test all(isnan, pt.swap_acceptance)   # the exchange-free premise holds
+        # each LANE pinned near its own entry scale — a broadcast or permutation
+        # bug lands a lane 6e-2 away, 4 decades above the walk bound
+        @test pt.final_strains isa Vector{Float64}
+        for i = 1:2
+            @test abs(pt.points[i].stats[:scale].mean[1] - s0s[i]) < 1e-5
+            @test abs(pt.final_strains[i] - s0s[i]) < 1e-4
+        end
+        @test _at_reference(H)
+        # bit-determinism across ntasks with the warm start live (P3, extended)
+        pts = run_pt(H; kwP..., ntasks = 1)
+        @test pts.final_strains == pt.final_strains
+        @test [p.stats[:energy].mean[1] for p in pt.points] ==
+              [p.stats[:energy].mean[1] for p in pts.points]
+        # scalar broadcast
+        ptb = run_pt(H; kT = [0.05, 0.08], sweeps_therm = 0, sweeps_measure = 60,
+                     seed = 0xd57, exchange_interval = 5, strain = sch,
+                     pressure = P, strain_step = 1e-8, strain_init = 1.02)
+        @test all(abs(s - 1.02) < 1e-4 for s in ptb.final_strains)
+        # a warm-started PT run, interrupted mid-measure (poison, as in (3);
+        # ntasks = 1 in the writer so the interrupt point is deterministic),
+        # resumes bit-identically — lane clones rebuilt at the checkpointed
+        # per-lane scales, warm-start finals included
+        pth = joinpath(dir, "warm_pt.jld2")
+        nmeas[] = 0
+        kwR = (; kT = [0.05, 0.08], sweeps_therm = 30, sweeps_measure = 90,
+               renorm_interval = 30, nbins = 4, seed = 0xd58,
+               exchange_interval = 5, strain = sch, pressure = P,
+               strain_init = s0s)
+        pa = run_pt(H; kwR..., observables = obsA)
+        err = try
+            run_pt(H; kwR..., observables = [standard_observables(H); poison],
+                   checkpoint = pth, checkpoint_interval = 40, ntasks = 1)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ErrorException && occursin("poison", err.msg)
+        pmid = MCs.jldopen(pth, "r") do f
+            (f["progress/phase"], f["progress/done"])
+        end
+        @test pmid[1] == "measure" && 0 < pmid[2] < 90   # non-vacuity: mid-run
+        pc = resume(pth, H; observables = obsA, strain = sch)
+        @test pc.final_configs == pa.final_configs
+        @test pc.final_disps == pa.final_disps
+        @test pc.final_strains == pa.final_strains
+        @test [p.stats[:energy].mean[1] for p in pc.points] ==
+              [p.stats[:energy].mean[1] for p in pa.points]
+        @test _at_reference(H)
+        # fixed-cell PT: `nothing`
+        ptf = run_pt(H; kT = [0.05, 0.08], sweeps_therm = 2, sweeps_measure = 4,
+                     seed = 2)
+        @test ptf.final_strains === nothing
+
+        # (5) refusals, each by message: no schedule, out-of-domain (scalar and
+        # one vector entry), and a wrong-length ladder vector
+        err = try
+            run_mc(H; kT = 0.05, sweeps_therm = 1, sweeps_measure = 2,
+                   strain_init = 1.01)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin("without a strain schedule",
+                                                err.msg)
+        # the run_pt vector path hits the SAME hoisted refusal (the hoist is
+        # load-bearing for the type layer — a revert re-breaks JET, so gate it)
+        err = try
+            run_pt(H; kT = [0.05, 0.08], sweeps_therm = 1, sweeps_measure = 2,
+                   strain_init = [1.0, 1.0])
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin("without a strain schedule",
+                                                err.msg)
+        lo, hi = MCs.strain_domain(sch)
+        @test_throws ArgumentError run_mc(H; kT = 0.05, sweeps_therm = 1,
+                                          sweeps_measure = 2, strain = sch,
+                                          pressure = P,
+                                          strain_init = hi + 0.05)
+        @test_throws ArgumentError run_pt(H; kT = [0.05, 0.08], sweeps_therm = 1,
+                                          sweeps_measure = 2, strain = sch,
+                                          pressure = P,
+                                          strain_init = [1.0, hi + 0.05])
+        err = try
+            run_pt(H; kT = [0.05, 0.08], sweeps_therm = 1, sweeps_measure = 2,
+                   strain = sch, pressure = P, strain_init = [1.0, 1.0, 1.0])
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin("ladder of 2 rungs", err.msg)
     end
 end

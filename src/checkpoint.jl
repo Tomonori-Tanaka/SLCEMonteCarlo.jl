@@ -591,6 +591,7 @@ function resume(path::AbstractString, H::TiledHamiltonian;
         # validation installed
         b.temp_index > length(data.plan.kts) &&
             return MCResult(b.points, copy(b.st.config), _final_disps(H, b.st),
+                            strain === nothing ? nothing : b.st.strain,
                             data.plan.seed)
         sctx = nothing
         if strain !== nothing

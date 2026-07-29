@@ -21,8 +21,8 @@
 
 Result of [`run_pt`](@ref): `points` (one [`TempResult`](@ref) per ladder rung, in
 ladder order), the adjacent-pair `swap_acceptance` fractions (length
-`n_rungs − 1`; over the whole run), each lane's `final_config` and `final_disps`, and
-the run `seed`. Prints as a summary table.
+`n_rungs − 1`; over the whole run), each lane's `final_config` and `final_disps`,
+the per-lane `final_strains`, and the run `seed`. Prints as a summary table.
 
 `final_disps[r]` is lane `r`'s last displacement configuration in the
 centre-of-mass-free frame (empty on a pure-spin model). Note it is the *lane's*
@@ -30,17 +30,23 @@ payload at the end of the run — a replica exchange moves whole physical states
 between lanes, so it is a sample of rung `r`'s marginal, not the continuation of one
 replica's trajectory.
 
-!!! warning "Not a warm start for a strained (NPT) ladder"
-    On a strained run each lane ends at its own cell scale `s ≠ 1`, and `PTResult`
-    does not carry it, so `final_disps[r]` are absolute lengths at an unrecorded
-    per-lane scale (the same `MCResult` caveat, once per rung). Continue a strained
-    PT run through its checkpoint ([`resume`](@ref)) instead.
+`final_strains` is the per-lane vector of end-of-run cell scales on a strained (NPT)
+run and `nothing` on a fixed-cell one (**`nothing` is not `ones(R)`**, the
+[`MCView`](@ref) discipline). `final_disps[r]`'s absolute lengths are expressed at
+`final_strains[r]`. A ladder warm start —
+`run_pt(H; strain = sch, strain_init = r.final_strains, init = ..., ...)` (a scalar
+`strain_init` broadcasts) — is fully self-consistent for at most ONE rung: per-lane
+`init`/`disps` are not wired, so every other lane pairs its own start scale with a
+shared configuration expressed at a different lane's scale (legal — the chain
+re-equilibrates — just not the `run_mc` triple). The self-consistent per-lane
+continuation is [`resume`](@ref).
 """
 struct PTResult
     points::Vector{TempResult}
     swap_acceptance::Vector{Float64}
     final_configs::Vector{SpinConfig}
     final_disps::Vector{Vector{SVector{3,Float64}}}
+    final_strains::Union{Nothing,Vector{Float64}}
     seed::UInt64
 end
 
@@ -54,6 +60,9 @@ function Base.show(io::IO, ::MIME"text/plain", r::PTResult)
     _print_points_table(io, r.points, length(first(r.final_configs)))
     print(io, "  swap acceptance: ")
     println(io, join([@sprintf("%.2f", a) for a in r.swap_acceptance], " "))
+    r.final_strains === nothing ||
+        println(io, "  final cell scales s = ",
+                join([@sprintf("%.6g", s) for s in r.final_strains], " "))
     return nothing
 end
 
@@ -414,7 +423,9 @@ function _pt_run!(lanes::Vector{_PTLane}, plan::UpdatePlan,
               for lane in lanes]
     swaps = [swap_att[i] == 0 ? NaN : swap_acc[i] / swap_att[i] for i = 1:(R - 1)]
     return PTResult(points, swaps, [copy(lane.st.config) for lane in lanes],
-                    [_final_disps(lane.H, lane.st) for lane in lanes], plan.seed)
+                    [_final_disps(lane.H, lane.st) for lane in lanes],
+                    first(lanes).sctx === nothing ? nothing :
+                    [lane.st.strain for lane in lanes], plan.seed)
 end
 
 """
@@ -461,7 +472,10 @@ tighten the ladder where they collapse) in `swap_acceptance`.
 Passing a [`StrainSchedule`](@ref) as `strain` makes every lane an
 isothermal–isobaric chain at the **same** hydrostatic pressure (`pressure_GPa` XOR
 `pressure`, exactly as in [`run_mc`](@ref), together with `strain_interval` /
-`strain_proposal` / `strain_step`). Each lane then sweeps its own **coefficient
+`strain_proposal` / `strain_step`; `strain_init` additionally takes a length-`R`
+vector — one warm-start scale per lane, a previous run's
+`PTResult.final_strains` — with a scalar broadcasting to the whole ladder).
+Each lane then sweeps its own **coefficient
 clone** of `H` — the lanes sit at different cell scales concurrently, so per-lane
 coefficient state is what makes this sound — and an accepted exchange moves the
 clone reference together with the payload, so a lane's installed coefficients
@@ -503,6 +517,7 @@ function run_pt(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                 strain_interval::Union{Nothing,Integer} = nothing,
                 strain_proposal::Symbol = :logvolume,
                 strain_step::Union{Nothing,Real} = nothing,
+                strain_init::Union{Nothing,Real,AbstractVector{<:Real}} = nothing,
                 pressure_GPa::Union{Nothing,Real} = nothing,
                 pressure::Union{Nothing,Real} = nothing)::PTResult
     kts = resolve_kt(temperature, kT)
@@ -518,6 +533,7 @@ function run_pt(H::TiledHamiltonian; temperature = nothing, kT = nothing,
     ndisp = _resolve_disp_passes(H, disp_per_metropolis)
     nstrain = _resolve_strain_moves(strain, strain_interval)
     p_model = _resolve_pressure(strain, pressure_GPa, pressure)
+    s0s = _resolve_strain_init_pt(strain, strain_init, R)
     sstep = strain === nothing ? 0.0 :
             strain_step === nothing ? _default_strain_step(strain, strain_proposal) :
             Float64(strain_step)
@@ -571,13 +587,23 @@ function run_pt(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                          rand(master, UInt64), rand(master, UInt64)) for _ = 1:R]
     exchange_rng = Xoshiro(rand(master, UInt64), rand(master, UInt64),
                            rand(master, UInt64), rand(master, UInt64))
-    lanes = [_PTLane(ChainState(H, _initial_config(H, init, lane_rngs[r]),
-                                lane_rngs[r], plan.step0; disps = disps,
-                                step_u = plan.step_u0),
-                     [SweepScratch(H) for _ = 1:plan.sweep_tasks], kts[r],
-                     1.0 / kts[r], ObsAccumulator[], 0,
-                     strain === nothing ? H : _coefficient_clone(H),
-                     strain === nothing ? nothing : (strain, StrainScratch(H)))
+    lanes = [let Hl = strain === nothing ? H : _coefficient_clone(H),
+                 sctx_l = strain === nothing ? nothing : (strain, StrainScratch(H))
+                 # the warm-start scale goes into the LANE's clone before its chain
+                 # computes the initial energy (the (H, chain) contract from sweep
+                 # one); the caller's `H` — and the checkpointer's fingerprint —
+                 # stay at the reference installed above
+                 s0s === nothing ||
+                     set_coefficients!(Hl, strain_coefficients!(sctx_l[2].coef,
+                                                                strain, s0s[r]);
+                                       recheck_translation = false)
+                 st = ChainState(Hl, _initial_config(H, init, lane_rngs[r]),
+                                 lane_rngs[r], plan.step0; disps = disps,
+                                 step_u = plan.step_u0)
+                 s0s === nothing || (st.strain = s0s[r])
+                 _PTLane(st, [SweepScratch(H) for _ = 1:plan.sweep_tasks], kts[r],
+                         1.0 / kts[r], ObsAccumulator[], 0, Hl, sctx_l)
+             end
              for r = 1:R]
     swap_att = zeros(Int, R - 1)
     swap_acc = zeros(Int, R - 1)

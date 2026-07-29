@@ -25,6 +25,11 @@ function _assert_same_result(a, b)
         @test isequal(pa.disp_max, pb.disp_max)
         @test pa.escaped == pb.escaped
     end
+    # the end-of-run cell scale rides every bit-identity gate too (`nothing` on
+    # every fixed-cell run this file drives — the field must still agree)
+    a isa MCResult && @test isequal(a.final_strain, b.final_strain)
+    a isa PTResult && @test isequal(a.final_strains, b.final_strains)
+    return nothing
 end
 
 @testset "checkpoint / resume" begin
@@ -60,8 +65,12 @@ end
         b = run_mc(H; kw..., checkpoint = path, checkpoint_interval = 150)
         _assert_same_result(a, b)                           # writing consumes no RNG
         @test a.final_config == b.final_config
-        # the file's last periodic write is mid-run; resume must reproduce the
-        # full run bit-exactly (last tick: temp 2, measure phase, sweep 250)
+        # KNOWN VACUITY (strain-move.md S12): `_mc_loop!` writes an unconditional
+        # end-of-temperature boundary checkpoint, so this file ends COMPLETED
+        # (temp_index = 3) and `resume` returns the stored result without
+        # re-running a sweep — the equality below compares the file's own stored
+        # results with themselves. Real mid-run mc continuation needs an
+        # interrupted writer (the S12 poison-observable pattern); pending.
         @test isfile(path)
         c = resume(path, H)
         _assert_same_result(a, c)

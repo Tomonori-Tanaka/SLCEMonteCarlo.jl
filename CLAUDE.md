@@ -208,7 +208,7 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
 - **The NPT strain move: `strain_move!` ↔ `strain_delta_energy`/`_strain_log_weight` ↔
   `ChainState.strain` ↔ the run drivers ↔ the checkpoint schema ↔ `sync_coefficients!`**
   (`strain.jl`, `run.jl`, `pt.jl`, `checkpoint.jl`, `gpu/gpu_hamiltonian.jl`,
-  `docs/specs/strain-move.md`). Eight rules that move together. (1) The elastic energy
+  `docs/specs/strain-move.md`). Nine rules that move together. (1) The elastic energy
   has ONE source — the grid's `j0(s)`, times `n_cells` — and there is deliberately no
   elastic-term keyword anywhere; adding one double-counts with every gate green
   (the reconstruction identity in `test_strainschedule.jl` is the fence). (2) The
@@ -287,6 +287,27 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   is refused by name. On a FIXED-CELL run both drivers refuse
   `:enthalpy`/`:enthalpy2` at entry (`_refuse_npt_observables`) — keep that in
   sync if the observable names change.
+  (9) The warm start (`strain_init`, S12): the s0 install sits BETWEEN the
+  checkpointer (which must capture the REFERENCE-scale fingerprint — reorder
+  and every warm-started run's file refuses its own resume) and the chain's
+  initial-energy computation (the (H, chain) contract from sweep one; on
+  `run_pt` the install goes into each lane's clone BEFORE that lane's
+  `ChainState`, and the caller's `H` never leaves the reference).
+  `carryover = false`'s independent restarts return to the reference, like
+  they discard `init`. A missing entry install's COEFFICIENT half self-heals
+  at the first strain move (accept installs, reject Horner-restores at
+  `st.strain`; the energy offset rides as drift until the next
+  renormalization, ~0.05σ on the fixture), so no statistical gate can see it
+  — the S12 gates pin the start scale, the standing contract, and resume
+  acceptance instead. And know the checkpoint shape, BY KIND: `run_mc` writes
+  an unconditional end-of-temperature boundary checkpoint, so a completed mc
+  file always ends at the completed marker and a resume-equals-uninterrupted
+  gate on it compares the file's stored results with themselves — interrupt
+  the writer mid-measure (poison-observable pattern, S12); the pre-existing
+  MC resume gates have that vacuity and are pending the fix. `run_pt` has NO
+  end-of-run write, so its gates genuinely land mid-measure — do NOT "fix"
+  them, but their non-vacuity is interval arithmetic, so assert
+  `0 < progress/done < total` when writing a new one.
 - **The §8(ζ) pressure diagnostic: `_energy_with_coefs` ↔ `_total_energy`, and the
   exact-derivative trio ↔ their Horner sources** (`strain.jl`,
   `docs/specs/strain-move.md` S9): `energy_volume_derivative` is exact via (a) the

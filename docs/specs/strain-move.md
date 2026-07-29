@@ -182,9 +182,8 @@ is untouched — SLCEDynamics' checkpoint format depends on it.
 - **Isotropic grid only in v0**: the schedule interpolates `SLCE.StrainedModels`
   volume grids (`s·A₀`); the anisotropic-channel K(ε) split (§9b/§9c) inherits
   the same machinery when it lands upstream.
-- **The chain starts at `s = 1`** (must be in the domain); warm-starting a
-  strained chain from a previous run's final scale is not wired (`MCResult`
-  carries no final strain) — resume from a checkpoint instead.
+- **The chain starts at `s = 1`** unless `strain_init` says otherwise (either
+  way inside the domain); the strained warm start — DONE, see S12.
 - **Mechanical-equilibrium identity observable** — DONE, see S9.
 - **PT + strain** — DONE, see S10.
 - **`:energy` / `:specific_heat` are configurational-only on a strained run**:
@@ -342,10 +341,10 @@ Scope notes: one pressure for the whole ladder (the swap-cancellation argument
 above needs a common `P`; per-rung pressures are a different method — replica
 exchange in the (T, P) plane — not a missing keyword). `pressure_diagnostics`
 stays `run_mc`-only, per S9 — refused at `run_pt` ENTRY by observable name, so
-the late per-view identity refusal never burns a thermalization phase. `PTResult`
-carries no per-lane final scale, so on a strained run `final_disps[r]` are
-absolute lengths at an unrecorded per-lane scale — S8's `MCResult` warm-start
-caveat, once per rung (docstring warns; resume from the checkpoint instead).
+the late per-view identity refusal never burns a thermalization phase.
+`PTResult.final_strains` records the per-lane end scales since S12 (the
+"unrecorded per-lane scale" caveat that used to live here), and `strain_init`
+warm-starts a ladder from them.
 The lane-owned escape statistics see payloads at whichever scale the exchanges
 deliver, so a strained lane's `disp_rms` series mixes scales — diagnostic-only,
 and PT already breaks that series at every swap. Memory: R clones of
@@ -420,3 +419,71 @@ run's own — the view carries neither, and a pairing-compatible second schedule
 or a different pressure is undetectable at measurement time (docstring warns,
 S9 precedent; the drivers hold both, so a `strain_observables = true` run
 keyword would close the class if it ever bites).
+
+## S12 — the strained warm start (landed 2026-07-30)
+
+`MCResult.final_strain` / `PTResult.final_strains` record the end-of-run cell
+scales (`nothing` on a fixed-cell run — the MCView "nothing is not 1.0"
+discipline, so a fixed-cell result cannot be misread as "ended at the
+reference"), and `strain_init` on both drivers starts the chain there: scalar
+on `run_mc`, scalar-broadcast or per-lane vector on `run_pt`. The recipe is
+`run_mc(H; strain = sch, strain_init = r.final_strain, init = r.final_config,
+disps = r.final_disps, ...)` — `final_disps`' absolute lengths are expressed at
+`final_strain`, so the triple is self-consistent by construction. A warm start
+is a NEW chain (fresh RNG streams, adaptation restarted), never a bit-identical
+continuation — that stays `resume`'s job.
+
+**Ordering, twice load-bearing.** The warm-start install happens AFTER the
+checkpointer captured the reference-scale model fingerprint (the S7 identity —
+swap the order and every warm-started run's file refuses its own resume) and
+BEFORE the chain computes its initial energy (the (H, chain) contract holds
+from sweep one). On `run_pt` the install goes into each LANE's coefficient
+clone before that lane's chain is built — the caller's `H`, and hence the
+checkpointer, stay at the reference throughout, exactly as in S10. On a
+multi-temperature `run_mc` ladder, `carryover = false`'s independent restarts
+return to the reference (they discard the caller's `init` the same way); only
+the first temperature starts at `strain_init`.
+
+**What self-heals, and the gate scoping** (`test_strainschedule.jl` "strained
+warm start"). A missing entry install (chain at `s0`, `H` still at the
+reference) has its COEFFICIENT half repaired by the FIRST strain move — accept
+installs the new scale's coefficients and reject restores at `st.strain` by
+the deterministic Horner pass — so the mis-sampled footprint is
+`strain_interval` sweeps at ~0.5 %-off coefficients. The ENERGY half heals
+more slowly on the reject branch: `st.energy` keeps the offset
+`E_ref(x) − E_s0(x)` (measured −1.06e-3 on the fixture ≈ 0.05σ of the run's
+`:energy` error bar) as carried drift until the next renormalization
+re-anchors it — visible in `max_drift`, invisible to every statistical gate by
+construction. The gates therefore pin what is pinnable:
+`final_strain` equals the strain of the last measurement view (an exact public
+witness via a trace observable); the chain STARTS at `s0` (microscopic
+`strain_step` freezes the walk within ~1e-6, four decades below the
+ignored-`strain_init` failure); the (H, chain) contract holds at every
+measurement (a contract observable recomputes the schedule's coefficients at
+the view's own strain against the live `v.H`); per-lane `strain_init` lands on
+its own lane (exchange-free run — an accepted swap trades the strain payload
+between rungs, measured 6e-3 marginal mixing, so the pin would otherwise see
+the mixture); a therm-free warm start from an equilibrated parent reproduces
+the parent's marginals (0.7–1.5σ measured over 3 seed sets, 4σ gate); and the
+checkpoint interplay is gated on a GENUINELY interrupted run — a poison
+observable throws mid-measure, leaving the file at the last periodic write, and
+`resume` must both accept the file (the reference-fingerprint ordering above)
+and reproduce the uninterrupted run bit for bit, per-lane scales included.
+
+That last gate exists because of the two kinds' different checkpoint shapes
+(measured 2026-07-30, every pre-existing resume gate's file inspected).
+`run_mc` writes an UNCONDITIONAL end-of-temperature boundary checkpoint after
+every temperature (run.jl's `_mc_loop!`), so a completed mc file always ends
+at `temp_index = n + 1` and `resume`'s early return hands back the stored
+result without re-running a sweep — a resume-equals-uninterrupted assertion
+built on such a file compares the file's own stored results with themselves,
+STRUCTURALLY, whatever the interval. The pre-existing **mc** gates
+(`test_checkpoint.jl`'s three MC testsets and S7's v5 strained-MC testset)
+have exactly that shape and are pending the interrupted-writer treatment;
+their "last tick lands mid-measure" comments are false. `run_pt` is the
+opposite: it has NO end-of-run write at all — the file ends wherever the
+interval arithmetic last fired — so the pre-existing PT resume gates
+(`test_checkpoint.jl`'s two, `test_pt.jl`'s async one, S10's v5) genuinely
+land mid-measure and re-run 30–200 sweeps; they are NOT vacuous, but their
+non-vacuity is an accident of the chosen intervals and must be asserted
+(`0 < progress/done < total`), as the S12 gate does.

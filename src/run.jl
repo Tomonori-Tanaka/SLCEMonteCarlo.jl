@@ -162,8 +162,8 @@ Base.show(io::IO, p::TempResult) =
     MCResult
 
 Result of [`run_mc`](@ref): `points` (one [`TempResult`](@ref) per temperature, in
-run order), the chain's `final_config` and `final_disps`, and the run `seed`. Prints
-as a summary table.
+run order), the chain's `final_config`, `final_disps` and `final_strain`, and the
+run `seed`. Prints as a summary table.
 
 `final_disps` is the chain's last displacement configuration in the sampler's
 **centre-of-mass-free** frame (model length units) — empty on a pure-spin model. It
@@ -171,16 +171,21 @@ is the warm start for a continuation run (`run_mc(H; init = r.final_config,
 disps = r.final_disps)`), which is why it leaves the sampler at all; it is one
 sample, not an average, so it is not a substitute for the `:u2` observable.
 
-!!! warning "The warm-start recipe does not apply to a strained (NPT) run"
-    An NPT chain ends at some cell scale `s ≠ 1`, and `MCResult` does not carry it,
-    so `final_disps` are absolute lengths at an unrecorded scale while a fresh run
-    starts at the reference. Continue a strained run through its checkpoint
-    ([`resume`](@ref)) instead.
+`final_strain` is the chain's last cell scale on a strained (NPT) run and `nothing`
+on a fixed-cell one — **`nothing` is not `1.0`**, exactly as on [`MCView`](@ref): a
+fixed-cell chain has no scale to report, and fabricating the reference would let a
+strained consumer read a fixed-cell result as "ended at the reference". On a
+strained run it completes the warm-start recipe —
+`run_mc(H; strain = sch, strain_init = r.final_strain, init = r.final_config,
+disps = r.final_disps, ...)` — and is the scale `final_disps`' absolute lengths are
+expressed at. A warm start is a new chain (fresh RNG streams, adaptation restarted),
+not a bit-identical continuation; for that, [`resume`](@ref) from a checkpoint.
 """
 struct MCResult
     points::Vector{TempResult}
     final_config::SpinConfig
     final_disps::Vector{SVector{3,Float64}}
+    final_strain::Union{Nothing,Float64}
     seed::UInt64
 end
 
@@ -192,6 +197,10 @@ function Base.show(io::IO, ::MIME"text/plain", r::MCResult)
     println(io, "MCResult: ", length(r.points), " temperature(s), ",
             length(r.final_config), " sites, seed ", r.seed)
     _print_points_table(io, r.points, length(r.final_config))
+    # a strained result says where the cell ended; a fixed-cell one stays silent
+    # (`nothing` is not a scale, so there is no line to print it on)
+    r.final_strain === nothing ||
+        println(io, "  final cell scale s = ", @sprintf("%.6g", r.final_strain))
     return nothing
 end
 
@@ -352,7 +361,10 @@ function _mc_loop!(points::Vector{TempResult}, st::ChainState, H::TiledHamiltoni
         if !resuming && i > 1 && !plan.carryover
             # an independent restart is independent in EVERY channel: the cell returns
             # to the reference scale (coefficients first, so the energy recompute
-            # below sees them), then the state resets
+            # below sees them), then the state resets. The float `!= 1.0` skip is
+            # sound because `1.0` is only ever written EXACTLY (ctor, this reset)
+            # and `st.strain == 1.0 ⟺ H at the reference` holds by construction —
+            # keep that invariant if you touch either side.
             if sctx !== nothing && st.strain != 1.0
                 set_coefficients!(H, strain_coefficients!(sctx[2].coef, sctx[1], 1.0);
                                   recheck_translation = false)
@@ -372,7 +384,8 @@ function _mc_loop!(points::Vector{TempResult}, st::ChainState, H::TiledHamiltoni
         ck === nothing ||
             _write_ckpt_mc(ck, H, st, points, i + 1, :therm, 0, nothing)
     end
-    return MCResult(points, copy(st.config), _final_disps(H, st), plan.seed)
+    return MCResult(points, copy(st.config), _final_disps(H, st),
+                    sctx === nothing ? nothing : st.strain, plan.seed)
 end
 
 """
@@ -440,9 +453,10 @@ an outer strain move ([`strain_move!`](@ref)) rescales the cell over the schedul
 volume grid. Without it the run samples the **constant-strain (fixed cell)
 ensemble** — a different ensemble (`F(T, ε)`, no volume Jacobian, no `P·V`), which
 is what a fixed-geometry magnetostriction calculation wants. The chain starts at
-the reference scale `s = 1`, which must lie inside the schedule's domain, and `H`
-is handed back at the reference when the run returns — never at the chain's final
-scale.
+the reference scale `s = 1` (or at `strain_init`), which must lie inside the
+schedule's domain, and `H` is handed back at the reference when the run returns —
+never at the chain's final scale (the chain's own end scale is
+`MCResult.final_strain`).
 
 - `strain = nothing`: the sampler-side volume grid, built by
   [`StrainSchedule(sm, H)`](@ref) against **this** Hamiltonian (checked).
@@ -460,6 +474,19 @@ scale.
 - `strain_step = nothing`: proposal width in that variable; defaults to a tenth of
   the schedule's domain. Fixed for the whole run (never adapted) — a poor width
   shows up in `TempResult.acceptance_strain`, not in the sampled ensemble.
+- `strain_init = nothing`: the cell scale the chain STARTS at (default: the
+  reference `s = 1`; must lie inside the schedule's domain; requires `strain`).
+  With `init` / `disps` this is the strained warm start — continue from a previous
+  run's `final_config` / `final_disps` / `final_strain` without re-thermalizing
+  from the reference cell; `disps` are absolute lengths at that scale, exactly as
+  `final_disps` left them. A warm start is a NEW chain (fresh RNG streams,
+  adaptation restarted — with `sweeps_therm = 0` there is no adaptation at all, so
+  forward the parent's tuned widths too: `step = r.points[end].final_step,
+  step_u = r.points[end].final_step_u`), not a bit-identical continuation — that
+  is [`resume`](@ref)'s job. On a multi-temperature ladder with `carryover = false`,
+  the independent restarts between temperatures return to the reference (they
+  discard `init` the same way); only the first temperature starts at
+  `strain_init`.
 
 On a strained run `:energy` / `:specific_heat` are configurational-only (neither
 `C_V` nor the NPT `C_P`); append [`npt_observables`](@ref) — built with this run's
@@ -484,9 +511,11 @@ function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                 strain_interval::Union{Nothing,Integer} = nothing,
                 strain_proposal::Symbol = :logvolume,
                 strain_step::Union{Nothing,Real} = nothing,
+                strain_init::Union{Nothing,Real} = nothing,
                 pressure_GPa::Union{Nothing,Real} = nothing,
                 pressure::Union{Nothing,Real} = nothing)::MCResult
     ndisp = _resolve_disp_passes(H, disp_per_metropolis)
+    s0 = _resolve_strain_init(strain, strain_init)
     nstrain = _resolve_strain_moves(strain, strain_interval)
     p_model = _resolve_pressure(strain, pressure_GPa, pressure)
     sstep = strain === nothing ? 0.0 :
@@ -525,9 +554,20 @@ function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                             "mc", 0;
                             grid_fp = strain === nothing ? UInt64(0) :
                                       _grid_fingerprint(strain))
+    # the warm-start scale is installed AFTER the checkpointer captured the
+    # reference-scale fingerprint (order load-bearing, strain-move.md S7) and
+    # BEFORE the chain computes its initial energy below — the (H, chain)
+    # contract holds from the first sweep. (`sctx` is never `nothing` when `s0`
+    # isn't — `_resolve_strain_init` requires the schedule — the extra guard
+    # just proves it to the type layer.)
+    if s0 !== nothing && sctx !== nothing
+        set_coefficients!(H, strain_coefficients!(sctx[2].coef, sctx[1], s0);
+                          recheck_translation = false)
+    end
     rng = Xoshiro(plan.seed)
     st = ChainState(H, _initial_config(H, init, rng), rng, plan.step0;
                     disps = disps, step_u = plan.step_u0)
+    s0 === nothing || (st.strain = s0)
     r = _mc_loop!(TempResult[], st, H, plan, observables, evaluables, 1, :therm,
                   0, nothing, ck, sctx)
     # hand `H` back at the REFERENCE scale, not wherever the chain ended: the caller's
@@ -681,6 +721,43 @@ function _resolve_pressure(sch::Union{Nothing,StrainSchedule},
     p = pressure === nothing ? Float64(pressure_GPa) / GPA_PER_EV_A3 : Float64(pressure)
     isfinite(p) || throw(ArgumentError("the pressure must be finite; got $p"))
     return p
+end
+
+# Resolve the warm-start scale: requires a schedule and must lie inside its domain.
+# The domain check is an ENTRY guard for two silent-then-loud consequences: the
+# install would EXTRAPOLATE the Horner interpolant outside the grid (no domain
+# check in `strain_coefficients!` — silent), and the first strain move would then
+# throw on its out-of-domain current scale mid-run, after the setup is spent.
+# `nothing` means the reference, exactly as before the keyword existed.
+function _resolve_strain_init(sch::Union{Nothing,StrainSchedule},
+                              strain_init::Union{Nothing,Real})::Union{Nothing,
+                                                                       Float64}
+    strain_init === nothing && return nothing
+    sch === nothing && throw(ArgumentError(
+        "strain_init was passed without a strain schedule; a fixed-cell run has " *
+        "no cell scale to start at"))
+    s0 = Float64(strain_init)
+    in_strain_domain(sch, s0) || throw(ArgumentError(
+        "strain_init = $s0 is outside this schedule's domain " *
+        "$(strain_domain(sch)); a warm start must begin inside the grid"))
+    return s0
+end
+
+# The ladder form of the same resolution: a scalar broadcasts to every rung (one
+# common warm-start cell), a vector is per-lane (a previous `PTResult.final_strains`);
+# each entry passes the scalar rule. The no-schedule refusal is hoisted so the
+# per-entry loop runs with a narrowed `sch::StrainSchedule` (type layer).
+function _resolve_strain_init_pt(sch::Union{Nothing,StrainSchedule}, strain_init,
+                                 R::Int)::Union{Nothing,Vector{Float64}}
+    strain_init === nothing && return nothing
+    sch === nothing && throw(ArgumentError(
+        "strain_init was passed without a strain schedule; a fixed-cell run has " *
+        "no cell scale to start at"))
+    strain_init isa AbstractVector || return fill(
+        _resolve_strain_init(sch, strain_init)::Float64, R)
+    length(strain_init) == R || throw(ArgumentError(
+        "strain_init has $(length(strain_init)) entries for a ladder of $R rungs"))
+    return Float64[_resolve_strain_init(sch, s) for s in strain_init]
 end
 
 # A tenth of the schedule's domain in the proposal's own variable — wide enough to

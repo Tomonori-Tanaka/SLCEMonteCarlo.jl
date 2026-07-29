@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — the strained warm start (`docs/specs/strain-move.md` S12)
+
+`MCResult.final_strain` / `PTResult.final_strains` record a strained run's
+end-of-run cell scales (`nothing` on a fixed-cell run, the MCView discipline),
+and the new `strain_init` keyword on both drivers starts the chain there
+(`run_pt` additionally takes a per-lane vector; a scalar broadcasts) — closing
+S8's "continue only through a checkpoint" caveat:
+`run_mc(H; strain = sch, strain_init = r.final_strain, init = r.final_config,
+disps = r.final_disps, ...)` is now the strained warm start, with
+`final_disps`' absolute lengths expressed at `final_strain` so the triple is
+self-consistent. The install ordering is load-bearing twice (after the
+checkpointer's reference-scale fingerprint capture, before the chain's initial
+energy; per-lane into the PT clones), `carryover = false`'s independent
+restarts still return to the reference, and a warm start remains a NEW chain —
+bit-identical continuation stays `resume`'s job. Gates include a genuinely
+interrupted checkpointed run: `run_mc` writes an unconditional
+end-of-temperature boundary checkpoint, so a completed mc file always ends at
+the completed marker and resume-equals-uninterrupted needs a mid-measure
+interrupt to be non-vacuous — S12 records that the pre-existing **MC** resume
+gates share this structural vacuity (pending the same treatment), while the
+PT ones land mid-measure by interval arithmetic and are genuine.
+
 ### Added — the strain-aware `W` observable (`docs/specs/strain-move.md` S11)
 
 `npt_observables(sch, H; pressure_GPa XOR pressure)` packages the NPT target's

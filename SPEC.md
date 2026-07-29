@@ -73,6 +73,8 @@ packages' dynamics; bitwise-gated against its lane reference, G7),
 `StrainSchedule`'s accessors (`strain_domain`, `in_strain_domain`,
 `strain_coefficients[!]`, `strain_j0`, `strain_volume`), the NPT energy contract
 `strain_delta_energy`, the move pair `StrainScratch` / `strain_move!`, the
+`strain_init` warm start with `MCResult.final_strain` /
+`PTResult.final_strains` (S12), the
 §8(ζ) mechanical-equilibrium diagnostic (`energy_volume_derivative` — exact
 `dE_total/dV` via differentiated Horner + Euler's theorem on the displacement
 degrees — and `pressure_diagnostics`, the `:pressure` evaluable whose mean must
