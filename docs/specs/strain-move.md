@@ -152,7 +152,15 @@ before production NPT+GPU runs; the refusal is held in reserve if it disappoints
 Fixed-cell byte-neutrality is pinned, not assumed: a short fixed-cell `run_mc`
 trajectory captured at commit `d038b86` (pre-wiring) is asserted bit-identical
 in the driver testset. If an intentional sampler change moves it, recapture; any
-other movement is the regression the pin exists to catch.
+other movement is the regression the pin exists to catch. Both trajectory pins
+(this one and S10's `run_pt` twin) are **capture-platform-scoped**: the `_ss_grid`
+fixture inherits `build_asr`'s SVD null-space basis, and LAPACK's choice inside
+that subspace is platform-dependent — ubuntu x64 CI gets a rotated basis, i.e. a
+genuinely different model (it also lands one coefficient on exact 0.0, which the
+default-term-list testset measures rather than assumes). The pins therefore fire
+where the model fingerprint matches its capture, and macOS aarch64 (the capture
+platform, dev machine and mac CI runner alike) asserts that they fired, so the
+detector cannot die silently.
 
 ## S7 — checkpoint schema v4
 

@@ -252,15 +252,26 @@ _ss_vk_mean(k, va, vb) =
     end
 
     @testset "the default term list is unchanged" begin
-        # `keep_zero_terms` reaching the emission must not move anything for a model with
-        # no exact zeros — every existing consumer and byte comparison depends on it
+        # `keep_zero_terms` reaching the emission must not move anything beyond the
+        # exact zeros themselves — every existing consumer and byte comparison
+        # depends on it. The zero count is MEASURED, not assumed zero: the fixture
+        # inherits `build_asr`'s SVD null-space BASIS, and LAPACK's choice inside
+        # that subspace is platform-dependent — ubuntu x64 CI's rotated basis lands
+        # one coefficient on exact 0.0 (218 vs 219 was the failure this wording
+        # replaces), and the default prune must drop exactly those terms and
+        # nothing else.
         _, models = _ss_grid()
         a = TiledHamiltonian(models[2]; dims = (2, 1, 1))
         b = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
-        @test a.n_input_terms == b.n_input_terms
-        @test [t.coef for t in a.terms] == [t.coef for t in b.terms]
+        nzero = count(iszero, t.coef for t in b.terms)
+        @test a.n_input_terms == b.n_input_terms - nzero
+        @test length(a.terms) == length(b.terms) - nzero
+        @test [t.coef for t in a.terms] ==
+              [t.coef for t in b.terms if !iszero(t.coef)]
         cfg = _ss_cfg(a.n_sites, 3)
         u = _ss_disps(a.n_sites, 3)
+        # exact zeros contribute an exact +0.0 per instance, so the accumulation is
+        # bit-identical with them present
         @test total_energy(a, cfg, u) === total_energy(b, cfg, u)
     end
 
@@ -508,11 +519,24 @@ _ss_vk_mean(k, va, vb) =
         # strain channel consumes no randomness and changes no code path when absent.
         # If an intentional sampler change moves it, recapture; anything else moving
         # it is the regression this pin exists to catch.
+        # The pin's PRECONDITION is asserted, not assumed: the fixture inherits
+        # `build_asr`'s SVD null-space basis, and LAPACK's choice inside that
+        # subspace is platform-dependent — a rotated basis (ubuntu x64 CI) is a
+        # genuinely different model, where the captured values do not apply. The
+        # pin fires exactly where the model matches its capture (the fingerprint
+        # below, taken together with the pins on macOS aarch64), and the capture
+        # platform asserts it DID fire so the detector cannot die silently.
+        pin_live = MCs._fingerprint(H) == 0x3020f63b138861f4
+        if Sys.isapple() && Sys.ARCH === :aarch64
+            @test pin_live
+        end
         r0 = run_mc(H; kT = 0.05, sweeps_therm = 50, sweeps_measure = 100,
                     seed = 0x5150, renorm_interval = 25)
-        @test r0.points[1].stats[:energy].mean[1] === -12.866452813199738
-        @test sum(sum, r0.final_config) === -0.17069256709356861
-        @test sum(x -> sum(abs, x), r0.final_disps) === 1.4251564417024021
+        if pin_live
+            @test r0.points[1].stats[:energy].mean[1] === -12.866452813199738
+            @test sum(sum, r0.final_config) === -0.17069256709356861
+            @test sum(x -> sum(abs, x), r0.final_disps) === 1.4251564417024021
+        end
         @test isnan(r0.points[1].acceptance_strain)
 
         # the NPT run: moves fire, the measurement view carries the scale (checked
@@ -1233,17 +1257,28 @@ _ss_vk_mean(k, va, vb) =
         # shift in the schedule's Horner restore must not trip a fixed-cell pin).
         # If an intentional sampler change moves it, recapture; anything else
         # moving it is the regression this pin catches.
+        # Platform scope, as on the run_mc pin: the fixture inherits LAPACK's ASR
+        # null-space basis, so the pin fires exactly where the model matches its
+        # capture, and the capture platform (macOS aarch64) asserts that it fired.
         Hpin = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        pin_live = MCs._fingerprint(Hpin) == 0x3020f63b138861f4
+        if Sys.isapple() && Sys.ARCH === :aarch64
+            @test pin_live
+        end
         r0 = run_pt(Hpin; kT = [0.05, 0.07], sweeps_therm = 50,
                     sweeps_measure = 100, seed = 0x5150, renorm_interval = 25,
                     exchange_interval = 5, ntasks = 1)
-        @test [p.stats[:energy].mean[1] for p in r0.points] ==
-              [-13.060570421931075, -12.657092511551113]
-        @test [sum(sum, c) for c in r0.final_configs] ==
-              [0.7053385500370698, 0.8192785243733386]
-        @test [sum(x -> sum(abs, x), d) for d in r0.final_disps] ==
-              [1.7833703780033128, 1.2819181240379507]
-        @test r0.swap_acceptance == [0.21428571428571427]
+        if pin_live
+            @test [p.stats[:energy].mean[1] for p in r0.points] ==
+                  [-13.060570421931075, -12.657092511551113]
+            @test [sum(sum, c) for c in r0.final_configs] ==
+                  [0.7053385500370698, 0.8192785243733386]
+            @test [sum(x -> sum(abs, x), d) for d in r0.final_disps] ==
+                  [1.7833703780033128, 1.2819181240379507]
+            # a trajectory quantity too (it merely happened to agree across
+            # platforms at these counts), so it stays under the same scope
+            @test r0.swap_acceptance == [0.21428571428571427]
+        end
     end
 
     @testset "PT + strain: run_pt wiring, determinism, and rung marginals" begin
