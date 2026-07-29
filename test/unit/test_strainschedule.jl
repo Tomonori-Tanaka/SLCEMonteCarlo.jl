@@ -619,37 +619,61 @@ _ss_vk_mean(k, va, vb) =
               renorm_interval = 30, nbins = 4, seed = 0x71, strain = sch,
               pressure = 0.01)
         a = run_mc(H; kw...)
-        # writing consumes no RNG. KNOWN VACUITY of the resume half (S12): the
-        # unconditional end-of-temperature boundary write leaves this file
-        # COMPLETED, so `resume` below exercises the strained handshake
-        # (grid fingerprint, reference reinstall, refusals) and the early
-        # return — not a mid-run continuation; that needs the S12
-        # interrupted-writer pattern (pending here, landed for warm starts).
+        # writing consumes no RNG (the completed-file b is also what the
+        # idempotency and refusal checks below want)
         b = run_mc(H; kw..., checkpoint = path, checkpoint_interval = 100)
         @test [p.stats[:energy].mean[1] for p in a.points] ==
               [p.stats[:energy].mean[1] for p in b.points]
         @test a.final_config == b.final_config
         @test isfile(path)
+        # The resume half runs on an INTERRUPTED writer (the S12 pattern — a
+        # completed mc file always ends at the completed marker, so mid-run
+        # continuation teeth need a run that actually stops): the poison dies at
+        # temp-2 measure sweep 70, the file holds the periodic write at measure
+        # sweep 60 — accumulators, chain scale and all — and the resumed run
+        # must be the uninterrupted one bit for bit.
+        nmeas = Ref(0)
+        poison = Observable(:poison, 1,
+                            v -> (nmeas[] += 1) >= 190 ?
+                                 error("poison interrupt") : 0.0)
+        obsR = [standard_observables(H); Observable(:poison, 1, v -> 0.0)]
+        aP = run_mc(H; kw..., observables = obsR)
+        err = try
+            run_mc(H; kw..., observables = [standard_observables(H); poison],
+                   checkpoint = path, checkpoint_interval = 100)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ErrorException && occursin("poison", err.msg)
+        mid = MCs.jldopen(path, "r") do f
+            (f["progress/temp_index"], f["progress/phase"], f["progress/sweep"])
+        end
+        @test mid[1] == 2 && mid[2] == "measure" && 0 < mid[3] < 120
         # `run_mc` hands H back at the reference; deliberately knock it OFF the
         # reference before resuming — resume reinstalls the reference before the
         # fingerprint check, so the caller's coefficient state must not matter, and
         # the continued run is the uninterrupted one, bit for bit
         set_coefficients!(H, MCs.strain_coefficients(sch, 1.015);
                           recheck_translation = false)
-        c = resume(path, H; strain = sch)
+        c = resume(path, H; observables = obsR, strain = sch)
+        a = aP                     # every comparison below is against the
+                                   # same-trajectory run carrying :poison stats
         @test [p.stats[:energy].mean[1] for p in a.points] ==
               [p.stats[:energy].mean[1] for p in c.points]
         @test isequal([p.acceptance_strain for p in a.points],
                       [p.acceptance_strain for p in c.points])
         @test a.final_config == c.final_config
         @test a.final_disps == c.final_disps
-        # ...and resuming the now-completed file is idempotent
-        d = resume(path, H; strain = sch)
+        # ...and resuming the now-completed file is idempotent (`c`'s own
+        # checkpointing completed `path`, which now stores the :poison name —
+        # every later reader supplies the matching list)
+        d = resume(path, H; observables = obsR, strain = sch)
         @test a.final_config == d.final_config
 
         # the handshake's refusals, each by name
         err = try
-            resume(path, H)
+            resume(path, H; observables = obsR)
             nothing
         catch e
             e
@@ -658,7 +682,7 @@ _ss_vk_mean(k, va, vb) =
         sm2, _ = _ss_grid(; scales = [0.97, 1.0, 1.03])
         sch2 = StrainSchedule(sm2, H)
         err = try
-            resume(path, H; strain = sch2)
+            resume(path, H; observables = obsR, strain = sch2)
             nothing
         catch e
             e

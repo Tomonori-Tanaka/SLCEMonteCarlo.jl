@@ -478,9 +478,11 @@ at `temp_index = n + 1` and `resume`'s early return hands back the stored
 result without re-running a sweep — a resume-equals-uninterrupted assertion
 built on such a file compares the file's own stored results with themselves,
 STRUCTURALLY, whatever the interval. The pre-existing **mc** gates
-(`test_checkpoint.jl`'s three MC testsets and S7's v5 strained-MC testset)
-have exactly that shape and are pending the interrupted-writer treatment;
-their "last tick lands mid-measure" comments are false. `run_pt` is the
+(`test_checkpoint.jl`'s three MC testsets plus the joint one, and S7's v5
+strained-MC testset) had exactly that shape — their "last tick lands
+mid-measure" comments were false — and were REPAIRED with the
+interrupted-writer pattern on 2026-07-30 (each now asserts its file's mid-run
+position by phase and sweep). `run_pt` is the
 opposite: it has NO end-of-run write at all — the file ends wherever the
 interval arithmetic last fired — so the pre-existing PT resume gates
 (`test_checkpoint.jl`'s two, `test_pt.jl`'s async one, S10's v5) genuinely

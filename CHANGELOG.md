@@ -26,8 +26,9 @@ interrupted checkpointed run: `run_mc` writes an unconditional
 end-of-temperature boundary checkpoint, so a completed mc file always ends at
 the completed marker and resume-equals-uninterrupted needs a mid-measure
 interrupt to be non-vacuous — S12 records that the pre-existing **MC** resume
-gates share this structural vacuity (pending the same treatment), while the
-PT ones land mid-measure by interval arithmetic and are genuine.
+gates shared this structural vacuity (all since repaired with the same
+pattern, each asserting its file's mid-run position), while the PT ones land
+mid-measure by interval arithmetic and are genuine.
 
 ### Added — the strain-aware `W` observable (`docs/specs/strain-move.md` S11)
 

@@ -303,11 +303,12 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   an unconditional end-of-temperature boundary checkpoint, so a completed mc
   file always ends at the completed marker and a resume-equals-uninterrupted
   gate on it compares the file's stored results with themselves — interrupt
-  the writer mid-measure (poison-observable pattern, S12); the pre-existing
-  MC resume gates have that vacuity and are pending the fix. `run_pt` has NO
-  end-of-run write, so its gates genuinely land mid-measure — do NOT "fix"
-  them, but their non-vacuity is interval arithmetic, so assert
-  `0 < progress/done < total` when writing a new one.
+  the writer mid-measure (poison-observable pattern, S12; every MC resume
+  gate now does, asserting its file's mid-run position — keep that assert
+  when touching one). `run_pt` has NO end-of-run write, so its gates
+  genuinely land mid-measure — do NOT "fix" them, but their non-vacuity is
+  interval arithmetic, so assert `0 < progress/done < total` when writing a
+  new one.
 - **The §8(ζ) pressure diagnostic: `_energy_with_coefs` ↔ `_total_energy`, and the
   exact-derivative trio ↔ their Horner sources** (`strain.jl`,
   `docs/specs/strain-move.md` S9): `energy_volume_derivative` is exact via (a) the

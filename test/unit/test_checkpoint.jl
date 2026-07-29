@@ -32,6 +32,41 @@ function _assert_same_result(a, b)
     return nothing
 end
 
+# The S12 interrupted-writer pattern (strain-move.md S12): a completed mc file
+# ALWAYS ends at the completed marker — `_mc_loop!` writes an unconditional
+# end-of-temperature boundary checkpoint — so a resume built on a finished run
+# returns the stored result without re-running a sweep, and a
+# resume-equals-uninterrupted assertion on it compares the file with itself.
+# Mid-run continuation teeth therefore REQUIRE a writer that actually stops: the
+# poison observable throws at the n-th measurement, leaving the file at the last
+# periodic (or boundary) write, and `resume` completes the run from there. The
+# benign twin re-supplies the name at resume (the checkpoint validates observable
+# names/ncomps, never functions) and returns the same 0.0 the poison did before
+# it fired, so the continued statistics stay bit-comparable. The PT gates below
+# need none of this: `_pt_run!` has no end-of-run write, so their files land
+# mid-measure by interval arithmetic (asserted where it matters).
+function _poison_pair(n::Int)
+    cnt = Ref(0)
+    return Observable(:poison, 1,
+                      v -> (cnt[] += 1) >= n ? error("poison interrupt") : 0.0),
+           Observable(:poison, 1, v -> 0.0)
+end
+
+function _interrupted(f)
+    err = try
+        f()
+        nothing
+    catch e
+        e
+    end
+    @test err isa ErrorException && occursin("poison", err.msg)
+    return nothing
+end
+
+_mc_progress(path) = MC.jldopen(path, "r") do f
+    (f["progress/temp_index"], f["progress/phase"], f["progress/sweep"])
+end
+
 @testset "checkpoint / resume" begin
     dir = mktempdir()
     H = TiledHamiltonian(_biquadratic_model(0); dims = (2, 1, 1))
@@ -58,47 +93,68 @@ end
     end
 
     @testset "MC: checkpointing does not perturb, resume is bit-identical" begin
+        poison, benign = _poison_pair(300)   # temp-2 measurement 100 of 200
+        obs = [standard_observables(H); benign]
         kw = (; kT = [0.5, 0.3], sweeps_therm = 200, sweeps_measure = 400,
-              measure_interval = 2, nbins = 8, renorm_interval = 100, seed = 42)
+              measure_interval = 2, nbins = 8, renorm_interval = 100, seed = 42,
+              observables = obs)
         path = joinpath(dir, "mc.jld2")
         a = run_mc(H; kw...)                                # no checkpointing
         b = run_mc(H; kw..., checkpoint = path, checkpoint_interval = 150)
         _assert_same_result(a, b)                           # writing consumes no RNG
         @test a.final_config == b.final_config
-        # KNOWN VACUITY (strain-move.md S12): `_mc_loop!` writes an unconditional
-        # end-of-temperature boundary checkpoint, so this file ends COMPLETED
-        # (temp_index = 3) and `resume` returns the stored result without
-        # re-running a sweep — the equality below compares the file's own stored
-        # results with themselves. Real mid-run mc continuation needs an
-        # interrupted writer (the S12 poison-observable pattern); pending.
-        @test isfile(path)
-        c = resume(path, H)
+        # mid-run continuation, via the interrupted writer (see `_poison_pair`):
+        # the poison run dies at temp-2 measure sweep 200, its file holds the
+        # periodic write at measure sweep 100, and resume must complete THAT run
+        # into `a`, bit for bit
+        _interrupted(() -> run_mc(H; kw...,
+                                  observables = [standard_observables(H); poison],
+                                  checkpoint = path, checkpoint_interval = 150))
+        ti, phase, sweep = _mc_progress(path)
+        @test ti == 2 && phase == "measure" && 0 < sweep < 400   # genuinely mid-run
+        c = resume(path, H; observables = obs)
         _assert_same_result(a, c)
         @test a.final_config == c.final_config
         @test c isa MCResult
     end
 
     @testset "MC: resume from a thermalization-phase checkpoint" begin
-        # interval chosen so the last periodic write lands inside temp-2 therm
+        # the poison fires at temp-2's FIRST measurement, so the file's last
+        # periodic write (global sweep 520 = temp-2 therm sweep 120) sits inside
+        # thermalization — the phase this gate exists to resume from
+        poison, benign = _poison_pair(101)
+        obs = [standard_observables(H); benign]
         kw = (; kT = [0.5, 0.3], sweeps_therm = 300, sweeps_measure = 100,
-              measure_interval = 1, nbins = 8, seed = 7)
+              measure_interval = 1, nbins = 8, seed = 7, observables = obs)
         path = joinpath(dir, "mc_therm.jld2")
         a = run_mc(H; kw...)
-        run_mc(H; kw..., checkpoint = path, checkpoint_interval = 260)
-        # ticks at global sweeps 260 (temp1 therm? 260 < 300 → therm sweep 260),
-        # 520 (temp2 therm 120), 780 (temp2 measure 80 → but measure only 100)…
-        c = resume(path, H)
+        _interrupted(() -> run_mc(H; kw...,
+                                  observables = [standard_observables(H); poison],
+                                  checkpoint = path, checkpoint_interval = 260))
+        ti, phase, sweep = _mc_progress(path)
+        @test ti == 2 && phase == "therm" && 0 < sweep < 300
+        c = resume(path, H; observables = obs)
         _assert_same_result(a, c)
         @test a.final_config == c.final_config
     end
 
     @testset "MC: boundary-only checkpoints (interval 0) and carryover=false" begin
+        # poison at temp-3 measurement 50: with interval 0 the file's last write
+        # is the end-of-temp-2 boundary, so resume replays temp 3 IN FULL —
+        # thermalization, measure phase, and the carryover=false restart (whose
+        # random redraw must come out of the restored RNG bit-identically)
+        poison, benign = _poison_pair(250)
+        obs = [standard_observables(H); benign]
         kw = (; kT = [0.5, 0.3, 0.2], sweeps_therm = 100, sweeps_measure = 100,
-              nbins = 4, carryover = false, seed = 3)
+              nbins = 4, carryover = false, seed = 3, observables = obs)
         path = joinpath(dir, "mc_boundary.jld2")
         a = run_mc(H; kw...)
-        run_mc(H; kw..., checkpoint = path)                 # interval 0
-        c = resume(path, H)                                 # from the last boundary
+        _interrupted(() -> run_mc(H; kw...,
+                                  observables = [standard_observables(H); poison],
+                                  checkpoint = path))       # interval 0
+        ti, phase, sweep = _mc_progress(path)
+        @test ti == 3 && phase == "therm" && sweep == 0   # end-of-temp-2 boundary
+        c = resume(path, H; observables = obs)
         _assert_same_result(a, c)
         @test a.final_config == c.final_config
     end
@@ -166,8 +222,19 @@ end
         a = run_mc(Hj; kw...)
         b = run_mc(Hj; kw..., checkpoint = path, checkpoint_interval = 170)
         _assert_same_result(a, b)
-        c = resume(path, Hj; observables = obs, evaluables = Evaluable[])
-        _assert_same_result(a, c)
+        # the resume half runs on an INTERRUPTED writer (see `_poison_pair`): the
+        # poison dies at temp-2 measure sweep 200, the file holds the periodic
+        # write at measure sweep 190, and the displacement state must survive
+        # the genuinely mid-run rebuild
+        poison, benign = _poison_pair(600)
+        obsb = [obs; benign]
+        aP = run_mc(Hj; kw..., observables = obsb)
+        _interrupted(() -> run_mc(Hj; kw..., observables = [obs; poison],
+                                  checkpoint = path, checkpoint_interval = 170))
+        ti, phase, sweep = _mc_progress(path)
+        @test ti == 2 && phase == "measure" && 0 < sweep < 400
+        c = resume(path, Hj; observables = obsb, evaluables = Evaluable[])
+        _assert_same_result(aP, c)
         # the displacement STATE itself, not only the statistics computed from it:
         # `_assert_same_result` compares floats derived at renormalization points, and
         # a resume that rebuilt `disps` a hair differently would still pass those
