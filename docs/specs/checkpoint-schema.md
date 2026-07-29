@@ -127,6 +127,8 @@ fingerprint. The handshake order is load-bearing: grid fingerprint first, then
 the structural pairing check, then the **reference-coefficient reinstall into
 `H`**, and only then the `model_fingerprint` comparison (which is defined at the
 reference); after the state is read, the checkpointed scale's coefficients are
-installed so the `(H, chain)` contract holds when the loop continues. The
-caller's coefficient state on entry is irrelevant and overwritten. A fixed-cell
-file refuses a supplied schedule, and vice versa, both by name.
+installed so the `(H, chain)` contract holds when the loop continues, and on
+return `H` is handed back at the reference (as `run_mc` does). The caller's
+coefficient state on entry is irrelevant and overwritten — including on a failed
+resume, which leaves `H` at the reference. A fixed-cell file refuses a supplied
+schedule, and vice versa, both by name.

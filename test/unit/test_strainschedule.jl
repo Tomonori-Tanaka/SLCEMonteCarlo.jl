@@ -8,8 +8,9 @@
 # Hamiltonian FRESHLY BUILT at that scale, which is the actual claim the move rests on.
 # (3) The index map is a property of the basis, not of the fit: a Hamiltonian built without
 # `keep_zero_terms` is refused by name, because the failure it would otherwise produce is
-# silent (equal-length term lists with shifted maps). (4) `n_cells` counts ATOMS, not
-# `prod(dims)`, and `D` comes from `comp_free` — the two quantities the NPT weight is most
+# silent (equal-length term lists with shifted maps). (4) `n_cells` is derived from the
+# ATOM count, not `prod(dims)`, and the NPT volume power is the displacement-active site
+# count `n_mobile` — NOT the COM-reduced `D` — the two quantities the weight is most
 # easily wrong about.
 
 using Test
@@ -66,15 +67,20 @@ _ss_disps(n, seed) = [SVector{3,Float64}(0.03 .* randn(MersenneTwister(seed + 10
 # The NPT-marginal toy (design record §8 (γ)): a decoupled spin sector plus a PURE
 # lattice sector whose coefficients are IDENTICAL at every grid point, `j0 ≡ 0`. Held at
 # `u ≡ 0` and `P = 0`, the configurational ΔE of a strain move is then exactly zero and
-# the chain's stationary volume marginal is the bare Jacobian, `p(V) ∝ V^{D/3}` — an
+# the chain's stationary volume marginal is the bare Jacobian, `p(V) ∝ V^{N_mob}` — an
 # analytically known target that measures the implemented exponent rather than asserting
-# it. `pinned = false` gives a translation-flat pair model (ASR-null-space
-# coefficients); on the (2, 1, 1) supercell the in-cutoff pairs are the cross-cell ones
-# only (the in-cell a1–a2 distance is 2.0s > 1.1s), so the four sites split into TWO
-# displacement components and `D = 3N − 3·n_comps = 6`. `pinned = true` shrinks the
-# cutoff below every pair, leaving on-site `|u|²` content that pins every rigid shift
-# (`D = 3N = 12`). The two targets differ by the full `count(comp_free)`, which is the
-# only test that isolates the per-(direction, component) COM bookkeeping in `D`.
+# it. The power is the displacement-active site count and is INDEPENDENT of
+# `comp_free`: the flat COM directions are gauge directions whose range is the cell, so
+# they keep their measure factor even though the sampler re-centres them out.
+# `pinned = false` gives a translation-flat pair model (ASR-null-space coefficients);
+# on the (2, 1, 1) supercell the in-cutoff pairs are the cross-cell ones only (the
+# in-cell a1–a2 distance is 2.0s > 1.1s), so the four sites split into TWO displacement
+# components (`count(comp_free) = 6`, `d_dim = 6`). `pinned = true` shrinks the cutoff
+# below every pair, leaving on-site `|u|²` content that pins every rigid shift
+# (`count = 0`, `d_dim = 12`). BOTH must land on the same `V^4` — under the corrected
+# convention their exponents agree, and under the rejected `D/3` convention they differ
+# by 2, so this pair is exactly the mutation the gate must kill. The `N_mob` dependence
+# itself is exercised by running the flat fixture at (1, 1, 1) too (`N_mob = 2`).
 function _ss_toy_spec(cr, s, pinned)
     return BasisSpec(cr; lmax = 1, pmax = 2, sectors = [
         Sector(spin = (sites = 1:2,), cutoff = 1.1s),
@@ -98,8 +104,8 @@ end
 
 # Run `nmoves` strain moves at `u ≡ 0` and return the empirical mean volume plus the
 # acceptance rate. The analytic mean of `p(V) ∝ V^k` on `[Va, Vb]` is `_ss_vk_mean`.
-function _ss_toy_chain(sm, pinned, proposal, step, nmoves, seed)
-    H = TiledHamiltonian(sm.models[2]; dims = (2, 1, 1), keep_zero_terms = true,
+function _ss_toy_chain(sm, pinned, dims, proposal, step, nmoves, seed)
+    H = TiledHamiltonian(sm.models[2]; dims = dims, keep_zero_terms = true,
                          fixed_reference = pinned)
     sch = StrainSchedule(sm, H)
     set_coefficients!(H, MCs.strain_coefficients(sch, 1.0))
@@ -108,7 +114,8 @@ function _ss_toy_chain(sm, pinned, proposal, step, nmoves, seed)
     sc = MCs.StrainScratch(H)
     vsum = 0.0
     for _ = 1:nmoves
-        MCs.strain_move!(st, H, sch, sc, 0.025, 0.0, step; proposal = proposal)
+        MCs.strain_move!(st, H, sch, sc, 0.025; pressure = 0.0, step = step,
+                         proposal = proposal)
         vsum += MCs.strain_volume(sch, st.strain)
     end
     return vsum / nmoves, st.acc_strain / st.att_strain, sch
@@ -283,16 +290,17 @@ _ss_vk_mean(k, va, vb) =
         sm, models = _ss_grid()
         H = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
         sch = StrainSchedule(sm, H)
-        D = 3 * H.n_disp_active - count(H.comp_free)
-        @test sch.d_dim == D
+        N = H.n_disp_active
+        @test sch.n_mobile == N
+        @test sch.d_dim == 3 * N - count(H.comp_free)   # stored for diagnostics only
         s, sp, dE, kt = 0.99, 1.017, 0.37, 0.025
         lw_logv = MCs._strain_log_weight(sch, :logvolume, s, sp, dE, kt)
         lw_s = MCs._strain_log_weight(sch, :scale, s, sp, dE, kt)
-        # hand-derived: (D + 3)·ln(s′/s) − ΔE/kT uniform in ln V, (D + 2)·ln(s′/s) −
-        # ΔE/kT uniform in s — written as integer powers of s, independently of the
-        # implementation's D/3-power-of-V form
-        @test lw_logv ≈ (D + 3) * log(sp / s) - dE / kt rtol = 1e-13
-        @test lw_s ≈ (D + 2) * log(sp / s) - dE / kt rtol = 1e-13
+        # hand-derived (Frenkel–Smit's N·ln(V′/V) plus the proposal-variable factor):
+        # (3N + 3)·ln(s′/s) − ΔE/kT uniform in ln V, (3N + 2)·ln(s′/s) − ΔE/kT
+        # uniform in s — N the displacement-active site count, NOT the COM-reduced D
+        @test lw_logv ≈ (3 * N + 3) * log(sp / s) - dE / kt rtol = 1e-13
+        @test lw_s ≈ (3 * N + 2) * log(sp / s) - dE / kt rtol = 1e-13
         # the arms differ by exactly ln(s′/s) — §8(γ)'s differential check
         @test lw_logv - lw_s ≈ log(sp / s) rtol = 1e-12
         # detailed-balance antisymmetry of the Jacobian half
@@ -325,7 +333,8 @@ _ss_vk_mean(k, va, vb) =
             u_before = copy(st.disps)
             com_before = copy(st.com_removed)
             s_before = st.strain
-            accepted = MCs.strain_move!(st, H, sch, sc, 0.05, 0.01, 0.06)
+            accepted = MCs.strain_move!(st, H, sch, sc, 0.05; pressure = 0.01,
+                                        step = 0.06)
             set_coefficients!(H2, MCs.strain_coefficients(sch, st.strain))
             @test [t.coef for t in H.terms] == [t.coef for t in H2.terms]
             @test st.zrows == MCs._zrows(H, st.config, st.disps)
@@ -336,7 +345,6 @@ _ss_vk_mean(k, va, vb) =
                 @test st.strain != s_before
                 @test st.disps == [lam * u for u in u_before]
                 @test st.com_removed == [lam * c for c in com_before]
-                @test st.disp_checks == 0        # accepted rescale resets the detector
             else
                 @test st.strain == s_before
                 @test st.disps == u_before && st.com_removed == com_before
@@ -350,20 +358,26 @@ _ss_vk_mean(k, va, vb) =
         twin = copy(st.rng)
         s_before = st.strain
         coefs_before = [t.coef for t in H.terms]
-        @test !MCs.strain_move!(st, H, sch, sc, 0.05, 0.01, 50.0)
+        @test !MCs.strain_move!(st, H, sch, sc, 0.05; pressure = 0.01, step = 50.0)
         randn(twin)
         @test MCs._rng_words(st.rng) == MCs._rng_words(twin)
         @test st.strain == s_before
         @test [t.coef for t in H.terms] == coefs_before
 
         # validation: the named errors
-        @test_throws ArgumentError MCs.strain_move!(st, H, sch, sc, 0.0, 0.01, 0.05)
-        @test_throws ArgumentError MCs.strain_move!(st, H, sch, sc, 0.05, 0.01, 0.0)
-        @test_throws ArgumentError MCs.strain_move!(st, H, sch, sc, 0.05, 0.01, 0.05;
+        @test_throws ArgumentError MCs.strain_move!(st, H, sch, sc, 0.0;
+                                                    pressure = 0.01, step = 0.05)
+        @test_throws ArgumentError MCs.strain_move!(st, H, sch, sc, 0.05;
+                                                    pressure = 0.01, step = 0.0)
+        @test_throws ArgumentError MCs.strain_move!(st, H, sch, sc, 0.05;
+                                                    pressure = NaN, step = 0.05)
+        @test_throws ArgumentError MCs.strain_move!(st, H, sch, sc, 0.05;
+                                                    pressure = 0.01, step = 0.05,
                                                     proposal = :volume)
         st.strain = 2.0
         err = try
-            MCs.strain_move!(st, H, sch, sc, 0.05, 0.01, 0.05)
+            MCs.strain_move!(st, H, sch, sc, 0.05; pressure = 0.01,
+                             step = 0.05)
             nothing
         catch e
             e
@@ -373,31 +387,40 @@ _ss_vk_mean(k, va, vb) =
 
     @testset "strain_move!: the NPT marginal is the bare Jacobian on the §8(γ) toy" begin
         # At u ≡ 0, constant coefficients, j0 ≡ 0 and P = 0 the stationary volume
-        # marginal is p(V) ∝ V^{D/3} exactly — so the empirical mean volume MEASURES
-        # the implemented exponent. Each fixture must match its own D and reject a
-        # ±1 power error (the COM bookkeeping: the fixtures' D differ by the full
-        # count(comp_free) = 6), and both proposal arms must land on the SAME
-        # marginal even though their acceptance powers differ.
-        for pinned in (false, true)
+        # marginal is p(V) ∝ V^{N_mob} exactly — so the empirical mean volume MEASURES
+        # the implemented exponent. Three chains: the flat and pinned (2, 1, 1)
+        # fixtures share N_mob = 4 while their count(comp_free) differ by 6, so both
+        # landing on V^4 is what kills the rejected COM-reduced `D/3` convention
+        # (which would separate them by 2 powers); the flat fixture at (1, 1, 1) has
+        # N_mob = 2, which is what shows the exponent moves with the system rather
+        # than being asserted. Both proposal arms must land on the same marginal.
+        for (pinned, dims, kexp, seed) in ((false, (2, 1, 1), 4, 0x12),
+                                           (true, (2, 1, 1), 4, 0x11),
+                                           (false, (1, 1, 1), 2, 0x13))
             sm = _ss_toy_grid(; pinned = pinned)
             for (proposal, step) in ((:logvolume, 0.75), (:scale, 0.25))
-                vmean, arate, sch = _ss_toy_chain(sm, pinned, proposal, step, 150_000,
-                                                  pinned ? 0x11 : 0x12)
-                @test sch.d_dim == (pinned ? 12 : 6)
+                vmean, arate, sch = _ss_toy_chain(sm, pinned, dims, proposal, step,
+                                                  150_000, seed)
+                @test sch.n_mobile == kexp
+                @test sch.d_dim ==
+                      (pinned ? 3 * kexp : (dims == (2, 1, 1) ? 6 : 3))
                 @test 0.15 < arate < 0.95
                 va, vb = MCs.strain_volume(sch, 0.85), MCs.strain_volume(sch, 1.15)
                 vmid = (va + vb) / 2
-                k = sch.d_dim / 3
-                # Thresholds calibrated over seeds {0x11, 0x12, 0x21} at this length:
-                # the correct power sits ≤ 0.006 of the mid volume, a ±1 power error
-                # (the other fixture's D — an off-by-one in the COM bookkeeping)
-                # shifts the mean by ≥ 0.024. The ±1/3 mixed-arm trap shifts it by
-                # only ~0.011, INSIDE this statistic's noise — it is excluded
-                # deterministically instead, by the closed-form arm gate above and
-                # the draw/weight pairing testset below.
+                k = Float64(sch.n_mobile)
+                # Thresholds calibrated over seeds at this length: the correct power
+                # sits within ~0.006 of the mid volume, a ±1 power error shifts the
+                # mean by ≥ 0.018. The ±1/3 mixed-arm trap shifts it by ~0.011,
+                # INSIDE this statistic's noise — it is excluded deterministically
+                # instead, by the closed-form arm gate above and the draw/weight
+                # pairing testset below.
                 @test abs(vmean - _ss_vk_mean(k, va, vb)) / vmid < 0.012
                 @test abs(vmean - _ss_vk_mean(k + 1, va, vb)) / vmid > 0.018
                 @test abs(vmean - _ss_vk_mean(k - 1, va, vb)) / vmid > 0.018
+                # ...and the rejected convention's exponent for this fixture
+                kD = sch.d_dim / 3
+                kD == k ||
+                    @test abs(vmean - _ss_vk_mean(kD, va, vb)) / vmid > 0.018
             end
         end
     end
@@ -435,8 +458,8 @@ _ss_vk_mean(k, va, vb) =
                     want = log(rand(twin)) <
                            MCs._strain_log_weight(sch, proposal, s, sp, de, 0.05)
                 end
-                got = MCs.strain_move!(st, H, sch, sc, 0.05, 0.01, 0.06;
-                                       proposal = proposal)
+                got = MCs.strain_move!(st, H, sch, sc, 0.05; pressure = 0.01,
+                                       step = 0.06, proposal = proposal)
                 @test got == want
                 @test st.strain == (want ? sp : s)
                 nacc += got
@@ -537,9 +560,12 @@ _ss_vk_mean(k, va, vb) =
               [p.stats[:energy].mean[1] for p in b.points]
         @test a.final_config == b.final_config
         @test isfile(path)
-        # the caller's H arrives carrying the LAST run's final-scale coefficients;
-        # resume reinstalls the reference before the fingerprint check, so it must
-        # not care — and the continued run is the uninterrupted one, bit for bit
+        # `run_mc` hands H back at the reference; deliberately knock it OFF the
+        # reference before resuming — resume reinstalls the reference before the
+        # fingerprint check, so the caller's coefficient state must not matter, and
+        # the continued run is the uninterrupted one, bit for bit
+        set_coefficients!(H, MCs.strain_coefficients(sch, 1.015);
+                          recheck_translation = false)
         c = resume(path, H; strain = sch)
         @test [p.stats[:energy].mean[1] for p in a.points] ==
               [p.stats[:energy].mean[1] for p in c.points]
@@ -594,6 +620,128 @@ _ss_vk_mean(k, va, vb) =
         end
         @test err isa Exception && occursin("schema v3", sprint(showerror, err)) &&
               occursin("strain channel", sprint(showerror, err))
+    end
+
+    @testset "strain driver corners: pairing, carryover, cadence, domain, payload" begin
+        sm, models = _ss_grid()
+        H = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        sch = StrainSchedule(sm, H)
+
+        # a same-shape DIFFERENT model is refused by the term fingerprint, not merely
+        # by counts: perturb one model's crystal so the images move but every count
+        # stays — simplest available: another grid with different scales built
+        # against a DIFFERENT H (1×1×1), whose counts differ; and the true same-shape
+        # case via a schedule from an H built at the same dims from the zero_key grid
+        smz, mz = _ss_grid(; zero_key = 2)
+        Hz = TiledHamiltonian(mz[2]; dims = (2, 1, 1), fixed_reference = true,
+                              keep_zero_terms = true)
+        schz = StrainSchedule(smz, Hz)
+        @test schz.term_fp == sch.term_fp   # same basis, same atoms/images — equal
+        # ...so the counts-equal, structure-equal case passes the pairing check, and
+        # the structural fingerprint's job is the cross-model case, exercised in the
+        # run_mc wiring testset via the (1, 1, 1) Hamiltonian (count mismatch) and
+        # here via a doctored copy:
+        bad = MCs.StrainSchedule(sch.scales, sch.abscissa, sch.x0, sch.xw,
+                                 sch.coefpoly, sch.j0poly, sch.v_train, sch.n_cells,
+                                 sch.n_mobile, sch.d_dim, sch.term_fp ⊻ 0x1)
+        err = try
+            run_mc(H; kT = 0.05, sweeps_therm = 1, sweeps_measure = 2, strain = bad,
+                   pressure = 0.0)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin("DIFFERENT Hamiltonian", err.msg)
+
+        # carryover = false: the independent restart returns the cell to the
+        # reference, and the run hands H back at the reference
+        r = run_mc(H; kT = [0.06, 0.05], sweeps_therm = 30, sweeps_measure = 40,
+                   carryover = false, seed = 0x81, strain = sch, pressure = 0.0,
+                   renorm_interval = 20)
+        @test length(r.points) == 2
+        @test all(p -> !isnan(p.acceptance_strain), r.points)
+        H2 = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        set_coefficients!(H2, MCs.strain_coefficients(sch, 1.0))
+        @test [t.coef for t in H.terms] == [t.coef for t in H2.terms]
+
+        # strain_interval > 1: the cadence fires and the run stays consistent
+        r3 = run_mc(H; kT = 0.05, sweeps_therm = 30, sweeps_measure = 60,
+                    seed = 0x82, strain = sch, pressure = 0.0, strain_interval = 3,
+                    renorm_interval = 30)
+        @test !isnan(r3.points[1].acceptance_strain)
+
+        # a grid that excludes the reference scale refuses up front, by name
+        smo, mo = _ss_grid(; scales = [1.01, 1.03, 1.05])
+        Ho = TiledHamiltonian(mo[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        scho = StrainSchedule(smo, Ho)
+        err = try
+            run_mc(Ho; kT = 0.05, sweeps_therm = 1, sweeps_measure = 2,
+                   strain = scho, pressure = 0.0)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin("regrid around the reference", err.msg)
+
+        # the cell scale is replica-exchange payload: it swaps with the state
+        stA = MCs.ChainState(H, _ss_cfg(H.n_sites, 61), Xoshiro(0x61), 0.3;
+                             disps = _ss_disps(H.n_sites, 61))
+        stB = MCs.ChainState(H, _ss_cfg(H.n_sites, 62), Xoshiro(0x62), 0.3;
+                             disps = _ss_disps(H.n_sites, 62))
+        stA.strain, stB.strain = 1.01, 0.99
+        MCs._swap_payload!(stA, stB)
+        @test stA.strain == 0.99 && stB.strain == 1.01
+
+        # an accepted rescale keeps the escape detector ARMED and covariant: the
+        # length statistics scale by λ, the counters stay
+        st = MCs.ChainState(H, _ss_cfg(H.n_sites, 63), Xoshiro(0x63), 0.3;
+                            disps = _ss_disps(H.n_sites, 63))
+        sc = MCs.StrainScratch(H)
+        st.disp_rms, st.disp_max, st.disp_rms0 = 0.02, 0.05, 0.019
+        st.disp_ms_sum, st.disp_blk_sum, st.disp_ref_ms = 1e-3, 4e-4, 3.9e-4
+        st.disp_checks, st.disp_blk_n, st.disp_blk_cap = 7, 2, 4
+        naccept = 0
+        for _ = 1:20
+            s0 = st.strain
+            rms0 = st.disp_rms
+            ms0 = st.disp_ms_sum
+            if MCs.strain_move!(st, H, sch, sc, 0.05; pressure = 0.0, step = 0.05)
+                naccept += 1
+                lam = st.strain / s0
+                @test st.disp_rms == lam * rms0
+                @test st.disp_ms_sum == lam^2 * ms0
+                @test st.disp_checks == 7        # counters untouched — ladder armed
+            end
+        end
+        @test naccept > 0
+    end
+
+    @testset "a pure-spin volume grid: J(V) with no displacement channel" begin
+        # A spin-only model on a volume grid is legitimate physics (J(V) plus an
+        # elastic j0(s)); the strain machinery must degrade to N_mob = 0 — the log
+        # weight is then the bare proposal factor — rather than refuse or crash.
+        pspec(cr, s) = BasisSpec(cr; lmax = 1, pmax = 0,
+                                 sectors = [Sector(spin = (sites = 1:2,),
+                                                   cutoff = 1.1s)])
+        function pmk(s)
+            cr = _ss_crystal(s)
+            b = SLCEBasis(cr, pspec(cr, s))
+            return SLCEModel(b, 0.1 * (s - 1), 0.2 .* ones(n_salcs(b)))
+        end
+        ms = [pmk(s) for s in [0.98, 1.0, 1.02]]
+        smp = SLCE.StrainedModels(ms, [0.98, 1.0, 1.02])
+        Hp = TiledHamiltonian(ms[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        schp = StrainSchedule(smp, Hp)
+        @test schp.n_mobile == 0 && schp.d_dim == 0
+        set_coefficients!(Hp, MCs.strain_coefficients(schp, 1.0))
+        stp = MCs.ChainState(Hp, _ss_cfg(Hp.n_sites, 71), Xoshiro(0x72), 0.3)
+        scp = MCs.StrainScratch(Hp)
+        for _ = 1:20
+            MCs.strain_move!(stp, Hp, schp, scp, 0.05; pressure = 0.0, step = 0.05)
+        end
+        @test stp.att_strain == 20
+        @test MCs.in_strain_domain(schp, stp.strain)
+        @test stp.energy == MCs._total_energy(Hp, stp.zrows)
     end
 
     @testset "MCView carries the strain, and refuses to invent one" begin

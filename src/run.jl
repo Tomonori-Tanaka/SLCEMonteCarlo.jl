@@ -170,6 +170,12 @@ as a summary table.
 is the warm start for a continuation run (`run_mc(H; init = r.final_config,
 disps = r.final_disps)`), which is why it leaves the sampler at all; it is one
 sample, not an average, so it is not a substitute for the `:u2` observable.
+
+!!! warning "The warm-start recipe does not apply to a strained (NPT) run"
+    An NPT chain ends at some cell scale `s ≠ 1`, and `MCResult` does not carry it,
+    so `final_disps` are absolute lengths at an unrecorded scale while a fresh run
+    starts at the reference. Continue a strained run through its checkpoint
+    ([`resume`](@ref)) instead.
 """
 struct MCResult
     points::Vector{TempResult}
@@ -290,8 +296,8 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
             # adaptation: the outer move fires too rarely to adapt on, and a wrong
             # width shows in `acceptance_strain` rather than a wrong ensemble).
             sctx !== nothing && sweep % plan.strain_interval == 0 &&
-                strain_move!(st, H, sctx[1], sctx[2], kt, plan.pressure,
-                             plan.strain_step; proposal = plan.strain_proposal)
+                strain_move!(st, H, sctx[1], sctx[2], kt; pressure = plan.pressure,
+                             step = plan.strain_step, proposal = plan.strain_proposal)
             sweep % plan.adapt_interval == 0 && _adapt_step!(st, plan.adapt_target)
             sweep % plan.renorm_interval == 0 && _renormalize!(st, H, scs[1])
             _ck_mc!(ck, H, st, points, temp_index, :therm, sweep, nothing)
@@ -310,8 +316,8 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
     for sweep = (msweep0 + 1):plan.sweeps_measure
         _compound_sweep!(st, H, β, scs, plan)
         sctx !== nothing && sweep % plan.strain_interval == 0 &&
-            strain_move!(st, H, sctx[1], sctx[2], kt, plan.pressure,
-                         plan.strain_step; proposal = plan.strain_proposal)
+            strain_move!(st, H, sctx[1], sctx[2], kt; pressure = plan.pressure,
+                         step = plan.strain_step, proposal = plan.strain_proposal)
         sweep % plan.renorm_interval == 0 && _renormalize!(st, H, scs[1])
         if sweep % plan.measure_interval == 0
             # a strained run's view carries the cell scale; a fixed cell has no
@@ -434,7 +440,9 @@ an outer strain move ([`strain_move!`](@ref)) rescales the cell over the schedul
 volume grid. Without it the run samples the **constant-strain (fixed cell)
 ensemble** — a different ensemble (`F(T, ε)`, no volume Jacobian, no `P·V`), which
 is what a fixed-geometry magnetostriction calculation wants. The chain starts at
-the reference scale `s = 1`, which must lie inside the schedule's domain.
+the reference scale `s = 1`, which must lie inside the schedule's domain, and `H`
+is handed back at the reference when the run returns — never at the chain's final
+scale.
 
 - `strain = nothing`: the sampler-side volume grid, built by
   [`StrainSchedule(sm, H)`](@ref) against **this** Hamiltonian (checked).
@@ -514,8 +522,16 @@ function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
     rng = Xoshiro(plan.seed)
     st = ChainState(H, _initial_config(H, init, rng), rng, plan.step0;
                     disps = disps, step_u = plan.step_u0)
-    return _mc_loop!(TempResult[], st, H, plan, observables, evaluables, 1, :therm,
-                     0, nothing, ck, sctx)
+    r = _mc_loop!(TempResult[], st, H, plan, observables, evaluables, 1, :therm,
+                  0, nothing, ck, sctx)
+    # hand `H` back at the REFERENCE scale, not wherever the chain ended: the caller's
+    # next `model_fingerprint` / `total_energy` / fixed-cell run would otherwise see
+    # a silently rescaled model (checkpoint writes are unaffected — the checkpointer
+    # captured its fingerprint at construction)
+    sctx === nothing ||
+        set_coefficients!(H, strain_coefficients!(sctx[2].coef, sctx[1], 1.0);
+                          recheck_translation = false)
+    return r
 end
 
 function _check_observables(observables::Vector{Observable})
@@ -655,19 +671,26 @@ function _default_strain_step(sch::StrainSchedule, proposal::Symbol)::Float64
 end
 
 # The schedule stores neither the models nor `H`, so the run driver re-checks the
-# cheap identifying invariants — the deep term-by-term check happened at
-# `StrainSchedule(sm, H)` construction, against SOME Hamiltonian; these four catch
-# handing the result to a different one.
+# pairing: the counts, and the structural term fingerprint the constructor captured —
+# the deep per-term check happened at `StrainSchedule(sm, H)` construction against
+# SOME Hamiltonian, and counts alone cannot tell two same-shape models apart (that
+# silent mis-assignment is the exact hazard the constructor exists to prevent).
 function _check_strain_pairing(H::TiledHamiltonian, sch::StrainSchedule)
     size(sch.coefpoly, 2) == H.n_input_terms &&
         sch.n_mobile == H.n_disp_active &&
         sch.d_dim == 3 * H.n_disp_active - count(H.comp_free) &&
-        H.n_sites % sch.n_cells == 0 || throw(ArgumentError(
+        sch.n_cells * H.n_cell_atoms == H.n_sites || throw(ArgumentError(
         "this strain schedule does not describe this Hamiltonian (terms " *
-        "$(size(sch.coefpoly, 2)) vs $(H.n_input_terms), mobile atoms " *
+        "$(size(sch.coefpoly, 2)) vs $(H.n_input_terms), displacement-active sites " *
         "$(sch.n_mobile) vs $(H.n_disp_active), D $(sch.d_dim) vs " *
         "$(3 * H.n_disp_active - count(H.comp_free))); build it with " *
         "`StrainSchedule(sm, H)` against the Hamiltonian the run uses"))
+    sch.term_fp == _schedule_term_fp(H) || throw(ArgumentError(
+        "this strain schedule was converted against a DIFFERENT Hamiltonian with " *
+        "the same term counts: the term lists disagree in atoms or images, so " *
+        "installing the grid's coefficients here would write each one onto another " *
+        "model's cluster. Build the schedule with `StrainSchedule(sm, H)` against " *
+        "the Hamiltonian the run uses"))
     in_strain_domain(sch, 1.0) || throw(ArgumentError(
         "the chain starts at the reference scale s = 1, which is outside this " *
         "schedule's domain $(strain_domain(sch)); regrid around the reference"))

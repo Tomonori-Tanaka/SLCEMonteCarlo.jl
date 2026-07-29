@@ -133,6 +133,7 @@ model_fingerprint(H::TiledHamiltonian)::UInt64 = _fingerprint(H)
 # are reinstalled from the schedule the caller supplies.
 function _grid_fingerprint(sch::StrainSchedule)::UInt64
     h = 0xcbf29ce484222325
+    h = _fp_mix(h, length(sch.scales))
     for s in sch.scales
         h = _fp_mix(h, s)
     end
@@ -141,9 +142,14 @@ function _grid_fingerprint(sch::StrainSchedule)::UInt64
     end
     h = _fp_mix(h, sch.x0)
     h = _fp_mix(h, sch.xw)
+    # shape prefixes: two grids differing only in interpolation degree must not rely
+    # on coefficient VALUES to separate their flattened polynomials
+    h = _fp_mix(h, size(sch.coefpoly, 1))
+    h = _fp_mix(h, size(sch.coefpoly, 2))
     for v in sch.coefpoly
         h = _fp_mix(h, v)
     end
+    h = _fp_mix(h, sch.term_fp)
     for v in sch.j0poly
         h = _fp_mix(h, v)
     end
@@ -474,8 +480,10 @@ schedule's **reference** coefficients into `H` before the model-fingerprint chec
 the fingerprint mixes coefficient values, and a strained chain's move with its
 volume, so the reference is the identity both sides compare — and finally installs
 the checkpointed scale's coefficients so the `(H, chain)` contract holds when the
-run continues. `H`'s current coefficient state on entry is therefore irrelevant
-(and is overwritten).
+run continues; on return `H` is handed back at the reference, as `run_mc` does.
+`H`'s current coefficient state on entry is therefore irrelevant (and is
+overwritten) — including on a FAILED resume: a fingerprint or observable mismatch
+raised after the reinstall leaves `H` at the schedule's reference.
 """
 function resume(path::AbstractString, H::TiledHamiltonian;
                 observables::Vector{Observable} = standard_observables(H),
@@ -510,8 +518,9 @@ function resume(path::AbstractString, H::TiledHamiltonian;
                 "the supplied strain schedule is not the grid this checkpoint was " *
                 "written with (grid fingerprint mismatch)")
             _check_strain_pairing(H, strain)
-            set_coefficients!(H, strain_coefficients(strain, 1.0);
-                              recheck_translation = false)
+            # the default flatness recheck stays ON: this install is the resumed
+            # run's anchor, exactly as in `run_mc`
+            set_coefficients!(H, strain_coefficients(strain, 1.0))
         else
             strain === nothing || error(
                 "a strain schedule was passed, but this checkpoint belongs to a " *
@@ -569,6 +578,11 @@ function resume(path::AbstractString, H::TiledHamiltonian;
                                       _grid_fingerprint(strain))
     b = data.body
     if data.kind == "mc"
+        # a completed run has nothing to continue — H stays at the reference the
+        # validation installed
+        b.temp_index > length(data.plan.kts) &&
+            return MCResult(b.points, copy(b.st.config), _final_disps(H, b.st),
+                            data.plan.seed)
         sctx = nothing
         if strain !== nothing
             # re-establish the (H, chain) contract at the CHECKPOINTED scale —
@@ -579,11 +593,13 @@ function resume(path::AbstractString, H::TiledHamiltonian;
                               recheck_translation = false)
             sctx = (strain, sc)
         end
-        b.temp_index > length(data.plan.kts) &&
-            return MCResult(b.points, copy(b.st.config), _final_disps(H, b.st),
-                            data.plan.seed)
-        return _mc_loop!(b.points, b.st, H, data.plan, observables, evaluables,
-                         b.temp_index, b.phase, b.sweep, b.accs, ck, sctx)
+        r = _mc_loop!(b.points, b.st, H, data.plan, observables, evaluables,
+                      b.temp_index, b.phase, b.sweep, b.accs, ck, sctx)
+        # hand `H` back at the reference, as `run_mc` does
+        sctx === nothing ||
+            set_coefficients!(H, strain_coefficients!(sctx[2].coef, sctx[1], 1.0);
+                              recheck_translation = false)
+        return r
     end
     nt = min(length(data.plan.kts), Threads.nthreads())
     return _pt_run!(b.lanes, H, data.plan, observables, evaluables, data.exch, nt,

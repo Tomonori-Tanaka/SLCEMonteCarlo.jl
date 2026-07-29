@@ -12,26 +12,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The energy contract and the acceptance weight are pure functions with one elastic
 source: `strain_delta_energy` carries `ΔE_config + n_cells·Δj0 + P·ΔV` — each grid
 point's `j0(ε)` already contains its cell's lattice energy, so there is no elastic-term
-keyword anywhere, by design — and the log weight's volume power (`D/3 + 1` uniform in
-`ln V`, `D/3 + 2/3` uniform in `s`) branches on the SAME symbol as the proposal draw,
+keyword anywhere, by design — and the log weight's `ln(s′/s)` coefficient
+(`3·N_mob + 3` uniform in `ln V`, `3·N_mob + 2` uniform in `s`, `N_mob` the
+displacement-active site count) branches on the SAME symbol as the proposal draw,
 because drawing in one arm's variable while weighting with the other's is off by
-`(V′/V)^{2/3}` and invisible on a production cell. Gates: ΔE against from-scratch totals
-at both scales, the reconstruction identity pinning `j0` as the only elastic term,
-hand-derived closed forms in both arms, and a white-box replay in which every accept
-decision must match a hand-paired reconstruction.
+`(V′/V)^{2/3}` and invisible on a production cell. The volume power is `V^{N_mob}` —
+Frenkel–Smit's `N` — and NOT the COM-reduced `D/3` an earlier revision (and the
+upstream design record's own §8 correction) carried: the flat COM directions are gauge
+directions whose range is the cell, so quotienting them out hides their `∝ s` measure
+factor without removing it (the ideal-gas COM factor; re-corrected in review
+2026-07-29). Gates: ΔE against from-scratch totals at both scales, the reconstruction
+identity pinning `j0` as the only elastic term, hand-derived closed forms in both
+arms, and a white-box replay in which every accept decision must match a hand-paired
+reconstruction.
 
 `strain_move!` (with `StrainScratch`, and `ChainState` gaining the cell scale as
 replica payload): affine displacement rescale at fixed scaled coordinates, in-place
 coefficient swap, bit-identical Horner restore on reject, reject-never-clamp outside
-the grid, one chain-level draw per attempt plus one uniform in domain, and an escape-
-detector reset on every accepted rescale (the radius statistics are absolute lengths
-against a cell that just changed). The Jacobian exponent is *measured*, not asserted:
-on the constant-coefficient toy the stationary volume marginal is `p(V) ∝ V^{D/3}`,
-and each of two fixtures — translation-flat vs on-site-pinned, whose `D` differ by the
-full `count(comp_free)` — matches its own power and rejects the other's, isolating the
-per-(direction, component) COM bookkeeping. `StrainSchedule` construction now also
-hard-errors on a grid node that is not translation-flat while the Hamiltonian is
-(flatness is linear in the coefficients, so the nodes certify the family).
+the grid, one chain-level draw per attempt plus one uniform in domain, ΔE's two sides
+from one estimator (`e_old` recomputed from scratch, incremental drift carried across
+an accepted move), and a covariant rescale of the escape detector's length statistics
+on every accepted move (`_rescale_escape!` — a reset would disarm the block ladder
+permanently at the default cadence, blinding the unboundedness diagnostic on exactly
+the NPT runs that need it). The volume exponent is *measured*, not asserted: on the
+constant-coefficient toy the stationary volume marginal is `p(V) ∝ V^{N_mob}`; the
+flat and pinned fixtures share `N_mob = 4` while their `count(comp_free)` differ by
+6, so both landing on `V⁴` kills the rejected COM-reduced convention, and a third
+chain at `N_mob = 2` shows the exponent moves with the system. `StrainSchedule`
+construction hard-errors on a grid node that pins any direction the Hamiltonian
+re-centres — checked at the Hamiltonian's OWN dims (the component partition depends
+on the supercell), one-sidedly, whenever `any(comp_free)`; flatness is linear in the
+coefficients, so the nodes certify the family. The schedule also captures a
+structural term fingerprint that the drivers re-check, so a schedule converted
+against one Hamiltonian refuses a same-shape different model instead of silently
+writing one grid's coefficients onto another model's clusters.
 
 `run_mc` drives it: `strain = StrainSchedule(sm, H)` plus **exactly one** of
 `pressure_GPa` / `pressure` (the `temperature` XOR `kT` discipline applied to
@@ -40,10 +54,14 @@ again downstream), `strain_interval` / `strain_proposal` / `strain_step` resolve
 the displacement passes, a pairing check against the Hamiltonian the run uses, the
 measurement `MCView` carrying the cell scale, and `TempResult.acceptance_strain`.
 `run_pt` refuses a schedule by name (one shared Hamiltonian mutated in place + the NVT
-swap rule — design record §8's v0 scope refusal). Fixed-cell byte-neutrality is
-pinned against a trajectory captured before the wiring landed. `sync_coefficients!`
-re-uploads the one device array a host `set_coefficients!` moves (`sent_w`), gated
-bitwise against the keyed reference on the new weights.
+swap rule — design record §8's v0 scope refusal). Both drivers hand `H` back at the
+REFERENCE scale on return (a strained run used to leave the caller's `H` at the
+chain's final scale, silently rescaling the next `model_fingerprint` or fixed-cell
+run), and the `MCResult` warm-start recipe is documented as not applying to NPT.
+Fixed-cell byte-neutrality is pinned against a trajectory captured before the wiring
+landed. `sync_coefficients!` re-uploads the one device array a host
+`set_coefficients!` moves (`sent_w`), gated bitwise against the keyed reference on
+the new weights.
 
 Checkpoint schema v4: `chain/strain` + strain acceptance counters + the plan's strain
 fields + `grid_fingerprint`. On a strained run the model fingerprint is pinned at the

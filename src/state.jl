@@ -269,6 +269,23 @@ function _reset_escape!(st::ChainState)::ChainState
     return st
 end
 
+# An accepted strain move rescales every displacement by exactly λ, so the escape
+# detector's length statistics are COVARIANT, not stale: rescale them in place and
+# keep the block ladder armed. Resetting instead would disarm the ladder on every
+# accepted move — i.e. permanently, at the default one-attempt-per-sweep cadence —
+# leaving U8's only unboundedness diagnostic blind exactly on the NPT runs where a
+# volume runaway makes it most needed. The counters (`disp_checks`, `disp_blk_n`,
+# `disp_blk_cap`, `escape_strikes`) are scale-free and stay.
+function _rescale_escape!(st::ChainState, lam::Float64)::ChainState
+    st.disp_rms *= lam
+    st.disp_max *= lam
+    st.disp_rms0 *= lam
+    st.disp_ms_sum *= lam^2
+    st.disp_blk_sum *= lam^2
+    st.disp_ref_ms *= lam^2
+    return st
+end
+
 # Remove the centre-of-mass displacement of every displacement-coupling component.
 #
 # Where a component's rigid shift IS a symmetry, the sampler performs an unbiased

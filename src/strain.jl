@@ -31,8 +31,8 @@
 
 The sampler-side form of a `SLCE.StrainedModels` volume grid: polynomial coefficients over
 the term list a [`TiledHamiltonian`](@ref) was built from, plus everything the NPT weight
-needs (`j0(s)`, the cell volume, the mobile-atom count and the dimension of the sampled
-displacement space).
+needs (`j0(s)`, the cell volume, and the displacement-active site count `n_mobile`
+that sets the volume power).
 
 Immutable and scale-free by design — the current scale is chain state, not a property of
 the schedule. Build it with [`StrainSchedule(sm, H)`](@ref).
@@ -46,13 +46,14 @@ struct StrainSchedule
     j0poly::Vector{Float64}          # (degree+1), per TRAINING cell
     v_train::Float64                 # training-cell volume at s = 1
     n_cells::Int                     # supercell / training cell
-    n_mobile::Int                    # atoms with displacement DoF (H.n_disp_active)
+    n_mobile::Int                    # displacement-active SITE count (H.n_disp_active)
     d_dim::Int                       # 3·n_mobile − count(H.comp_free): the sampled dim
+    term_fp::UInt64                  # structural identity of H's term list
 
     function StrainSchedule(scales::Vector{Float64}, abscissa::Symbol, x0::Float64,
                             xw::Float64, coefpoly::Matrix{Float64},
                             j0poly::Vector{Float64}, v_train::Float64, n_cells::Int,
-                            n_mobile::Int, d_dim::Int)
+                            n_mobile::Int, d_dim::Int, term_fp::UInt64)
         length(scales) >= 2 || throw(ArgumentError(
             "a strain schedule needs at least 2 grid points; got $(length(scales))"))
         issorted(scales) && allunique(scales) && all(>(0), scales) || throw(ArgumentError(
@@ -69,8 +70,30 @@ struct StrainSchedule
         0 <= d_dim <= 3 * n_mobile || throw(ArgumentError(
             "d_dim = $d_dim is outside [0, 3·n_mobile] = [0, $(3 * n_mobile)]"))
         return new(scales, abscissa, x0, xw, coefpoly, j0poly, v_train, n_cells,
-                   n_mobile, d_dim)
+                   n_mobile, d_dim, term_fp)
     end
+end
+
+# The structural identity of the term list a Hamiltonian was built from: input index,
+# atoms and lattice images per template term (FNV-1a, same mixer as the checkpoint
+# fingerprints). `_check_strain_pairing` compares it, because the constructor's deep
+# per-term check runs against SOME Hamiltonian — not necessarily the one a later run
+# passes — and counts alone cannot tell two same-shape models apart.
+function _schedule_term_fp(H::TiledHamiltonian)::UInt64
+    h = 0xcbf29ce484222325
+    @inbounds for k in eachindex(H.terms)
+        h = _fp_mix(h, Int(H.term_source[k]))
+        t = H.terms[k]
+        for a in t.atoms
+            h = _fp_mix(h, a)
+        end
+        for sv in t.shifts
+            h = _fp_mix(h, sv[1])
+            h = _fp_mix(h, sv[2])
+            h = _fp_mix(h, sv[3])
+        end
+    end
+    return h
 end
 
 Base.length(sch::StrainSchedule) = length(sch.scales)
@@ -92,6 +115,11 @@ refusing.
 """
 strain_domain(sch::StrainSchedule) = (first(sch.scales), last(sch.scales))
 
+"""
+    in_strain_domain(sch::StrainSchedule, s) -> Bool
+
+Whether the linear scale `s` lies inside [`strain_domain`](@ref)'s closed interval.
+"""
 in_strain_domain(sch::StrainSchedule, s::Real) =
     first(sch.scales) <= s <= last(sch.scales)
 
@@ -155,7 +183,7 @@ end
 """
     strain_volume(sch::StrainSchedule, s) -> Float64
 
-The **supercell** volume at scale `s`. `P·V` and the Jacobian's mobile-atom count are
+The **supercell** volume at scale `s`. `P·V` and the volume power's site count are
 supercell quantities while `j0` is per training cell — mixing the two is a factor
 `n_cells` error in the applied pressure (design record §8).
 """
@@ -176,12 +204,14 @@ lattice images agree across the whole grid *and* agree with what `H` holds — s
 Hamiltonian built from a different model, a different supercell, or without
 `keep_zero_terms = true` is refused here rather than silently mis-assigned later.
 
-`H.n_disp_active` and `H.comp_free` supply the Jacobian's `D = 3·N_mob − count(comp_free)`:
-the sampler re-centres per (Cartesian direction, displacement component), so each free
-direction removes ONE dimension and there are `n_disp_comps` independent centres of mass —
-`D` is not `3(N − 1)` and need not be a multiple of 3.
+`H.n_disp_active` supplies `n_mobile`, the displacement-active site count whose volume
+power `V^{N_mob}` the NPT weight carries — NOT reduced by the re-centred COM
+directions: those are gauge directions whose range is the cell, so quotienting them
+out hides their measure factor without removing it (the ideal-gas COM factor). The
+sampled dimension `D = 3·N_mob − count(comp_free)` is stored as `d_dim` for
+diagnostics only.
 """
-function StrainSchedule(sm, H::TiledHamiltonian)
+function StrainSchedule(sm::SLCE.StrainedModels, H::TiledHamiltonian)
     ms = sm.models
     npt = length(ms)
     lists = [SLCE.decorated_terms(m; keep_zero = true) for m in ms]
@@ -215,28 +245,38 @@ function StrainSchedule(sm, H::TiledHamiltonian)
     end
 
     scales = collect(Float64, SLCE.scales(sm))
-    # ASR hard-error at conversion (design record §8): the sampler re-centres along
-    # H's flat directions and the NPT weight carries `D` — properties the WHOLE family
-    # must share, not just the node `H` was built from. Flatness is linear in the
-    # coefficients, so flat at every node ⇒ flat for every interpolated model; a fully
-    # invariant `H` therefore requires every node to build cleanly (the 1×1×1
-    # constructor measures and refuses). A pinned `H` (`fixed_reference`) declared an
-    # absolute frame, and its family's flatness pattern is the caller's contract.
-    if H.n_disp_comps > 0 && H.translation_invariant
+    # ASR hard-error at conversion (design record §8): `_recenter!` projects along
+    # H's free (direction, component) pairs at every interpolated scale, so every
+    # grid node must be flat along AT LEAST those pairs — flatness is linear in the
+    # coefficients, so flat at every node ⇒ flat for the whole interpolated family.
+    # Three details are load-bearing. (i) The check runs at `H`'s OWN dims: the
+    # component partition depends on the supercell (a chain of cross-cell pairs can
+    # be one component at 1×1×1 and two at 2×1×1), and per-component flatness is
+    # strictly stronger than the global sum rule. (ii) The gate is `any(comp_free)`,
+    # not `translation_invariant`: a partially pinned `fixed_reference` Hamiltonian
+    # (a slab — free in-plane, pinned along the normal) is still re-centred along its
+    # free directions. (iii) The comparison is ONE-SIDED — a node may be flatter than
+    # `H` (sampling a flat direction is merely diffusive), but a node that PINS a
+    # direction `H` re-centres would get a biasing projection at that volume.
+    if H.n_disp_comps > 0 && any(H.comp_free)
         for i = 1:npt
-            try
-                TiledHamiltonian(ms[i]; dims = (1, 1, 1), keep_zero_terms = true)
+            Hn = try
+                TiledHamiltonian(ms[i]; dims = Tuple(H.dims), keep_zero_terms = true,
+                                 fixed_reference = true)
             catch err
                 err isa ArgumentError || rethrow()
                 throw(ArgumentError(
-                    "grid point $i (scale $(scales[i])) is not translation-flat " *
-                    "while the Hamiltonian is: the strain move would sample a " *
-                    "re-centred, COM-free ensemble at a volume where a rigid shift " *
-                    "is not a symmetry. Refit that grid point under the ASR " *
-                    "(`fit(...; asr = true)`), or build the Hamiltonian with " *
-                    "`fixed_reference = true` if the absolute frame is physical.\n" *
-                    "  underlying: " * err.msg))
+                    "grid point $i (scale $(scales[i])) fails to build at the " *
+                    "Hamiltonian's supercell:\n  " * err.msg))
             end
+            all(Hn.comp_free .| .!H.comp_free) || throw(ArgumentError(
+                "grid point $i (scale $(scales[i])) is not translation-flat along " *
+                "direction(s) $(Tuple.(findall(H.comp_free .& .!Hn.comp_free))) " *
+                "(as (direction, component)) that the Hamiltonian re-centres: the " *
+                "strain move would sample a COM-projected ensemble at a volume " *
+                "where that rigid shift is not a symmetry. Refit that grid point " *
+                "under the ASR (`fit(...; asr = true)`), or build the Hamiltonian " *
+                "with `fixed_reference = true` if the absolute frame is physical."))
         end
     end
     v_train = abs(det(ms[1].basis.crystal.lattice.vectors)) / scales[1]^3
@@ -245,7 +285,9 @@ function StrainSchedule(sm, H::TiledHamiltonian)
     isinteger(ncell_f) || throw(ArgumentError(
         "the Hamiltonian has $(H.n_sites) sites, which is not a whole number of the " *
         "grid's $(natom)-atom cells. `j0` is per TRAINING cell, so this ratio has to be " *
-        "an integer — note `prod(dims)` is NOT it when `reduce_cell` was used."))
+        "an integer. (A `reduce_cell` Hamiltonian never reaches this point — its term "*
+        "count differs from the grid's, so the term check above refuses it first; "*
+        "strain + reduced cells is unsupported.)"))
     x = [_sch_abscissa(sm.abscissa, v_train, s) for s in scales]
     x0 = sum(x) / npt
     xw = maximum(abs, x .- x0)
@@ -263,7 +305,8 @@ function StrainSchedule(sm, H::TiledHamiltonian)
     C = V \ B
     return StrainSchedule(scales, sm.abscissa, x0, xw, Matrix(C[:, 2:end]), Vector(C[:, 1]),
                           v_train, Int(ncell_f), H.n_disp_active,
-                          3 * H.n_disp_active - count(H.comp_free))
+                          3 * H.n_disp_active - count(H.comp_free),
+                          _schedule_term_fp(H))
 end
 
 _sch_abscissa(abscissa::Symbol, v_train::Float64, s::Real)::Float64 =
@@ -311,18 +354,25 @@ function strain_delta_energy(sch::StrainSchedule, e_old::Real, e_new::Real,
 end
 
 # The two proposal arms. A strain proposal is a symmetric step in a variable `y`; the
-# accept weight then carries the volume power `D/3` from the configurational measure
-# PLUS `ln|dV/dy|` from the proposal variable itself:
+# accept weight carries the volume power `N_mob` of the configurational measure
+# (`d^{3N}r = V^N d^{3N}x` in scaled coordinates — Frenkel–Smit's `N ln(V′/V)`, with
+# `N` the displacement-ACTIVE site count) PLUS `ln|dV/dy|` from the proposal variable:
 #
-#     :logvolume   y = ln V   power D/3 + 1
-#     :scale       y = s      power D/3 + 2/3
+#     :logvolume   y = ln V   ln A carries (3·N_mob + 3)·ln(s′/s)
+#     :scale       y = s      ln A carries (3·N_mob + 2)·ln(s′/s)
 #
-# so `ln A = 3·power·ln(s′/s) − ΔE/kT` with ΔE from `strain_delta_energy`. The three
-# functions below branch on the SAME symbol and sit adjacent on purpose: drawing in one
-# arm's `y` while weighting with the other arm's power is §8(β)'s live trap — the grid
-# is labelled by `s`, so "uniform in s with the volume-uniform exponent" is off by
-# `(V′/V)^{2/3}`, invisible on a production cell and percent-level on the fixtures the
-# gates run on.
+# NOT `D = 3·N_mob − count(comp_free)`: the flat COM directions are gauge directions
+# whose RANGE is the cell, so quotienting them out (as `_recenter!` does) hides their
+# measure factor without removing it — each flat direction still contributes one `s`
+# to the target (the ideal-gas COM factor; corrected 2026-07-29, see
+# `docs/specs/strain-move.md` S3). `D` survives only as the dimension of the sampled
+# subspace, which the weight never needs.
+#
+# The functions below branch on the SAME symbol and sit adjacent on purpose: drawing
+# in one arm's `y` while weighting with the other arm's exponent is §8(β)'s live trap —
+# the grid is labelled by `s`, so "uniform in s with the volume-uniform exponent" is
+# off by `(V′/V)^{2/3}`, invisible on a production cell and percent-level on the
+# fixtures the gates run on.
 
 const _STRAIN_PROPOSALS = (:logvolume, :scale)
 
@@ -342,22 +392,23 @@ _strain_y(proposal::Symbol, s::Real)::Float64 =
 _strain_s_of_y(proposal::Symbol, y::Real)::Float64 =
     proposal === :logvolume ? exp(y / 3) : Float64(y)
 
-_strain_power(sch::StrainSchedule, proposal::Symbol)::Float64 =
-    sch.d_dim / 3 + (proposal === :logvolume ? 1.0 : 2 / 3)
+# The coefficient of ln(s′/s) in the log weight, exact in integers.
+_strain_s_exponent(sch::StrainSchedule, proposal::Symbol)::Int =
+    3 * sch.n_mobile + (proposal === :logvolume ? 3 : 2)
 
 """
     _strain_log_weight(sch, proposal, s_old, s_new, delta_e, kt) -> Float64
 
 The log of the Metropolis acceptance ratio for a strain proposal drawn symmetrically in
-`proposal`'s variable: `3·power·ln(s_new/s_old) − delta_e/kt`, where `delta_e` is
-[`strain_delta_energy`](@ref)'s full ΔE and the power is `D/3 + 1` (`:logvolume`) or
-`D/3 + 2/3` (`:scale`) with `D = 3·n_mobile − count(comp_free)`. Accept with
-probability `min(1, exp(·))`.
+`proposal`'s variable: `(3·N_mob + 3)·ln(s_new/s_old) − delta_e/kt` for `:logvolume`
+and `(3·N_mob + 2)·ln(s_new/s_old) − delta_e/kt` for `:scale`, where `delta_e` is
+[`strain_delta_energy`](@ref)'s full ΔE and `N_mob = n_mobile` counts the
+displacement-active sites. Accept with probability `min(1, exp(·))`.
 """
 function _strain_log_weight(sch::StrainSchedule, proposal::Symbol, s_old::Real,
                             s_new::Real, delta_e::Real, kt::Real)::Float64
     _strain_check_proposal(proposal)
-    return 3 * _strain_power(sch, proposal) * log(s_new / s_old) - delta_e / kt
+    return _strain_s_exponent(sch, proposal) * log(s_new / s_old) - delta_e / kt
 end
 
 # --------------------------------------------------------------------------------------
@@ -388,24 +439,29 @@ StrainScratch(H::TiledHamiltonian) =
 
 """
     strain_move!(st::ChainState, H::TiledHamiltonian, sch::StrainSchedule,
-                 sc::StrainScratch, kt::Real, pressure::Real, step::Real;
-                 proposal::Symbol = :logvolume) -> Bool
+                 sc::StrainScratch, kt::Real;
+                 pressure::Real, step::Real, proposal::Symbol = :logvolume) -> Bool
 
 One isothermal–isobaric (NPT) strain move: propose a new linear cell scale by a
 symmetric step of width `step` in `proposal`'s variable, rescale the displacements
 **affinely** (`u → (s′/s)·u`, fixed scaled coordinates), install the schedule's
 coefficients for the proposed scale, and accept by `_strain_log_weight`'s Metropolis
-rule. Returns whether the move was accepted.
+rule. Returns whether the move was accepted. `pressure` and `step` are required
+keywords — two bare positional scalars of the same type would make a transposition
+undetectable.
 
 The contract with the caller: on entry `H`'s coefficients are the schedule's at
 `st.strain`, and on exit they are the schedule's at the NEW `st.strain` — accepted or
 not, the pair `(H, st)` stays consistent, so the sweep layer can run in between with
-no knowledge that the cell moves. A proposal outside [`strain_domain`](@ref) is
-**rejected**, never clamped (a truncating clamp is an asymmetric proposal and biases
-the chain toward the boundary). Draws come from the chain-level `st.rng` only — one
-normal per attempt, plus one uniform when the proposal lands inside the domain.
+no knowledge that the cell moves. All argument validation happens BEFORE the first
+write to `H`, so a thrown error also leaves the pair consistent. A proposal outside
+[`strain_domain`](@ref) is **rejected**, never clamped (a truncating clamp is an
+asymmetric proposal and biases the chain toward the boundary). Draws come from the
+chain-level `st.rng` only — one normal per attempt, plus one uniform when the
+proposal lands inside the domain.
 
-`pressure` is hydrostatic, in the model's units (eV/Å³): `P·V(ε)` is a state function
+`pressure` is hydrostatic, in the model's units (eV/Å³, **never GPa** — the driver
+keyword `pressure_GPa` converts once, at resolution): `P·V(ε)` is a state function
 with no strain-measure ambiguity, which is why v0 is hydrostatic-only — a general
 applied stress is work-conjugate to a specific strain measure and would reopen the
 measure choice. A run WITHOUT this move samples the constant-strain (fixed-cell)
@@ -413,16 +469,22 @@ ensemble — a different ensemble giving `F(T, ε)` with neither the volume Jaco
 the `P·V` term, which is what magnetostriction under fixed geometry wants; the two
 specific heats differ.
 
-An accepted move is a phase boundary for the escape detector (`_reset_escape!`): its
-radius statistics are absolute lengths, and the cell they are measured against has
-just changed.
+An accepted move rescales the escape detector's accumulators together with the state:
+its statistics are absolute lengths, and the affine map is exactly known, so they are
+covariant (`rms → λ·rms`) rather than a phase boundary to reset at — a reset would
+disarm the detector's block ladder on every accepted move, i.e. permanently at the
+default cadence.
 """
 function strain_move!(st::ChainState, H::TiledHamiltonian, sch::StrainSchedule,
-                      sc::StrainScratch, kt::Real, pressure::Real, step::Real;
+                      sc::StrainScratch, kt::Real; pressure::Real, step::Real,
                       proposal::Symbol = :logvolume)::Bool
     _strain_check_proposal(proposal)
     kt > 0 || throw(ArgumentError("kt must be > 0; got $kt"))
     step > 0 || throw(ArgumentError("the strain proposal width must be > 0; got $step"))
+    # validated HERE, not inside `strain_delta_energy`: by that point the proposed
+    # scale's coefficients are already installed, and a throw would leave (H, chain)
+    # inconsistent
+    isfinite(pressure) || throw(ArgumentError("pressure must be finite; got $pressure"))
     s = st.strain
     in_strain_domain(sch, s) || throw(ArgumentError(
         "the chain sits at scale $s, outside the schedule's domain " *
@@ -432,6 +494,16 @@ function strain_move!(st::ChainState, H::TiledHamiltonian, sch::StrainSchedule,
     sp = _strain_s_of_y(proposal, _strain_y(proposal, s) + step * randn(st.rng))
     in_strain_domain(sch, sp) || return false
     lam = sp / s
+
+    # Both sides of ΔE from the same estimator: `st.energy` is the incrementally
+    # accumulated value, and mixing it with a from-scratch `e_new` would put the
+    # accumulated drift into the acceptance ratio asymmetrically (an O(drift)
+    # detailed-balance violation). So `e_old` is recomputed from scratch here, while
+    # `H` still carries the current scale, and the drift itself is carried across an
+    # accepted move unchanged — `_renormalize!`'s `max_drift` accounting keeps
+    # seeing it.
+    e_old = _total_energy(H, st.zrows)
+    drift = st.energy - e_old
 
     # The proposed state: affinely rescaled displacements, their rows, the proposed
     # scale's coefficients. Spin rows are untouched by a cell rescale, so the copy
@@ -451,11 +523,11 @@ function strain_move!(st::ChainState, H::TiledHamiltonian, sch::StrainSchedule,
     # per-proposal recheck would re-measure a property linear in the coefficients.
     set_coefficients!(H, sc.coef; recheck_translation = false)
     e_new = _total_energy(H, sc.zrows)
-    de = strain_delta_energy(sch, st.energy, e_new, s, sp;
+    de = strain_delta_energy(sch, e_old, e_new, s, sp;
                              pressure = Float64(pressure))
     if log(rand(st.rng)) < _strain_log_weight(sch, proposal, s, sp, de, kt)
         st.strain = sp
-        st.energy = e_new
+        st.energy = e_new + drift
         st.disps, sc.unew = sc.unew, st.disps
         st.zrows, sc.zrows = sc.zrows, st.zrows
         # the re-centring record is a set of absolute lengths in the same frame
@@ -463,7 +535,7 @@ function strain_move!(st::ChainState, H::TiledHamiltonian, sch::StrainSchedule,
             st.com_removed[c] = lam * st.com_removed[c]
         end
         st.acc_strain += 1
-        _reset_escape!(st)
+        _rescale_escape!(st, lam)
         return true
     end
     # Reject: reinstall the CURRENT scale's coefficients. The Horner pass is

@@ -15,12 +15,27 @@ variable, rescale the displacements **affinely** (`u → (s′/s)·u`, fixed sca
 coordinates), install the grid's interpolated coefficients for `s′` via the
 in-place `set_coefficients!` hot-swap, and accept with
 
-    ln A = 3·power·ln(s′/s) − β·[ΔE_config + n_cells·Δj0 + P·ΔV]
+    ln A = (3·N_mob + c)·ln(s′/s) − β·[ΔE_config + n_cells·Δj0 + P·ΔV]
 
-where `power = D/3 + 1` (`:logvolume` proposals) or `D/3 + 2/3` (`:scale`), and
-`D = 3·n_disp_active − count(comp_free)` is the dimension of the sampled
-displacement space. It never runs inside the color-parallel sweep layer — one
-serial move per `strain_interval` compound sweeps.
+where `N_mob = n_disp_active` is the displacement-active site count, and `c = 3`
+(`:logvolume` proposals) or `c = 2` (`:scale`) is the proposal-variable factor
+`ln|dV/dy|`. It never runs inside the color-parallel sweep layer — one serial
+move per `strain_interval` compound sweeps.
+
+**Corrected 2026-07-29 (review), superseding design-record §8's own correction.**
+The first version carried the volume power `D/3` with
+`D = 3·N_mob − count(comp_free)` — the dimension of the COM-projected space the
+sampler works in. That undercounts: the flat COM directions are gauge directions
+whose RANGE is the cell (∝ `s` per direction), so quotienting them out (as
+`_recenter!` does) hides their measure factor without removing it. In scaled
+coordinates `d^{3N}r = V^N d^{3N}x` — the ideal-gas COM factor, and
+Frenkel–Smit's `N·ln(V′/V)` with `N` all mobile atoms. The physical exponent is
+`N_mob`, independent of `comp_free`; `D` survives only as the sampled dimension
+(`StrainSchedule.d_dim`, diagnostics). The omission was O(`n_comps·kT/⟨V⟩`) in
+the sampled pressure — negligible on a production cell, percent-level on the
+test fixtures, and invisible to every gate that measured the implemented rather
+than the physical marginal, which is why the toy gate now varies `N_mob` and
+holds `count(comp_free)` fixed *and* varied.
 
 ## S1 — the energy contract has one elastic source
 
@@ -35,11 +50,11 @@ reconstruction identity — configurational + `n_cells·j0(s)` equals the upstre
 ## S2 — the proposal arm is one value, not two knobs
 
 The proposal variable and the acceptance power are branches of the SAME symbol
-(`_strain_y` / `_strain_s_of_y` / `_strain_power`, adjacent in `strain.jl`),
+(`_strain_y` / `_strain_s_of_y` / `_strain_s_exponent`, adjacent in `strain.jl`),
 because §8(β)'s live trap is drawing in one arm's variable while weighting with
 the other's — off by `(V′/V)^{2/3}`, invisible on a production cell and
 percent-level on the fixtures. Excluded twice: hand-derived closed forms per arm
-(`(D+3)`/`(D+2)` powers of `ln(s′/s)`), and a white-box replay in which every
+(`(3N+3)`/`(3N+2)` powers of `ln(s′/s)`), and a white-box replay in which every
 accept decision over both arms must match a hand-paired reconstruction from a
 cloned RNG. The statistical marginal cannot resolve the 1/3-power difference at
 test cost, which is why the replay exists.
@@ -47,12 +62,14 @@ test cost, which is why the replay exists.
 ## S3 — the exponent is measured, not asserted
 
 On the §8(γ) toy — constant coefficients across the grid, `j0 ≡ 0`, `P = 0`,
-`u ≡ 0` — the stationary volume marginal is the bare Jacobian `p(V) ∝ V^{D/3}`.
-The gate histograms the chain and compares the empirical mean volume against the
-analytic mean for the fixture's own `D`, and REJECTS the neighbouring `D ± 3`
-(the two fixtures — a translation-flat pair model and an on-site-pinned one —
-differ by the full `count(comp_free)`, isolating the per-(direction, component)
-COM bookkeeping; `D` is not `3(N−1)` and need not be a multiple of 3).
+`u ≡ 0` — the stationary volume marginal is the bare Jacobian `p(V) ∝ V^{N_mob}`.
+Three chains: the translation-flat and on-site-pinned (2,1,1) fixtures share
+`N_mob = 4` while their `count(comp_free)` differ by 6, so both landing on `V⁴`
+is exactly the mutation gate against the rejected COM-reduced convention (which
+separates them by two powers); the flat fixture at (1,1,1) has `N_mob = 2`,
+which shows the exponent moves with the system rather than being asserted. Each
+chain's empirical mean volume must match its own power and reject `±1` — and,
+where it differs, the rejected convention's `d_dim/3`.
 
 ## S4 — the (H, chain) contract
 
@@ -66,21 +83,38 @@ The sweep layer runs in between with no knowledge the cell moves. Consequences:
   exactly one normal draw; in-domain attempts consume one normal + one uniform,
   all from the chain-level `st.rng`;
 - an accepted move rescales `disps` AND `com_removed` (the re-centring record is
-  absolute lengths in the same frame) and calls `_reset_escape!` — an accepted
-  rescale is a phase boundary for the escape detector, whose radius statistics
-  are absolute lengths against a cell that just changed (§8(θ));
+  absolute lengths in the same frame) and RESCALES the escape detector's length
+  statistics by the same λ (`_rescale_escape!`) — they are exactly covariant
+  under the affine map. §8(θ)'s original reading ("an accepted strain move is a
+  phase boundary and must reset") is superseded: a reset on every accepted move
+  disarms the detector's block ladder permanently at the default
+  one-attempt-per-sweep cadence, blinding U8's only unboundedness diagnostic on
+  precisely the runs where a volume runaway is easiest;
+- ΔE's two sides come from ONE estimator: `e_old` is recomputed from scratch
+  before the swap (the incrementally tracked `st.energy` would put the
+  accumulated drift into the acceptance ratio asymmetrically), and the drift is
+  carried across an accepted move unchanged so `max_drift` accounting still sees
+  it;
 - the chain's scale is replica-exchange **payload** (swapped with the state),
   though in v0 PT never strains (S6).
 
 ## S5 — ASR hard-error at conversion, not per proposal
 
-`StrainSchedule(sm, H)` on a translation-invariant `H` builds every grid node at
-1×1×1 and lets the constructor's flatness measurement refuse a non-flat node,
-wrapping the error with the grid context. Flatness is linear in the
-coefficients, so flat at every node ⇒ flat for every interpolated model — which
-is what licenses `strain_move!`'s `recheck_translation = false` per proposal. A
-pinned `H` (`fixed_reference`) declared an absolute frame; its family's pattern
-is the caller's contract and the node check is skipped.
+`StrainSchedule(sm, H)` builds every grid node **at `H`'s own dims** (with
+`fixed_reference = true`, so the build itself never refuses on flatness) and
+compares flat patterns ONE-SIDEDLY: every (direction, component) that `H`
+re-centres must be flat at every node — a node may be *flatter* than `H`
+(sampling a flat direction is merely diffusive), but a node that *pins* a
+re-centred direction would get a biasing projection at that volume. Three
+corrections over the first version (2026-07-29 review): the check runs at `H`'s
+dims because the component partition depends on the supercell (per-component
+flatness is strictly stronger than the global sum rule); the gate is
+`any(comp_free)`, not `translation_invariant`, because a partially pinned
+`fixed_reference` slab is still re-centred along its free directions; and build
+errors are wrapped neutrally rather than relabelled as flatness failures.
+Flatness is linear in the coefficients, so flat at every node ⇒ flat for every
+interpolated model — which is what licenses `strain_move!`'s
+`recheck_translation = false` per proposal.
 
 ## S6 — driver wiring and the two refusals
 
@@ -99,6 +133,15 @@ state, so the energy recompute sees them).
 (a data race before it is a physics question), and `_attempt_swap!` is the NVT
 rule where NPT needs `(β_a−β_b)[(E_b+PV_b)−(E_a+PV_a)]` with the strain in the
 payload. PT + strain is its own future slice.
+
+The run-time pairing check compares counts AND a structural term fingerprint
+(FNV over each template term's input index, atoms and images, captured at
+conversion): the constructor's deep per-term check ran against SOME Hamiltonian,
+and counts alone cannot tell two same-shape models apart — the exact silent
+mis-assignment the schedule exists to prevent. `run_mc` and `resume` hand `H`
+back at the REFERENCE scale on return; leaving it at the chain's final scale
+would silently rescale the caller's next `model_fingerprint` / `total_energy` /
+fixed-cell run.
 
 GPU: `sync_coefficients!(gH)` re-uploads the ONE device array a host coefficient
 swap moves (`sent_w`; every structural table is coefficient-independent because
@@ -135,7 +178,7 @@ is untouched — SLCEDynamics' checkpoint format depends on it.
 - **The chain starts at `s = 1`** (must be in the domain); warm-starting a
   strained chain from a previous run's final scale is not wired (`MCResult`
   carries no final strain) — resume from a checkpoint instead.
-- **Mechanical-equilibrium identity observable** (§8(ζ):
-  `P = (D/3)·kT/⟨V⟩ + ⟨−∂E/∂V⟩` via `grid_strain_derivative`) — the one
+- **Mechanical-equilibrium identity observable** (§8(ζ), with the corrected
+  exponent: `P = N_mob·kT/⟨V⟩ + ⟨−∂E/∂V⟩` via `grid_strain_derivative`) — the one
   production-scale check; belongs in the observable set, not yet implemented.
 - **PT + strain**, per S6.

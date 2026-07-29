@@ -212,24 +212,34 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   has ONE source — the grid's `j0(s)`, times `n_cells` — and there is deliberately no
   elastic-term keyword anywhere; adding one double-counts with every gate green
   (the reconstruction identity in `test_strainschedule.jl` is the fence). (2) The
-  proposal draw (`_strain_y`/`_strain_s_of_y`) and the acceptance power
-  (`_strain_power`: `D/3 + 1` for `:logvolume`, `D/3 + 2/3` for `:scale`) branch on
-  the SAME symbol and sit adjacent — drawing in one arm and weighting with the other
-  is off by `(V′/V)^{2/3}`, below the statistical gate's resolution; the closed-form
+  proposal draw (`_strain_y`/`_strain_s_of_y`) and the acceptance exponent
+  (`_strain_s_exponent`: `3·N_mob + 3` for `:logvolume`, `3·N_mob + 2` for `:scale`,
+  with `N_mob = n_disp_active` the displacement-active SITE count) branch on the
+  SAME symbol and sit adjacent — drawing in one arm and weighting with the other is
+  off by `(V′/V)^{2/3}`, below the statistical gate's resolution; the closed-form
   and white-box-replay gates exclude it exactly, so touch one branch and re-check
-  both. (3) The `(H, chain)` contract — `H` carries the schedule's coefficients at
-  `st.strain` before and after every move, accepted or not (the reject path restores
-  by re-running the same deterministic Horner pass) — is what the sweep layer,
-  `run_mc`'s reference install, `carryover = false`'s cell reset, and `resume`'s
-  scale reinstall all assume; break it anywhere and the sweeps sample one volume's
-  displacements against another's coefficients. (4) On a strained run the checkpoint
-  `model_fingerprint` is defined AT THE REFERENCE scale: the writer captures it while
-  `H` holds `s = 1` (order of `_make_checkpointer` vs the install in `run_mc` is
-  load-bearing) and `resume` reinstalls the reference from the supplied schedule
-  before comparing — reorder either and every strained resume refuses or, worse,
-  accepts a wrong model. (5) An accepted rescale is a phase boundary:
-  `_reset_escape!`, and `disps` AND `com_removed` rescale together (both are absolute
-  lengths in the same frame). (6) `run_pt` refuses a schedule (one shared `H` mutated
+  both. The power is NOT the COM-reduced `D/3` (the 2026-07-29 re-correction —
+  quotiented flat directions keep their `∝ s` measure factor, the ideal-gas COM
+  factor; the toy gate's flat/pinned pair at equal `N_mob` and unequal
+  `count(comp_free)` is the mutation fence). (3) The `(H, chain)` contract — `H`
+  carries the schedule's coefficients at `st.strain` before and after every move,
+  accepted or not (the reject path restores by re-running the same deterministic
+  Horner pass; every argument is validated BEFORE the first write) — is what the
+  sweep layer, `run_mc`'s reference install, `carryover = false`'s cell reset, and
+  `resume`'s scale reinstall all assume; break it anywhere and the sweeps sample one
+  volume's displacements against another's coefficients. Both drivers hand `H` back
+  at the REFERENCE on return, and the pairing check compares a structural term
+  fingerprint (`_schedule_term_fp`), not counts alone — two same-shape models pass
+  every count. (4) On a strained run the checkpoint `model_fingerprint` is defined
+  AT THE REFERENCE scale: the writer captures it while `H` holds `s = 1` (order of
+  `_make_checkpointer` vs the install in `run_mc` is load-bearing) and `resume`
+  reinstalls the reference from the supplied schedule before comparing — reorder
+  either and every strained resume refuses or, worse, accepts a wrong model. (5) An
+  accepted rescale is exactly affine, so `disps`, `com_removed` AND the escape
+  detector's length statistics rescale together (`_rescale_escape!` — a reset would
+  disarm the block ladder permanently at the default cadence), and ΔE's two sides
+  come from one estimator (`e_old` recomputed from scratch, drift carried across).
+  (6) `run_pt` refuses a schedule (one shared `H` mutated
   in place + the NVT swap rule), and a host `set_coefficients!` under a live
   `GPUTiledHamiltonian` needs `sync_coefficients!` — `sent_w` is the ONE
   coefficient-dependent device array, and forgetting the call is undetectable from

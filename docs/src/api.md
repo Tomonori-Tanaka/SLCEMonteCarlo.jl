@@ -39,6 +39,7 @@ keys would otherwise produce term lists of equal length with shifted maps.
 ```@docs
 StrainSchedule
 strain_domain
+in_strain_domain
 strain_coefficients
 strain_coefficients!
 strain_j0
@@ -46,6 +47,7 @@ strain_volume
 strain_delta_energy
 StrainScratch
 strain_move!
+GPA_PER_EV_A3
 ```
 
 ## Cell reduction
