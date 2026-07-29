@@ -20,6 +20,12 @@ pt.points[1]           # coldest rung's TempResult (points follow ladder order)
 pt.swap_acceptance     # length nrungs−1, the ladder diagnostic
 ```
 
+A [`StrainSchedule`](@ref) plus the pressure keywords (as in [`run_mc`](@ref))
+makes every lane an NPT chain at the same pressure: each lane sweeps its own
+coefficient clone of `H`, the strain travels with the swapped payload, and the
+swap weight becomes `E + n_cells·j0(s) + P·V(s)` — see the running guide's NPT
+section.
+
 ## Choosing the ladder — the size scaling matters
 
 A swap accepts when `(βᵢ−βⱼ)(Eᵢ−Eⱼ) = O(1)`. Since `E` is extensive and adjacent

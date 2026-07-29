@@ -128,11 +128,10 @@ adapt on; a bad width shows in `acceptance_strain`, not in the ensemble).
 `carryover = false` resets the cell with the chain (coefficients first, then the
 state, so the energy recompute sees them).
 
-`run_pt` refuses a schedule by name: every lane sweeps ONE shared
-`TiledHamiltonian` by reference while `set_coefficients!` mutates it in place
-(a data race before it is a physics question), and `_attempt_swap!` is the NVT
-rule where NPT needs `(β_a−β_b)[(E_b+PV_b)−(E_a+PV_a)]` with the strain in the
-payload. PT + strain is its own future slice.
+`run_pt` takes the same NPT keywords since the PT + strain slice (S10): the two
+obstacles this section originally recorded — one shared `TiledHamiltonian`
+mutated in place, and the NVT swap rule — are resolved by per-lane coefficient
+clones and the generalized exchange weight respectively.
 
 The run-time pairing check compares counts AND a structural term fingerprint
 (FNV over each template term's input index, atoms and images, captured at
@@ -179,7 +178,17 @@ is untouched — SLCEDynamics' checkpoint format depends on it.
   strained chain from a previous run's final scale is not wired (`MCResult`
   carries no final strain) — resume from a checkpoint instead.
 - **Mechanical-equilibrium identity observable** — DONE, see S9.
-- **PT + strain**, per S6.
+- **PT + strain** — DONE, see S10.
+- **`:energy` / `:specific_heat` are configurational-only on a strained run**:
+  the β-conjugate state energy of the NPT target is
+  `W = E_config + n_cells·j0(s) + P·V(s)` (exactly `_swap_dweight`'s content),
+  and both `j0(s)` and `P·V(s)` fluctuate with the sampled volume, so the
+  reported `C = var(E_config)/(n·kT²)` is neither `C_V` nor the NPT `C_P`
+  (measured 3.4 % low on the Einstein-well fixture; `C_P − C_V = TVα²B` is
+  percent-to-tens-of-percent on a real solid near melting). Documented in the
+  observables conventions and both run drivers; a strain-aware `W` observable
+  (needs the schedule and the pressure captured, `pressure_diagnostics`-style)
+  is deferred work.
 
 ## S9 — the §8(ζ) mechanical-equilibrium observable (landed 2026-07-29)
 
@@ -233,7 +242,10 @@ the `Evaluable` receives its point's own `kT`, which is what lets one
 diagnostic serve a multi-temperature run; jackknife over paired bins carries
 the covariance of the two means. Scratch is captured per instance and sized for
 the paired `H` (a view from any other Hamiltonian is refused), serial by
-construction — a strained run already is, and `run_pt` refuses schedules.
+construction — i.e. a strained `run_mc`. Under a strained `run_pt` (S10) the
+diagnostic stays unusable: the lanes measure concurrently (a shared-scratch
+race) and their views carry per-lane clones, which the identity check refuses
+loudly instead of racing silently.
 
 **The statistical gate** (an Einstein-well fixture — the displacement energy
 must be bounded below or there is no stationary distribution to test; random
@@ -248,3 +260,88 @@ the j0 and virial halves are the ones this gate constrains (≫ 5σ / ~7σ if
 broken); the drift (~1σ) is the FD gate's job. It does NOT discriminate the
 rejected `D/3` convention (the fixture is fully pinned, so
 `count(comp_free) = 0` makes the two coincide); that mutation is §8(γ)'s toy.
+
+## S10 — PT + strain (landed 2026-07-29)
+
+`run_pt` takes the full NPT keyword set; owner `src/pt.jl` (`_PTLane`,
+`_swap_dweight`, `_attempt_swap!`), `src/coefficients.jl` (`_coefficient_clone`),
+`src/checkpoint.jl` (schema v5); gates in the three "PT + strain" testsets of
+`test/unit/test_strainschedule.jl`. Four decisions:
+
+**Per-lane coefficient clones, not a serialized shared `H`.** The S6 data race
+was that every lane sweeps one `TiledHamiltonian` while `set_coefficients!`
+rewrites it in place. `_coefficient_clone(H)` shares every structural array by
+reference and copies exactly what `set_coefficients!` writes — `terms`,
+`progs.term_coef`, `progs.sent_w` — so the cost is O(model), never O(supercell)
+(the program streams are per (template, member slot)), and each lane owns its
+coefficient state outright. The clone deliberately shares the flatness verdict
+(`comp_free`): the schedule certified flatness for the whole interpolated family
+at conversion (S5), so re-measuring per clone could only disagree by roundoff.
+The CALLER's `H` never enters a lane — the driver installs the reference into it
+up front (the fingerprint identity, the same order-of-capture rule as S7) and it
+stays there for the whole run; no end-of-run restore exists because nothing ever
+moves it.
+
+**The Hamiltonian reference is exchange payload.** An accepted swap moves
+`(config, zrows, energy, disps, com_removed, strain)` between lanes AND swaps
+`lane.H` — the installed coefficients describe the payload's scale, so they
+travel with it, and the (H, chain) contract of S4 holds through every exchange
+with no reinstall (no Horner pass at a swap, nothing to forget on the reject
+path). On a fixed-cell run every lane holds the same object and the swap is a
+same-reference no-op, which is why the fixed-cell trajectory is byte-neutral
+(pinned: a pre-wiring `run_pt` trajectory captured at `67d9363`, asserted `==`).
+
+**The swap rule keeps only β-conjugate content.** For bundles at a common
+pressure the exchange ratio is `(β_a−β_b)(W_a−W_b)` with
+`W = E_config + n_cells·j0(s) + P·V(s)`. The `V^{N_mob}` measure factor of §8's
+marginal does NOT enter: it is a β-independent property of the bundle itself and
+cancels exactly between the swapped and unswapped assignments — the general
+argument, not a per-channel re-derivation. Two implementation notes. `W_a − W_b`
+is formed as the sum of the three DIFFERENCES (`_swap_dweight`, same association
+as `strain_delta_energy`), never per-lane totals differenced — `n_cells·j0` and
+`P·V` are extensive while `ΔW` is not, so totals would compute the difference at
+`ulp(|W|)` granularity, a conditioning loss growing linearly with `n_cells`; the
+bracket gate's hand-derived logw mirrors the same association on purpose. And the
+configurational half is the incrementally tracked `st.energy` — it carries the
+chain's accumulated drift where the `j0`/`P·V` halves are exact, the same mix the
+fixed-cell NVT rule has always used; the drift is bounded by `renorm_interval`,
+surfaced in `max_drift`, and NOT worth a from-scratch `_total_energy` per lane
+per boundary (which would also move the fixed-cell byte-neutrality pin). The
+rule is pinned EXACTLY by a
+bracket gate (hand-built lanes, the hand-derived logw, uniforms one ulp on each
+side of `exp(logw)`; the dropped-j0 / dropped-P·V / NVT mutations shift logw by
+1.1 / 1.2 / 2.3 on the fixture, far above a ulp) because the statistical gate
+cannot resolve it: patching the NVT rule in moved the rung marginals ≤ 0.6σ at
+test cost — the same "replay exists because the marginal is blind" scoping as
+S2. The statistical gate (strained 2-rung PT vs independent NPT `run_mc` chains
+per rung on the Einstein-well fixture, 4σ) is the end-to-end ensemble check —
+a lane sweeping another scale's coefficients or a broken affine rescale at a
+swap wrecks it. Determinism is P3 unchanged: strain moves draw only from the
+lane RNG inside `_lane_segment!` (same order as `_run_temperature!`), and the
+swap weight is a pure function of chain state — `ntasks = 1 ≡ ntasks = R` is
+gated with the strain channel live.
+
+**Checkpoint schema v5.** The FILE layout did not change — `chain/strain` per
+lane and `plan/strain_*` were already written by v4 — but v4's PT lane strains
+were never live: a v4-era READER handed a strained-PT file would pass every
+handshake and silently continue the run as fixed-cell at the reference
+(`_pt_run!` had no strain support). The version bump turns that silent wrong
+physics into a named refusal in both directions, the same refuse-by-name
+precedent as v3 → v4. `resume` reuses the mc-kind strain handshake verbatim
+(grid fingerprint, reference reinstall before the model fingerprint, pairing
+check), then rebuilds per-lane clones at each lane's checkpointed scale;
+resume ≡ uninterrupted is gated bit-identically.
+
+Scope notes: one pressure for the whole ladder (the swap-cancellation argument
+above needs a common `P`; per-rung pressures are a different method — replica
+exchange in the (T, P) plane — not a missing keyword). `pressure_diagnostics`
+stays `run_mc`-only, per S9 — refused at `run_pt` ENTRY by observable name, so
+the late per-view identity refusal never burns a thermalization phase. `PTResult`
+carries no per-lane final scale, so on a strained run `final_disps[r]` are
+absolute lengths at an unrecorded per-lane scale — S8's `MCResult` warm-start
+caveat, once per rung (docstring warns; resume from the checkpoint instead).
+The lane-owned escape statistics see payloads at whichever scale the exchanges
+deliver, so a strained lane's `disp_rms` series mixes scales — diagnostic-only,
+and PT already breaks that series at every swap. Memory: R clones of
+`sent_w`/`term_coef`/`terms` per run — O(model) each; revisit only if a
+production model's program streams make it matter.

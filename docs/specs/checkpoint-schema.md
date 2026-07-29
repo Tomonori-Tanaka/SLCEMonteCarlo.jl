@@ -1,7 +1,8 @@
-# Decision record — checkpoint schema (v4; landed as v1) and bit-identical resume
+# Decision record — checkpoint schema (v5; landed as v1) and bit-identical resume
 
-Status: landed (M6; v4 with M5-4). Owner: `src/checkpoint.jl`; gates in
-`test/unit/test_checkpoint.jl` and (v4 strain) `test/unit/test_strainschedule.jl`.
+Status: landed (M6; v4 with M5-4, v5 with PT + strain). Owner: `src/checkpoint.jl`;
+gates in `test/unit/test_checkpoint.jl` and (strain / PT + strain)
+`test/unit/test_strainschedule.jl`.
 
 ## C1 — format: JLD2, plain data only
 
@@ -16,7 +17,7 @@ concurrent runs must use distinct paths). Checkpoint writing consumes no RNG
 Rejected: `Serialization` stdlib (positional, Julia-version-fragile), TOML/JSON
 (no bit-exact `Float64` round-trip without hex-float contortions, huge configs).
 
-## C2 — schema v4
+## C2 — schema v5
 
 v2 (2026-07-15, colored sweeps): adds `plan/sweep_tasks` and the per-site RNG
 streams `chain/site_rngs` (a `words × n_sites` UInt64 matrix — one Xoshiro per
@@ -43,8 +44,17 @@ writer (checkpointer built while `H` carries the reference) and `resume`
 same state. v3 files are rejected by the version check, with the strain channel
 named as the reason.
 
+v5 (2026-07-29, PT + strain, strain-move.md S10): **no layout change** — every
+group v5 writes, v4 already wrote (`chain/strain` and the strain counters were
+serialized per PT lane from the start). What changed is the semantics: v4's PT
+lane strains were never live, so a v4-era reader handed a strained-PT file would
+pass every handshake and silently continue the run as **fixed-cell** at the
+reference (`_pt_run!` had no strain support). The version bump turns that silent
+wrong physics into a named refusal in both directions — the same refuse-by-name
+precedent as v3 → v4.
+
 ```
-schema_version    Int     == 4, hard-checked on load
+schema_version    Int     == 5, hard-checked on load
 kind              String  "mc" | "pt"
 julia_version, package_version   String (informational)
 model_fingerprint UInt64  stable FNV-1a over (n_cell_atoms, dims, the row layout
@@ -127,8 +137,11 @@ fingerprint. The handshake order is load-bearing: grid fingerprint first, then
 the structural pairing check, then the **reference-coefficient reinstall into
 `H`**, and only then the `model_fingerprint` comparison (which is defined at the
 reference); after the state is read, the checkpointed scale's coefficients are
-installed so the `(H, chain)` contract holds when the loop continues, and on
-return `H` is handed back at the reference (as `run_mc` does). The caller's
+installed so the `(H, chain)` contract holds when the loop continues — for the
+"mc" kind into `H` itself, for the "pt" kind into a fresh per-lane coefficient
+clone at each lane's own checkpointed scale (strain-move.md S10) — and on
+return `H` is handed back at the reference (`run_mc` restores it; `run_pt` and
+a "pt" resume never move it off the reference in the first place). The caller's
 coefficient state on entry is irrelevant and overwritten — including on a failed
 resume, which leaves `H` at the reference. A fixed-cell file refuses a supplied
 schedule, and vice versa, both by name.

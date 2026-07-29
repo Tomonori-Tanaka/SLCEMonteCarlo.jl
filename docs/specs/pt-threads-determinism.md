@@ -8,17 +8,25 @@ P6 (the scope of the promise) is package-wide and authoritative for every
 
 Lane `r` = rung `r` of a strictly monotone temperature ladder, owning its
 `ChainState`, `SweepScratch`, RNG, adaptive step, and measurement accumulators.
-An accepted exchange swaps only the **payload** — `config`, `zrows`, `energy`
-(O(1) reference swaps) — between adjacent lanes. RNG/step/accumulators staying
-with the lane is what makes each lane's measurement stream a *fixed-temperature
-marginal* (so `points[r]` is directly the physics at `kts[r]`) and keeps the
-adapted step per-temperature.
+An accepted exchange swaps only the **payload** — `config`, `zrows`, `energy`,
+and on a joint model `disps`/`com_removed`, on a strained run the cell scale and
+the lane's Hamiltonian reference (each lane sweeps its own coefficient clone;
+the installed coefficients travel with the scale they describe — strain-move.md
+S10) — all O(1) reference swaps between adjacent lanes. RNG/step/accumulators
+staying with the lane is what makes each lane's measurement stream a
+*fixed-temperature marginal* (so `points[r]` is directly the physics at
+`kts[r]`) and keeps the adapted step per-temperature. Strain moves are
+lane-local (drawn from the lane RNG inside the lane's own sweeps) and the
+strained swap weight `E + n_cells·j0(s) + P·V(s)` is a pure function of chain
+state, so P2/P3 below apply unchanged with the strain channel live (gated).
 
 ## P2 — segment schedule
 
 All lanes sweep `exchange_interval` compound sweeps per segment; between segments
 the coordinator attempts adjacent-pair swaps with
-`min(1, exp((βᵢ−βⱼ)(Eᵢ−Eⱼ)))`, alternating even/odd pair parity per exchange step
+`min(1, exp((βᵢ−βⱼ)(Wᵢ−Wⱼ)))` — `W` the configurational energy on a fixed cell,
+`E + n_cells·j0(s) + P·V(s)` on a strained run — alternating even/odd pair
+parity per exchange step
 (parity carries across the thermalization→measurement boundary). Exchanges run in
 **both** phases — the point of PT is that cold rungs keep escaping metastable
 basins during measurement too. Step adaptation is thermalization-only per lane

@@ -132,3 +132,28 @@ function set_coefficients!(H::TiledHamiltonian, coefs::AbstractVector{<:Real};
     end
     return H
 end
+
+# A clone of `H` whose COEFFICIENT channel is independent: `set_coefficients!` on the
+# clone leaves `H` (and every other clone) untouched, while every structural array —
+# the instance enumeration, adjacency, coloring, displacement components, and all
+# coefficient-independent program streams — is shared by reference. The three things
+# `set_coefficients!` writes get fresh copies: `terms` (its elements are rebound),
+# `progs.term_coef`, and `progs.sent_w`. Cost is O(model), never O(supercell): the
+# program streams are per (template, member slot), so a clone is affordable per PT
+# lane where a full rebuild (~3× a sweep, `dims`-dependent) would not be.
+#
+# This exists for the strained `run_pt`: every lane needs its own coefficient state
+# because the lanes sit at different cell scales concurrently. It is NOT a general
+# copy — the shared verdict arrays (`comp_free`, residuals) stay `H`'s, which is
+# sound exactly because a strain schedule certifies flatness for the whole
+# interpolated family at conversion (strain-move.md S5).
+function _coefficient_clone(H::TiledHamiltonian)::TiledHamiltonian
+    pr = H.progs
+    progs = _ContractionPrograms(pr.site_prog, pr.sprog_ptr, copy(pr.sent_w),
+                                 pr.sent_base, pr.sent_term, pr.sent_tgt,
+                                 pr.sfac_ptr, pr.sfac_row, pr.sfac_slot,
+                                 pr.site_col, pr.site_col2, pr.pent_row,
+                                 pr.pent_row2, pr.eprog_ptr, pr.eent_w, pr.efac_ptr,
+                                 pr.efac_row, pr.efac_site, copy(pr.term_coef))
+    return TiledHamiltonian(H, copy(H.terms), progs)
+end

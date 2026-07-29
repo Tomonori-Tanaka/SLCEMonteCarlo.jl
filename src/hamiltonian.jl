@@ -647,6 +647,24 @@ struct TiledHamiltonian
                    resid, invariant,
                    progs, n_colors, color_ptr, color_sites)
     end
+
+    # The coefficient-channel clone (`_coefficient_clone`): every structural array is
+    # SHARED with `other` — only `terms` and `progs`, the two things
+    # `set_coefficients!` writes, are replaced. No validation: `other` was validated
+    # when it was built, and the caller supplies coefficient-substituted copies of its
+    # own fields, so re-deriving anything here could only disagree with what is shared.
+    TiledHamiltonian(other::TiledHamiltonian, terms::Vector{ScaledTerm},
+                     progs::_ContractionPrograms) =
+        new(other.n_cell_atoms, other.dims, other.n_sites, other.lmax, other.nlm,
+            other.nrows, other.disp_lmax, other.layout, terms, other.term_source,
+            other.term_scale, other.n_input_terms, other.inst_term, other.inst_ptr,
+            other.inst_sites, other.site_ptr, other.site_inst, other.site_slot,
+            other.site_has_l1, other.site_has_spin, other.site_has_disp,
+            other.site_active, other.n_active, other.n_spin_active,
+            other.n_disp_active, other.disp_comp_ptr, other.disp_comp_sites,
+            other.n_disp_comps, other.comp_residual, other.comp_free,
+            other.translation_residual, other.translation_invariant, progs,
+            other.n_colors, other.color_ptr, other.color_sites)
 end
 
 # Connected components of the displacement-coupling graph: disp-active sites joined

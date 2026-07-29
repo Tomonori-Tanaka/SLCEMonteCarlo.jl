@@ -174,8 +174,20 @@ physical choice, not a default — converted once at resolution and never again
 downstream. `strain_interval` (default: one attempt per compound sweep),
 `strain_proposal` (`:logvolume` or `:scale`) and `strain_step` (default: a tenth
 of the grid's domain; fixed for the run) tune the move; a poor width shows up in
-`acceptance_strain`, never in the sampled ensemble. Hydrostatic pressure only,
-and `run_pt` does not take a schedule yet — run NPT chains with `run_mc`.
+`acceptance_strain`, never in the sampled ensemble. Hydrostatic pressure only.
+
+[`run_pt`](@ref) takes the same NPT keywords: every lane becomes an
+isothermal–isobaric chain at the **same** pressure, sweeping its own coefficient
+clone of `H` (the lanes sit at different volumes concurrently), and the exchange
+rule generalizes to `(βᵢ−βⱼ)(Wᵢ−Wⱼ)` with `W = E + n_cells·j0(s) + P·V(s)` — the
+strain travels with the swapped payload. One caveat: `pressure_diagnostics` stays
+a `run_mc`-only check (its scratch assumes one serial chain; under `run_pt` it
+refuses loudly).
+
+One reading caveat for every strained run: `:energy` and `:specific_heat` are
+**configurational-only** — they omit the fluctuating `n_cells·j0(s) + P·V(s)`
+half of the NPT state energy, so the reported `C` is neither `C_V` nor the NPT
+`C_P` (see the observables guide).
 
 Inside an NPT run every measurement's [`MCView`](@ref) carries the cell scale
 (`SLCEMonteCarlo.strain(v)`, with `SLCEMonteCarlo.has_strain(v)` false on a

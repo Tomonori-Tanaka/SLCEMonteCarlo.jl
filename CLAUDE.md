@@ -142,8 +142,8 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   (5) the drivers must SCHEDULE the displacement pass: `disp_per_metropolis` resolves
   from the model (`nothing` ⇒ 1 joint / 0 pure-spin) via `_resolve_disp_passes`, and
   a constant default of 0 would make a joint model silently sample the clamped-ion
-  ensemble — plausible spin numbers for the wrong distribution. Checkpoint schema v3
-  carries `disps`/`com_removed`/`step_u`/the six counters/the escape accumulators, so
+  ensemble — plausible spin numbers for the wrong distribution. The checkpoint schema
+  (v3+) carries `disps`/`com_removed`/`step_u`/the counters/the escape accumulators, so
   a resume must stay bit-identical on a joint model too;
   (6) **every restriction of the displacement state space must be gauge-invariant**
   (a function of `u_s − ū_c`, not of `u_s`). `_recenter!` is stationarity-preserving
@@ -206,9 +206,9 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   (direction, component) and there are `n_disp_comps` independent centres of mass.
   Gates: `test_strainschedule.jl`.
 - **The NPT strain move: `strain_move!` ↔ `strain_delta_energy`/`_strain_log_weight` ↔
-  `ChainState.strain` ↔ the run drivers ↔ checkpoint v4 ↔ `sync_coefficients!`**
+  `ChainState.strain` ↔ the run drivers ↔ the checkpoint schema ↔ `sync_coefficients!`**
   (`strain.jl`, `run.jl`, `pt.jl`, `checkpoint.jl`, `gpu/gpu_hamiltonian.jl`,
-  `docs/specs/strain-move.md`). Six rules that move together. (1) The elastic energy
+  `docs/specs/strain-move.md`). Seven rules that move together. (1) The elastic energy
   has ONE source — the grid's `j0(s)`, times `n_cells` — and there is deliberately no
   elastic-term keyword anywhere; adding one double-counts with every gate green
   (the reconstruction identity in `test_strainschedule.jl` is the fence). (2) The
@@ -239,13 +239,32 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   detector's length statistics rescale together (`_rescale_escape!` — a reset would
   disarm the block ladder permanently at the default cadence), and ΔE's two sides
   come from one estimator (`e_old` recomputed from scratch, drift carried across).
-  (6) `run_pt` refuses a schedule (one shared `H` mutated
-  in place + the NVT swap rule), and a host `set_coefficients!` under a live
+  (6) a host `set_coefficients!` under a live
   `GPUTiledHamiltonian` needs `sync_coefficients!` — `sent_w` is the ONE
   coefficient-dependent device array, and forgetting the call is undetectable from
-  the device side (the bitwise gate in `test_gpu.jl` holds the contract). The
-  fixed-cell byte-neutrality pin (a pre-wiring trajectory asserted bit-identical in
-  `test_strainschedule.jl`) catches any of these leaking into unstrained runs.
+  the device side (the bitwise gate in `test_gpu.jl` holds the contract). (7) On a
+  strained `run_pt` (strain-move.md S10), each lane sweeps its own
+  `_coefficient_clone` of `H` — the clone copies EXACTLY the fields
+  `set_coefficients!` writes (`terms`, `progs.term_coef`, `progs.sent_w`) and
+  shares every other array by reference, so a new coefficient-carrying array in
+  the programs must join the clone or every PT lane silently shares it; the
+  lane's `H` reference is exchange PAYLOAD (swapped with the state in
+  `_attempt_swap!` — separating them re-opens the coefficients-vs-scale desync
+  the clone exists to prevent); the swap weight `_swap_dweight` must carry
+  `ΔE + n_cells·Δj0 + P·ΔV` as a SUM OF DIFFERENCES (per-lane totals differenced
+  compute at `ulp(|W|)` instead of `ulp(|ΔW|)`, a loss growing with `n_cells` —
+  and the bracket gate's hand logw shares the association, so change one side
+  and re-pair the other) and NOTHING volume-power-shaped (the `V^{N_mob}`
+  factor is β-independent and cancels in the exchange ratio — adding it "for
+  consistency" biases every swap), and its fixed-cell arm must stay the bare
+  chain-energy difference bitwise (the NVT trajectory pin); the caller's `H`
+  never enters a lane and stays at the reference for the whole run. Exact rule mutations are
+  caught only by the bracket gate in `test_strainschedule.jl` ("PT + strain"
+  testsets) — the statistical rung-marginal gate measured ≤ 0.6σ under the NVT
+  mutation, so do not lean on it for the rule. The two
+  fixed-cell byte-neutrality pins (pre-wiring `run_mc` and `run_pt` trajectories
+  asserted bit-identical in
+  `test_strainschedule.jl`) catch any of these leaking into unstrained runs.
 - **The §8(ζ) pressure diagnostic: `_energy_with_coefs` ↔ `_total_energy`, and the
   exact-derivative trio ↔ their Horner sources** (`strain.jl`,
   `docs/specs/strain-move.md` S9): `energy_volume_derivative` is exact via (a) the
@@ -378,7 +397,7 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   `color_ptr`/`color_sites`, `updates.jl`, `docs/specs/updates-stationarity.md`
   U1): the sweeps assume every color class is instance-disjoint (exactly
   independent single-site kernels) and bit-determinism for any `sweep_tasks` rests
-  on per-site RNG streams (`ChainState.site_rngs`, checkpoint schema v3) + the
+  on per-site RNG streams (`ChainState.site_rngs`, in the checkpoint schema) + the
   fixed-order ΔE reduction (`_reduce_dE`). Touch the coloring, the sweep loops, or
   the reduction and re-run `test/unit/test_parallel.jl` (serial ≡ parallel `==`).
 - **Device tesseral row ↔ host `_zlm_row!` ↔ upstream recursions**

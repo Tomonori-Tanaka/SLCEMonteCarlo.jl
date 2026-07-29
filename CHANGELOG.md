@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — PT + strain (`docs/specs/strain-move.md` S10)
+
+`run_pt` takes the full NPT keyword set (`strain`, `pressure_GPa` XOR `pressure`,
+`strain_interval` / `strain_proposal` / `strain_step`, resolved exactly as in
+`run_mc`): every lane becomes an isothermal–isobaric chain at the same hydrostatic
+pressure. The two obstacles the v0 refusal named are resolved structurally. Each
+lane sweeps its own **coefficient clone** of `H` (`_coefficient_clone` — every
+structural array shared by reference; only `terms`, `term_coef` and `sent_w`, the
+three things `set_coefficients!` writes, are copied, so a clone is O(model), never
+O(supercell)), which removes the shared-`H` data race; the caller's `H` is
+installed at the schedule's reference up front (the checkpoint identity) and never
+enters a lane, so it is handed back at the reference like `run_mc`. And the
+exchange weight generalizes to `W = E_config + n_cells·j0(s) + P·V(s)` in
+`(β_a−β_b)(W_a−W_b)` — the bundle's `V^{N_mob}` measure factor is β-independent
+and cancels exactly in the swap ratio — with the lane's Hamiltonian reference
+swapped **together with** the payload, so the installed coefficients always
+describe the chain's scale and no reinstall happens at a swap. Strain moves are
+lane-local (lane RNG, same in-sweep order as `run_mc`), so the P3 determinism
+guarantees hold with the strain channel live (`ntasks = 1 ≡ ntasks = R`, gated).
+Gates additionally include an exact bracket pin of the swap rule (uniforms one
+ulp on each side of the hand-derived acceptance; the dropped-j0 / dropped-`P·V` /
+NVT mutations shift the log-weight by ~1.1/1.2/2.3 there, while the statistical
+rung-marginal gate — strained 2-rung PT against independent NPT `run_mc` chains —
+cannot resolve them: measured ≤ 0.6σ, the S2 scoping), a fixed-cell `run_pt`
+byte-neutrality pin captured pre-wiring at `67d9363`, and a bit-identical
+strained-PT resume. `pressure_diagnostics` remains `run_mc`-only (per-instance
+scratch is serial; lane-clone views would be refused at the first measurement, so
+`run_pt` refuses it by observable name at entry instead). Review follow-up: the
+exchange weight is formed as a sum of differences (`ΔE + n_cells·Δj0 + P·ΔV`,
+`strain_delta_energy`'s association) rather than per-lane totals differenced —
+same values today, but the totals form loses `ulp(|W|)` vs `ulp(|ΔW|)` with
+growing `n_cells`. Documented, not changed: on ANY strained run `:energy` /
+`:specific_heat` are configurational-only (neither `C_V` nor the NPT `C_P` —
+the fluctuating `n_cells·j0(s) + P·V(s)` is not in them; measured 3.4 % on the
+test fixture); a strain-aware `W` observable is recorded as deferred work
+(`strain-move.md` S8), and `PTResult`, like `MCResult`, carries no final cell
+scale — a strained ladder warm-starts only through its checkpoint.
+
+### Changed — **BREAKING**: checkpoint schema v5
+
+No file-layout change (v4 already serialized `chain/strain` and the strain
+counters per PT lane), but v4's PT lane strains were never live: a v4-era reader
+handed a strained-PT file would pass every handshake and silently continue the
+run as fixed-cell at the reference. The version bump turns that silent wrong
+physics into a named refusal in both directions — the refuse-by-name precedent
+of v3 → v4. Resuming a strained PT run rebuilds per-lane clones at each lane's
+checkpointed scale after the usual reference-first handshake.
+
 ### Added — the §8(ζ) mechanical-equilibrium diagnostic (`docs/specs/strain-move.md` S9)
 
 `energy_volume_derivative(sch, H, config[, disps], s)` — `dE_total/dV` at a sampled
@@ -73,8 +121,9 @@ pressure; converted once through the exact `GPA_PER_EV_A3 = 160.2176634` and nev
 again downstream), `strain_interval` / `strain_proposal` / `strain_step` resolved like
 the displacement passes, a pairing check against the Hamiltonian the run uses, the
 measurement `MCView` carrying the cell scale, and `TempResult.acceptance_strain`.
-`run_pt` refuses a schedule by name (one shared Hamiltonian mutated in place + the NVT
-swap rule — design record §8's v0 scope refusal). Both drivers hand `H` back at the
+`run_pt` initially refused a schedule by name (one shared Hamiltonian mutated in
+place + the NVT swap rule — design record §8's v0 scope refusal, lifted by the
+PT + strain entry above). Both drivers hand `H` back at the
 REFERENCE scale on return (a strained run used to leave the caller's `H` at the
 chain's final scale, silently rescaling the next `model_fingerprint` or fixed-cell
 run), and the `MCResult` warm-start recipe is documented as not applying to NPT.

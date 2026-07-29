@@ -59,6 +59,36 @@ function _ss_grid(; scales = [0.98, 1.0, 1.02], zero_key = 0)
     return SLCE.StrainedModels(models, collect(Float64, scales)), models
 end
 
+# The Einstein-well grid: displacement energy BOUNDED BELOW (a stiff positive on-site
+# |u|² keyed off the basis, dominating small smooth spin/quadrupole/pair couplings,
+# everything linear in η), so a long chain has a stationary distribution to test —
+# random ASR'd coefficients are a generically indefinite quadratic form and escape
+# (U8). The well pins the rigid shift, hence `fixed_reference = true` at every use.
+# Shared by the §8(ζ) identity testset and the strained-PT marginal gate.
+function _ss_zeta_grid(; scales = [0.9, 1.0, 1.1])
+    zeta_model = function (s)
+        cr = _ss_crystal(s)
+        b = SLCEBasis(cr, _ss_spec(cr, s))
+        η = s - 1
+        rng = MersenneTwister(0x2ee7)   # the SAME draw at every scale → smooth in η
+        jphi = map(b.salc_basis.keys) do k
+            r = 2 * rand(rng) - 1
+            onsite_u2 = k.body == 1 && length(k.decors) == 1 &&
+                        k.decors[1].spin_l == 0 && k.decors[1].disp_k == 1 &&
+                        k.decors[1].disp_l == 0
+            onsite_u2 ? 2.0 + 0.5 * η : 0.05 * r * (1 + 0.3 * η)
+        end
+        n_u2 = count(k -> k.body == 1 && length(k.decors) == 1 &&
+                          k.decors[1].disp_k == 1 && k.decors[1].disp_l == 0 &&
+                          k.decors[1].spin_l == 0, b.salc_basis.keys)
+        @test n_u2 > 0                  # the well actually exists in this basis
+        return SLCEModel(b, 40.0 * η^2, collect(Float64, jphi))
+    end
+    zsm = SLCE.StrainedModels([zeta_model(s) for s in scales],
+                              collect(Float64, scales))
+    return zsm, zsm.models
+end
+
 _ss_cfg(n, seed) = MCs.SpinConfig([SVector{3,Float64}(normalize(randn(
     MersenneTwister(seed + s), 3))) for s = 1:n])
 _ss_disps(n, seed) = [SVector{3,Float64}(0.03 .* randn(MersenneTwister(seed + 100s), 3))
@@ -532,7 +562,10 @@ _ss_vk_mean(k, va, vb) =
         @test MCs.GPA_PER_EV_A3 === 160.2176634
         @test MCs._resolve_pressure(sch, 160.2176634, nothing) ≈ 1.0 rtol = 1e-15
 
-        # run_pt refuses a strain schedule by name (v0 scope: shared H + NVT swaps)
+        # run_pt takes the same NPT keywords since the PT + strain slice; its
+        # wiring, swap rule, determinism, and checkpoints are gated in the
+        # "PT + strain" testsets below. Here: the two resolution refusals the
+        # later block does not repeat, each pinned to its message
         err = try
             run_pt(H; kT = [0.05, 0.06], sweeps_therm = 1, sweeps_measure = 2,
                    strain = sch)
@@ -540,10 +573,19 @@ _ss_vk_mean(k, va, vb) =
         catch e
             e
         end
-        @test err isa ArgumentError && occursin("swap rule", err.msg)
+        @test err isa ArgumentError && occursin("exactly one of", err.msg)
+        err = try
+            run_pt(H; kT = [0.05, 0.06], sweeps_therm = 1, sweeps_measure = 2,
+                   pressure = 0.0)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError &&
+              occursin("without a strain schedule", err.msg)
     end
 
-    @testset "checkpoint v4: a strained run resumes bit-identically" begin
+    @testset "checkpoint v5: a strained run resumes bit-identically" begin
         sm, models = _ss_grid()
         H = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
         sch = StrainSchedule(sm, H)
@@ -607,10 +649,12 @@ _ss_vk_mean(k, va, vb) =
         end
         @test err isa Exception &&
               occursin("fixed-cell run", sprint(showerror, err))
-        # ...and a pre-strain (v3) file is refused with its provenance named
+        # ...and an older-schema file is refused with the hazard named: v4 lane
+        # strains were never live, so an older READER given a v5 strained-PT file
+        # would silently continue it as fixed-cell — which is why the version moved
         p3 = joinpath(dir, "old.jld2")
         MCs.jldopen(p3, "w") do f
-            f["schema_version"] = 3
+            f["schema_version"] = 4
         end
         err = try
             resume(p3, H)
@@ -618,8 +662,8 @@ _ss_vk_mean(k, va, vb) =
         catch e
             e
         end
-        @test err isa Exception && occursin("schema v3", sprint(showerror, err)) &&
-              occursin("strain channel", sprint(showerror, err))
+        @test err isa Exception && occursin("schema v4", sprint(showerror, err)) &&
+              occursin("strained PT", sprint(showerror, err))
     end
 
     @testset "strain driver corners: pairing, carryover, cadence, domain, payload" begin
@@ -902,31 +946,8 @@ _ss_vk_mean(k, va, vb) =
         # fully pinned fixture anyway — `count(comp_free) = 0` makes them coincide.)
         #
         # The displacement energy must be bounded below or the chain has no stationary
-        # distribution at all (random ASR'd coefficients are a generically indefinite
-        # quadratic form — the U8 escape warning fires): so the coefficients are keyed
-        # off the basis — a stiff POSITIVE on-site |u|² (an Einstein well) dominating
-        # small smooth spin / quadrupole / pair couplings, everything linear in η.
-        zeta_model = function (s)
-            cr = _ss_crystal(s)
-            b = SLCEBasis(cr, _ss_spec(cr, s))
-            η = s - 1
-            rng = MersenneTwister(0x2ee7)   # the SAME draw at every scale → smooth in η
-            jphi = map(b.salc_basis.keys) do k
-                r = 2 * rand(rng) - 1
-                onsite_u2 = k.body == 1 && length(k.decors) == 1 &&
-                            k.decors[1].spin_l == 0 && k.decors[1].disp_k == 1 &&
-                            k.decors[1].disp_l == 0
-                onsite_u2 ? 2.0 + 0.5 * η : 0.05 * r * (1 + 0.3 * η)
-            end
-            n_u2 = count(k -> k.body == 1 && length(k.decors) == 1 &&
-                              k.decors[1].disp_k == 1 && k.decors[1].disp_l == 0 &&
-                              k.decors[1].spin_l == 0, b.salc_basis.keys)
-            @test n_u2 > 0                  # the well actually exists in this basis
-            return SLCEModel(b, 40.0 * η^2, collect(Float64, jphi))
-        end
-        zscales = [0.9, 1.0, 1.1]
-        zsm = SLCE.StrainedModels([zeta_model(s) for s in zscales], zscales)
-        zmodels = zsm.models
+        # distribution at all — the shared Einstein-well fixture (`_ss_zeta_grid`).
+        zsm, zmodels = _ss_zeta_grid()
         # the well pins the rigid shift — that is the point (an absolute reference
         # frame, no re-centring, no ASR machinery in the fixture's way)
         H = TiledHamiltonian(zmodels[2]; dims = (2, 1, 1), keep_zero_terms = true,
@@ -970,5 +991,258 @@ _ss_vk_mean(k, va, vb) =
         Hsmall = TiledHamiltonian(zmodels[2]; dims = (1, 1, 1), keep_zero_terms = true,
                                   fixed_reference = true)
         @test_throws ArgumentError MCs.pressure_diagnostics(sch, Hsmall)
+    end
+
+    @testset "PT + strain: coefficient clones and the NPT swap rule" begin
+        sm, models = _ss_grid()
+        H = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        sch = StrainSchedule(sm, H)
+
+        # `_coefficient_clone`: the EXACT sharing partition, over every field of
+        # both structs — not a hand-picked sample. This is the gate for CLAUDE.md
+        # (7)'s hazard: a future coefficient-carrying array added to the programs
+        # (and to `set_coefficients!`) but not to the clone would be silently
+        # shared by every PT lane, and only an exhaustive partition notices. It
+        # doubles as the field-order audit of the raw clone constructor — a
+        # transposed same-typed neighbour pair shows up as an extra entry here.
+        Hc = MCs._coefficient_clone(H)
+        @test [f for f in fieldnames(MCs.TiledHamiltonian)
+               if getfield(H, f) !== getfield(Hc, f)] == [:terms, :progs]
+        @test [f for f in fieldnames(MCs._ContractionPrograms)
+               if getfield(H.progs, f) !== getfield(Hc.progs, f)] ==
+              [:sent_w, :term_coef]
+        @test Hc.progs.term_coef == H.progs.term_coef &&
+              Hc.progs.sent_w == H.progs.sent_w && Hc.terms == H.terms
+        # rewriting the clone leaves the parent untouched — checked on BOTH
+        # coefficient carriers: `progs.term_coef` (what the energy walks read) and
+        # the checkpoint fingerprint (which reads `terms[k].coef` — a clone
+        # regression leaking into `H.terms` would be invisible to every energy
+        # assertion while breaking every strained-PT resume)
+        before = copy(H.progs.term_coef)
+        fp0 = MCs._fingerprint(H)
+        set_coefficients!(Hc, MCs.strain_coefficients(sch, 1.015);
+                          recheck_translation = false)
+        @test H.progs.term_coef == before
+        @test MCs._fingerprint(H) == fp0
+        cfg = _ss_cfg(H.n_sites, 3)
+        us = _ss_disps(H.n_sites, 4)
+        set_coefficients!(H, MCs.strain_coefficients(sch, 1.015);
+                          recheck_translation = false)
+        @test total_energy(Hc, cfg, us) === total_energy(H, cfg, us)
+        set_coefficients!(H, MCs.strain_coefficients(sch, 1.0);
+                          recheck_translation = false)
+
+        # The swap rule, pinned EXACTLY (the statistical marginal gate below cannot
+        # resolve it — measured: patching the NVT rule in moves the rung marginals
+        # ≤ 0.6σ at its cost, while it shifts this logw by ~2.3): two hand-built
+        # lanes at different (kT, s), the hand-derived
+        #     logw = (1/kT_a − 1/kT_b)·[(E_a + n_cells·j0(s_a) + P·V_a) − (…_b)]
+        # and uniforms bracketing exp(logw) one ulp on each side. The bracket also
+        # kills the dropped-j0 (Δlogw ≈ 1.1) and dropped-P·V (≈ 1.2) mutations.
+        P = 0.02
+        mklane = function (kt, s_target, seed)
+            Hl = MCs._coefficient_clone(H)
+            set_coefficients!(Hl, MCs.strain_coefficients(sch, s_target);
+                              recheck_translation = false)
+            rng = Xoshiro(seed)
+            lcfg = MCs.SpinConfig([SVector{3,Float64}(normalize(randn(rng, 3)))
+                                   for _ = 1:H.n_sites])
+            lus = [SVector{3,Float64}(0.02 .* randn(rng, 3)) for _ = 1:H.n_sites]
+            st = MCs.ChainState(Hl, lcfg, rng, 0.6; disps = lus, step_u = 0.01)
+            st.strain = s_target
+            return MCs._PTLane(st, [MCs.SweepScratch(Hl)], kt, 1.0 / kt,
+                               MCs.ObsAccumulator[], 0, Hl,
+                               (sch, MCs.StrainScratch(Hl)))
+        end
+        a = mklane(0.05, 0.97, 1)
+        b = mklane(0.08, 1.02, 2)
+        # the SAME association as `_swap_dweight` — sum of differences, never
+        # per-lane totals differenced (the totals form loses `ulp(|W|)` vs
+        # `ulp(|ΔW|)`, a conditioning gap growing with n_cells; bitwise pairing
+        # with the implementation is the point of this gate)
+        dW = (a.st.energy - b.st.energy) +
+             sch.n_cells * (MCs.strain_j0(sch, a.st.strain) -
+                            MCs.strain_j0(sch, b.st.strain)) +
+             P * (MCs.strain_volume(sch, a.st.strain) -
+                  MCs.strain_volume(sch, b.st.strain))
+        logw = (1 / a.kt - 1 / b.kt) * dW
+        pacc = exp(min(0.0, logw))
+        @test 0.0 < pacc < 1.0            # the bracket must have two sides
+        att = zeros(Int, 1)
+        acc = zeros(Int, 1)
+        ea, eb = a.st.energy, b.st.energy
+        sa, sb = a.st.strain, b.st.strain
+        Ha, Hb = a.H, b.H
+        MCs._attempt_swap!(a, b, 1, prevfloat(pacc), att, acc, P)
+        @test acc[1] == 1                 # just below the boundary: accepted
+        @test a.st.energy == eb && b.st.energy == ea
+        @test a.st.strain == sb && b.st.strain == sa
+        # the Hamiltonian reference travels WITH the payload it describes
+        @test a.H === Hb && b.H === Ha
+        MCs._swap_lanes!(a, b)            # restore for the reject bracket
+        MCs._attempt_swap!(a, b, 1, nextfloat(pacc), att, acc, P)
+        @test att[1] == 2 && acc[1] == 1  # just above: rejected, payload untouched
+        @test a.st.energy == ea && a.st.strain == sa && a.H === Ha
+
+        # THE BYTE-NEUTRALITY PIN (fixed cell): this run_pt trajectory was captured
+        # before the PT + strain wiring landed (at commit 67d9363) and must stay
+        # bit-identical — without a schedule every lane holds the caller's H, the
+        # swap weight reduces to the chain-energy difference, and no code path
+        # consumes different randomness. On a FRESHLY BUILT Hamiltonian, so the
+        # pin is independent of the `set_coefficients!` installs above (a one-ULP
+        # shift in the schedule's Horner restore must not trip a fixed-cell pin).
+        # If an intentional sampler change moves it, recapture; anything else
+        # moving it is the regression this pin catches.
+        Hpin = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        r0 = run_pt(Hpin; kT = [0.05, 0.07], sweeps_therm = 50,
+                    sweeps_measure = 100, seed = 0x5150, renorm_interval = 25,
+                    exchange_interval = 5, ntasks = 1)
+        @test [p.stats[:energy].mean[1] for p in r0.points] ==
+              [-13.060570421931075, -12.657092511551113]
+        @test [sum(sum, c) for c in r0.final_configs] ==
+              [0.7053385500370698, 0.8192785243733386]
+        @test [sum(x -> sum(abs, x), d) for d in r0.final_disps] ==
+              [1.7833703780033128, 1.2819181240379507]
+        @test r0.swap_acceptance == [0.21428571428571427]
+    end
+
+    @testset "PT + strain: run_pt wiring, determinism, and rung marginals" begin
+        zsm, zmodels = _ss_zeta_grid()
+        H = TiledHamiltonian(zmodels[2]; dims = (2, 1, 1), keep_zero_terms = true,
+                             fixed_reference = true)
+        sch = StrainSchedule(zsm, H)
+        ref = MCs.strain_coefficients(sch, 1.0)
+        P = 0.01
+        obsc = [standard_observables(H); Observable(:scale, 1, v -> MCs.strain(v))]
+        kts = [0.05, 0.08]
+
+        kw = (; kT = kts, sweeps_therm = 300, sweeps_measure = 3000, seed = 0xa7,
+              renorm_interval = 50, exchange_interval = 2, strain = sch,
+              pressure = P, observables = obsc)
+        pt = run_pt(H; kw..., ntasks = 2)
+        # the wiring is live: strain moves fire on every lane, exchanges happen
+        # (in-domain sampling needs no assert — `strain_move!` rejects rather than
+        # clamps, so it holds by construction and a mean-in-interval test is
+        # tautological)
+        @test all(p -> 0.0 < p.acceptance_strain < 1.0, pt.points)
+        @test 0.0 < pt.swap_acceptance[1] < 1.0
+        # the caller's H is handed back at the reference scale
+        @test H.progs.term_coef ==
+              [ref[H.term_source[k]] * H.term_scale[k] for k in eachindex(H.terms)]
+
+        # determinism: the serial reference schedule and one-task-per-lane agree
+        # bit for bit with the strain channel live (P3, extended)
+        pts = run_pt(H; kw..., ntasks = 1)
+        @test [p.stats[:energy].mean[1] for p in pt.points] ==
+              [p.stats[:energy].mean[1] for p in pts.points]
+        @test [p.stats[:scale].mean[1] for p in pt.points] ==
+              [p.stats[:scale].mean[1] for p in pts.points]
+        @test pt.final_configs == pts.final_configs
+        @test pt.final_disps == pts.final_disps
+        @test pt.swap_acceptance == pts.swap_acceptance
+
+        # rung marginals ≡ independent NPT run_mc chains at the same (kT, P), within
+        # statistics (measured 0.1–1.7σ over rungs × {scale, energy} at these seeds;
+        # 4σ gate). This is the end-to-end ensemble check — a lane sweeping another
+        # scale's coefficients, a broken affine rescale at a swap, or a corrupted
+        # clone all wreck it; the swap RULE itself is pinned by the bracket test
+        # above, which is what can actually resolve it.
+        for (i, kt) in enumerate(kts)
+            mc = run_mc(H; kT = kt, sweeps_therm = 300, sweeps_measure = 3000,
+                        seed = 0x91 + i, renorm_interval = 50, strain = sch,
+                        pressure = P, observables = obsc)
+            for name in (:scale, :energy)
+                m = mc.points[1].stats[name]
+                p = pt.points[i].stats[name]
+                @test abs(m.mean[1] - p.mean[1]) <
+                      4 * sqrt(m.err[1]^2 + p.err[1]^2)
+            end
+        end
+
+        # keyword resolution mirrors run_mc, each contradiction by name
+        @test_throws ArgumentError run_pt(H; kT = kts, sweeps_therm = 1,
+                                          sweeps_measure = 2, strain = sch,
+                                          pressure = P, strain_interval = 0)
+        @test_throws ArgumentError run_pt(H; kT = kts, sweeps_therm = 1,
+                                          sweeps_measure = 2, strain_interval = 2)
+        @test_throws ArgumentError run_pt(H; kT = kts, sweeps_therm = 1,
+                                          sweeps_measure = 2, strain = sch,
+                                          pressure = P, pressure_GPa = P)
+        @test_throws ArgumentError run_pt(H; kT = kts, sweeps_therm = 1,
+                                          sweeps_measure = 2, strain = sch)
+        # pressure_diagnostics is refused at ENTRY (by observable name), not after
+        # a spent thermalization phase at the first measurement's identity check
+        pd = MCs.pressure_diagnostics(sch, H)
+        err = try
+            run_pt(H; kT = kts, sweeps_therm = 1, sweeps_measure = 2,
+                   strain = sch, pressure = P,
+                   observables = [standard_observables(H); pd.observables],
+                   evaluables = [standard_evaluables(H); pd.evaluables])
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin("run_mc chain instead", err.msg)
+    end
+
+    @testset "PT + strain: checkpoint v5 resumes bit-identically" begin
+        zsm, zmodels = _ss_zeta_grid()
+        H = TiledHamiltonian(zmodels[2]; dims = (2, 1, 1), keep_zero_terms = true,
+                             fixed_reference = true)
+        sch = StrainSchedule(zsm, H)
+        dir = mktempdir()
+        path = joinpath(dir, "pt_npt.jld2")
+        kw = (; kT = [0.05, 0.08], sweeps_therm = 60, sweeps_measure = 120,
+              renorm_interval = 30, nbins = 4, seed = 0x2b1, exchange_interval = 5,
+              strain = sch, pressure = 0.01)
+        a = run_pt(H; kw...)
+        b = run_pt(H; kw..., checkpoint = path, checkpoint_interval = 50)
+        @test a.final_configs == b.final_configs
+        @test isfile(path)
+        # the resume below must be non-vacuous: the periodic cadence leaves the
+        # file mid-measure with at least one lane away from s = 1, so the
+        # per-lane checkpointed-scale reinstall is actually exercised
+        stored = MCs.jldopen(path, "r") do f
+            [f["lane/$r/strain"] for r = 1:f["nlanes"]]
+        end
+        @test any(s -> s != 1.0, stored)
+        # knock H off the reference; resume must reinstall it before comparing
+        # fingerprints, rebuild per-lane clones at each lane's checkpointed scale,
+        # and continue bit-identically
+        set_coefficients!(H, MCs.strain_coefficients(sch, 1.04);
+                          recheck_translation = false)
+        c = resume(path, H; strain = sch)
+        @test [p.stats[:energy].mean[1] for p in a.points] ==
+              [p.stats[:energy].mean[1] for p in c.points]
+        @test isequal([p.acceptance_strain for p in a.points],
+                      [p.acceptance_strain for p in c.points])
+        @test a.final_configs == c.final_configs
+        @test a.final_disps == c.final_disps
+        @test a.swap_acceptance == c.swap_acceptance
+        # ...and H is handed back at the reference here too
+        ref = MCs.strain_coefficients(sch, 1.0)
+        @test H.progs.term_coef ==
+              [ref[H.term_source[k]] * H.term_scale[k] for k in eachindex(H.terms)]
+
+        # the handshake's refusals carry over from the mc kind (shared code): the
+        # missing schedule and the wrong grid are each named
+        err = try
+            resume(path, H)
+            nothing
+        catch e
+            e
+        end
+        @test err isa Exception &&
+              occursin("strained (NPT) run", sprint(showerror, err))
+        zsm2, _ = _ss_zeta_grid(; scales = [0.92, 1.0, 1.08])
+        sch2 = StrainSchedule(zsm2, H)
+        err = try
+            resume(path, H; strain = sch2)
+            nothing
+        catch e
+            e
+        end
+        @test err isa Exception &&
+              occursin("grid fingerprint", sprint(showerror, err))
     end
 end

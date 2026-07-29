@@ -44,7 +44,13 @@ Derived (`standard_evaluables(H)`):
 - `:specific_heat` — per active site, in units of ``k_B``:
   ``C/k_B = (⟨E²⟩ − ⟨E⟩²)/(n_{\mathrm{active}}(k_BT)²)``. On a joint model this is
   the **spin + lattice** heat capacity — the classical harmonic limit alone
-  contributes 3/2 per displacement-active site.
+  contributes 3/2 per displacement-active site. On a **strained (NPT)** run it is
+  configurational-only and is **neither** ``C_V`` **nor the NPT** ``C_P``: the
+  β-conjugate state energy there is ``W = E + n_{cells}·j_0(s) + P·V(s)``, whose
+  elastic and pressure halves fluctuate with the sampled volume and are not in
+  ``E`` (`:energy` omits the varying ``j_0(s)`` for the same reason). Measured
+  3.4 % low on the test fixture; the gap is ``C_P − C_V = TVα²B``-sized on real
+  solids.
 - `:susceptibility` — |m|-connected, per spin-active site:
   ``χ = n_{\mathrm{spin}}(⟨m²⟩ − ⟨|m|⟩²)/k_BT``. On a finite system with
   continuous symmetry ``⟨\boldsymbol m⟩ = 0`` exactly, so the textbook connected

@@ -37,8 +37,10 @@ Since M5, the chain also carries its cell's linear scale `strain` (`s`, so the c
 outer strain move ([`strain_move!`](@ref)).
 
 `config`/`disps`/`zrows`/`energy`/`com_removed`/`strain` are the swappable payload of
-a replica-exchange move (`_swap_payload!` exchanges the references); the RNG streams
-and the proposal widths stay with the lane.
+a replica-exchange move (`_swap_payload!` exchanges the references — on a strained
+run the lane's Hamiltonian reference must travel with `strain`, which is why swaps
+go through `_swap_lanes!`); the RNG streams and the proposal widths stay with the
+lane.
 """
 mutable struct ChainState
     config::SpinConfig

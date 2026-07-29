@@ -94,6 +94,14 @@ Derived (`standard_evaluables`, jackknifed):
   the lattice-MC standard. On a joint model this is the **spin + lattice** heat
   capacity — the classical harmonic limit alone contributes 3/2 per
   displacement-active site, which is also the gate (`_einstein_terms`).
+  **On a strained (NPT) run this is configurational-only — neither `C_V` nor the
+  NPT `C_P`.** The β-conjugate state energy of the NPT target is
+  `W = E_config + n_cells·j0(s) + P·V(s)` (strain-move.md S10), whose `j0` and
+  `P·V` halves fluctuate with the sampled volume, and
+  `C_P = var(W)/(n (k_BT)²)`; `var(E_config)` alone measured 3.4 % low on the
+  Einstein-well fixture, and `C_P − C_V = TVα²B` reaches tens of percent on real
+  solids near melting. `:energy` likewise omits the varying `j0(s)`. A
+  strain-aware `W` observable is deferred (strain-move.md S8).
 - **Susceptibility, |m|-connected, per spin-active site** (`scope = :spin`):
   `χ = n_spin_active (⟨m²⟩ − ⟨|m|⟩²) / k_BT`.
   *Why*: on a finite system with continuous symmetry `⟨m⟩ = 0` exactly, so the

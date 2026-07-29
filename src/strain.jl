@@ -766,9 +766,13 @@ schedule, so a second, pairing-compatible schedule would silently supply its own
 checkable at measurement time.
 
 The observables capture preallocated scratch sized for **this** `H` (a view from any
-other Hamiltonian is refused) and are therefore serial — one chain at a time, which a
-strained run already is ([`run_pt`](@ref) refuses schedules). Each `:strain_dEdV`
-measurement rebuilds the state's full row table, an `O(nrows·n_sites)` cost comparable
+other Hamiltonian is refused) and are therefore serial — one chain at a time, i.e. a
+strained [`run_mc`](@ref). They are **not usable under a strained [`run_pt`](@ref)**:
+its lanes measure concurrently (a shared-scratch race) and sweep per-lane coefficient
+clones, so `run_pt` refuses these observables by name at entry — and should anything
+bypass that, the per-view identity check still throws on a clone's view rather than
+racing silently. Each `:strain_dEdV` measurement rebuilds the state's full row
+table, an `O(nrows·n_sites)` cost comparable
 to one fresh [`total_energy`](@ref); at the default measurement cadence this is noise.
 """
 function pressure_diagnostics(sch::StrainSchedule, H::TiledHamiltonian)

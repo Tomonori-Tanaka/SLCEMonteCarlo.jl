@@ -9,7 +9,7 @@
 # stored counters, so a resumed run is bit-identical to an uninterrupted one.
 # Writes go to a temp file, then an atomic `mv`. Checkpoint writing consumes no RNG.
 
-const _CKPT_SCHEMA_VERSION = 4
+const _CKPT_SCHEMA_VERSION = 5
 
 # The run-side checkpoint writer: the target path, the write cadence, and the
 # run-description needed to make the file self-contained.
@@ -415,10 +415,9 @@ function _ck_mc!(ck, H::TiledHamiltonian, st::ChainState,
     return nothing
 end
 
-function _write_ckpt_pt(ck::_Checkpointer, H::TiledHamiltonian,
-                        lanes::Vector{_PTLane}, phase::Symbol, done::Int,
-                        parity::Int, exchange_rng::Xoshiro, swap_att::Vector{Int},
-                        swap_acc::Vector{Int})
+function _write_ckpt_pt(ck::_Checkpointer, lanes::Vector{_PTLane}, phase::Symbol,
+                        done::Int, parity::Int, exchange_rng::Xoshiro,
+                        swap_att::Vector{Int}, swap_acc::Vector{Int})
     tmp = ck.path * ".tmp." * string(getpid())
     measure = phase === :measure
     jldopen(tmp, "w") do f
@@ -441,15 +440,15 @@ end
 
 # Periodic-write tick for the PT segment driver (one call per segment, `n` = the
 # segment's sweep count).
-function _ck_pt!(ck, n::Int, H::TiledHamiltonian, lanes::Vector{_PTLane},
-                 phase::Symbol, done::Int, parity::Int, exchange_rng::Xoshiro,
-                 swap_att::Vector{Int}, swap_acc::Vector{Int})
+function _ck_pt!(ck, n::Int, lanes::Vector{_PTLane}, phase::Symbol, done::Int,
+                 parity::Int, exchange_rng::Xoshiro, swap_att::Vector{Int},
+                 swap_acc::Vector{Int})
     ck === nothing && return nothing
     ck.interval > 0 || return nothing
     ck.since += n
     ck.since >= ck.interval || return nothing
     ck.since = 0
-    _write_ckpt_pt(ck, H, lanes, phase, done, parity, exchange_rng, swap_att,
+    _write_ckpt_pt(ck, lanes, phase, done, parity, exchange_rng, swap_att,
                    swap_acc)
     return nothing
 end
@@ -480,7 +479,10 @@ schedule's **reference** coefficients into `H` before the model-fingerprint chec
 the fingerprint mixes coefficient values, and a strained chain's move with its
 volume, so the reference is the identity both sides compare — and finally installs
 the checkpointed scale's coefficients so the `(H, chain)` contract holds when the
-run continues; on return `H` is handed back at the reference, as `run_mc` does.
+run continues: on the "mc" kind into `H` itself, on the "pt" kind into a fresh
+per-lane coefficient clone at each lane's own checkpointed scale (`H` then never
+leaves the reference at all). On return `H` is handed back at the reference, as
+the run drivers do.
 `H`'s current coefficient state on entry is therefore irrelevant (and is
 overwritten) — including on a FAILED resume: a fingerprint or observable mismatch
 raised after the reinstall leaves `H` at the schedule's reference.
@@ -501,8 +503,9 @@ function resume(path::AbstractString, H::TiledHamiltonian;
             "checkpoint schema v$(f["schema_version"]) ≠ " *
             "v$(_CKPT_SCHEMA_VERSION) of this package version" *
             (f["schema_version"] < _CKPT_SCHEMA_VERSION ?
-             " (written before the strain channel; resume it with the package " *
-             "version that wrote it)" : ""))
+             " (v5 marks the strained-PT-capable format — an older reader would " *
+             "silently continue a strained PT run as fixed-cell; resume this file " *
+             "with the package version that wrote it)" : ""))
         plan = _read_plan(f)
         # The strain handshake comes BEFORE the model fingerprint: on a strained
         # run the stored fingerprint is the model's at the REFERENCE scale, and the
@@ -551,12 +554,18 @@ function resume(path::AbstractString, H::TiledHamiltonian;
             phase = Symbol(f["progress/phase"])
             done = f["progress/done"]::Int
             measure = phase === :measure
+            # On a strained run each lane gets its own coefficient clone (built while
+            # `H` carries the reference the handshake installed above); the lane's
+            # checkpointed scale is installed into it after the file closes.
             (; lanes = [_PTLane(_read_chain(f, "lane/$r", H),
                                 [SweepScratch(H) for _ = 1:plan.sweep_tasks],
                                 plan.kts[r], 1.0 / plan.kts[r],
                                 measure ?
                                 _read_accs(f, "lane/$r/accs", observables) :
-                                ObsAccumulator[], done)
+                                ObsAccumulator[], done,
+                                strain === nothing ? H : _coefficient_clone(H),
+                                strain === nothing ? nothing :
+                                (strain, StrainScratch(H)))
                         for r = 1:R],
              phase, done, parity = f["progress/parity"]::Int,
              exchange_rng = _rng_from_words(f["exchange_rng"]),
@@ -601,8 +610,19 @@ function resume(path::AbstractString, H::TiledHamiltonian;
                               recheck_translation = false)
         return r
     end
+    if strain !== nothing
+        # re-establish each lane's (H, chain) contract at its CHECKPOINTED scale —
+        # bit-identical to what the interrupted run held (deterministic Horner
+        # pass); the caller's `H` stays at the reference the handshake installed
+        for lane in b.lanes
+            set_coefficients!(lane.H,
+                              strain_coefficients!(lane.sctx[2].coef, strain,
+                                                   lane.st.strain);
+                              recheck_translation = false)
+        end
+    end
     nt = min(length(data.plan.kts), Threads.nthreads())
-    return _pt_run!(b.lanes, H, data.plan, observables, evaluables, data.exch, nt,
+    return _pt_run!(b.lanes, data.plan, observables, evaluables, data.exch, nt,
                     b.exchange_rng, b.swap_att, b.swap_acc, b.phase, b.done,
                     b.parity, ck)
 end
