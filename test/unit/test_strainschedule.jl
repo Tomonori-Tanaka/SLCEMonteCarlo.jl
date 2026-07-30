@@ -242,8 +242,11 @@ _ss_vk_mean(k, va, vb) =
         # ...and a Hamiltonian built from a different TRUNCATION is refused by name
         # rather than mis-assigned: the count is the first thing that disagrees, and the
         # message points at the flag rather than at the arithmetic
+        # `pmax` omitted, not 2: this sector table is pure spin, so a displacement cap
+        # would declare a degree no sector can build — SLCE refuses that now (it always
+        # did for the dense spec form), and the basis is identical either way.
         ob = SLCEBasis(_ss_crystal(1.0),
-                       BasisSpec(_ss_crystal(1.0); lmax = 1, pmax = 2,
+                       BasisSpec(_ss_crystal(1.0); lmax = 1,
                                  sectors = [Sector(spin = (sites = 1:2,), cutoff = 1.1)]))
         other = SLCEModel(ob, 0.0, ones(n_salcs(ob)))
         Ho = TiledHamiltonian(other; dims = (1, 1, 1), fixed_reference = true,
