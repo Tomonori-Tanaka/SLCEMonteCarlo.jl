@@ -1876,3 +1876,169 @@ end
         end
     end
 end
+
+# The two structural fingerprints. Both had tests that could not fail: the term
+# fingerprint was compared against itself (`schz.term_fp == sch.term_fp`, true by
+# construction) and then XOR-ed to prove the COMPARISON fires — which says nothing
+# about whether the hash discriminates; replacing its FNV mixing with a constant left
+# the suite green. The grid fingerprint had the mirror problem: both refusal tests
+# changed the grid's SCALES, so reducing it to the scales alone also stayed green.
+@testset "the structural fingerprints actually discriminate" begin
+    z3 = SVector(0, 0, 0)
+    x3 = SVector(1, 0, 0)
+    fold = [0.3 -0.1 0.0; 0.0 0.2 0.4; -0.5 0.0 0.1]
+    mk(coef, atoms, shifts) =
+        MCs.TiledHamiltonian(2, [SpinMultipoleTerm(coef, 2, atoms, shifts, [1, 1],
+                                                   copy(fold))]; dims = (4, 1, 1))
+
+    @testset "_schedule_term_fp separates same-count, different-structure models" begin
+        # Every pair below has ONE term with the same body, ls and folded shape, so the
+        # count checks in `_check_strain_pairing` pass on all of them and the
+        # fingerprint is the only thing between a caller and installing one model's
+        # coefficients onto another model's clusters.
+        base = mk(0.3, [1, 2], [z3, z3])
+        other_image = mk(0.3, [1, 2], [z3, x3])     # same pair, different image
+        other_atoms = mk(0.3, [1, 1], [z3, x3])     # different atom pair
+        fps = MCs._schedule_term_fp.([base, other_image, other_atoms])
+        @test length(unique(fps)) == 3
+        # …and it is STRUCTURAL: a coefficient hot-swap must not move it, or a schedule
+        # would stop pairing with its own Hamiltonian after the first strain move
+        @test MCs._schedule_term_fp(mk(-0.9, [1, 2], [z3, z3])) == fps[1]
+    end
+
+    @testset "_grid_fingerprint separates grids that share their scales" begin
+        zsm, zmodels = _ss_zeta_grid()                   # scales [0.9, 1.0, 1.1]
+        H2 = TiledHamiltonian(zmodels[2]; dims = (2, 1, 1), fixed_reference = true)
+        H4 = TiledHamiltonian(zmodels[2]; dims = (4, 1, 1), fixed_reference = true)
+        s2, s4 = MCs.StrainSchedule(zsm, H2), MCs.StrainSchedule(zsm, H4)
+        @test s2.scales == s4.scales                     # identical on the scales axis…
+        @test MCs._grid_fingerprint(s2) != MCs._grid_fingerprint(s4)   # …not identical
+
+        # and a genuinely different grid on the SAME scales
+        gsm, gmodels = _ss_grid(; scales = [0.9, 1.0, 1.1])
+        Hg = TiledHamiltonian(gmodels[2]; dims = (2, 1, 1), keep_zero_terms = true)
+        sg = MCs.StrainSchedule(gsm, Hg)
+        @test sg.scales == s2.scales
+        @test MCs._grid_fingerprint(sg) != MCs._grid_fingerprint(s2)
+    end
+end
+
+# `pressure_diagnostics`' evaluable captures `sch.n_mobile` and deliberately ignores the
+# `n` the Evaluable machinery injects: the identity's count is the volume power's
+# `N_mob = n_disp_active`, while an `:energy`-scope `n` is `n_active`. The two coincide
+# on every fixture in this file (all sites carry both channels), so substituting `n` for
+# the capture left the suite green — the source even carries a "Do not simplify to `n`"
+# comment with nothing enforcing it. Call the closure directly with two different `n`
+# instead: no fixture can hide the difference there.
+@testset "the pressure evaluable uses N_mob, not the injected site count" begin
+    zsm, zmodels = _ss_zeta_grid()
+    H = TiledHamiltonian(zmodels[2]; dims = (2, 1, 1), fixed_reference = true)
+    sch = MCs.StrainSchedule(zsm, H)
+    ev = only(MCs.pressure_diagnostics(sch, H).evaluables)
+    @test ev.name === :pressure && ev.scope === :energy
+    m = (; strain_dEdV = 0.37, strain_invV = 0.011)
+    kT = 0.05
+    @test ev.f(m, kT, 3) === ev.f(m, kT, 999)            # `n` is not read at all
+    # and the value is the identity with N_mob in it — hand arithmetic, not a capture
+    @test ev.f(m, kT, 1) ≈ sch.n_mobile * kT * m.strain_invV - m.strain_dEdV rtol = 1e-14
+    @test sch.n_mobile == H.n_disp_active
+end
+
+# `strain_move!` recomputes `e_old` FROM SCRATCH and carries the accumulated drift
+# across an accepted move, instead of reusing `st.energy`. Mixing the incremental value
+# into one side of ΔE and a from-scratch value into the other puts the drift into the
+# acceptance ratio asymmetrically — an O(drift) detailed-balance violation the source
+# comment warns about. Nothing tested it: replacing the two lines with
+# `e_old = st.energy; drift = 0.0` left the file green, twice over — the fixtures call
+# `strain_move!` without sweeping first, so `drift ≡ 0` and the mutation is a no-op, and
+# the white-box replay computes its own reference the same way.
+#
+# So: sweep first, until the chain HAS drift, then pin the bookkeeping identity
+# `st.energy − E_scratch ≡ drift` across the move. Both halves are load-bearing — with
+# the mutation the difference collapses to exactly zero.
+@testset "a strain move recomputes e_old and carries the drift" begin
+    zsm, zmodels = _ss_zeta_grid()
+    H = TiledHamiltonian(zmodels[2]; dims = (2, 2, 1), fixed_reference = true)
+    sch = MCs.StrainSchedule(zsm, H)
+    st = MCs.ChainState(H, _ss_cfg(H.n_sites, 71), Xoshiro(0x71), 0.4;
+                        disps = _ss_disps(H.n_sites, 71), step_u = 0.05)
+    ssc = MCs.SweepScratch(H)
+    sc = MCs.StrainScratch(H)
+    for _ = 1:400
+        MCs.metropolis_sweep!(st, H, 20.0, ssc)
+        MCs.displacement_sweep!(st, H, 20.0, ssc)
+    end
+    drift0 = st.energy - MCs._total_energy(H, st.zrows)
+    @test drift0 != 0.0                       # non-vacuity: there IS drift to carry
+    @test abs(drift0) < 1e-9                  # …and it is roundoff, not a bug
+
+    naccept = 0
+    for _ = 1:40
+        if MCs.strain_move!(st, H, sch, sc, 0.05; pressure = 0.0, step = 0.05)
+            naccept += 1
+            # `H` now carries the accepted scale's coefficients and `st.zrows` the
+            # rescaled rows, so a from-scratch total is exactly the `e_new` the move
+            # computed — and the chain's incremental energy must sit `drift0` above it,
+            # bit for bit. The drift is neither dropped (mutation) nor re-derived.
+            @test st.energy - MCs._total_energy(H, st.zrows) == drift0
+        end
+    end
+    @test naccept > 0
+end
+
+# The `StrainSchedule` constructor's refusals had no test at all. Two of them are
+# reachable from here and both are ones a user hits.
+#
+# The first is pairing the grid with a Hamiltonian built from a different model. Its
+# message carries the `keep_zero_terms` guidance because the default coefficient prune
+# makes the index -> SALC map a function of the FIT rather than of the basis, so two
+# grid points that zero different keys produce equal-length lists with shifted maps.
+#
+# The second is the ASR gate, and writing this test is how it was found to be reachable
+# at all: `_joint_model` and `_ss_zeta_grid` are built from the SAME spec, so their term
+# counts and cluster geometry match exactly and the term checks pass — what separates
+# them is that the zeta grid's Einstein well PINS every rigid shift while a plain
+# `_joint_model` Hamiltonian re-centres along them. That is precisely the one-sided
+# condition the gate exists for: a node that pins a direction `H` re-centres would get a
+# biasing projection at that volume.
+#
+# The remaining refusals guard a MALFORMED GRID (points with different term counts, or
+# terms on different atoms/images across points). `StrainedModels` refuses those
+# upstream, and the non-integer-cell one is unreachable by construction — the source says
+# so, and the term check fires first on the only shape that could produce it.
+@testset "the schedule refuses a Hamiltonian that is not the grid's" begin
+    zsm, zmodels = _ss_zeta_grid()
+    Hgrid = TiledHamiltonian(zmodels[2]; dims = (2, 1, 1), fixed_reference = true)
+
+    @testset "a different model: refused on the term count, with the fix named" begin
+        Hother = TiledHamiltonian(_biquadratic_model(0); dims = (2, 1, 1))
+        @test Hother.n_input_terms != Hgrid.n_input_terms      # the premise
+        err = try
+            MCs.StrainSchedule(zsm, Hother)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("input terms", err.msg)
+        @test occursin("keep_zero_terms", err.msg)             # the actionable half
+    end
+
+    @testset "a grid node that pins what the Hamiltonian re-centres is refused" begin
+        # same spec, same term list, same clusters — only the frames disagree
+        Hflat = TiledHamiltonian(first(_joint_model()); dims = (2, 1, 1))
+        @test Hflat.n_input_terms == Hgrid.n_input_terms        # the term checks pass…
+        @test any(Hflat.comp_free)                             # …and this one re-centres
+        err = try
+            MCs.StrainSchedule(zsm, Hflat)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("not translation-flat", err.msg)
+        @test occursin("COM-projected ensemble", err.msg)
+        # the same grid against a Hamiltonian that does NOT re-centre is accepted
+        @test MCs.StrainSchedule(zsm, Hgrid) isa MCs.StrainSchedule
+    end
+end

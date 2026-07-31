@@ -286,3 +286,59 @@ end
                                           checkpoint_interval = -1)
     end
 end
+
+# Every field of `ChainState` survives the file, checked exhaustively rather than by
+# sample. The escape detector's block ladder was the gap: `disp_blk_sum`, `disp_blk_n`,
+# `disp_blk_cap`, `escape_strikes`, `disp_ref_ms` and `escape_warned` could all be
+# restored as zero and the whole 1091-assertion checkpoint suite stayed green, because
+# nothing reads them back — yet the source comment names the consequence (a chain
+# checkpointed often enough never accumulates the consecutive strikes that report an
+# escape, and `escape_warned` reset would turn an already-reported escape into a clean
+# verdict). The other five escape floats were covered; these six were not.
+#
+# Exhaustive over `fieldnames`, so a field added later has to round-trip or fail here.
+@testset "the whole chain state round-trips, field by field" begin
+    H = TiledHamiltonian(first(_joint_model()); dims = (2, 2, 1))
+    st = MC.ChainState(H, _rand_config(MersenneTwister(77), H), Xoshiro(77), 0.35;
+                       disps = [SVector{3,Float64}(0.01i, -0.02i, 0.03i)
+                                for i = 1:H.n_sites], step_u = 0.04)
+    # distinctive, non-default values everywhere — a zero-restore must not coincide
+    st.energy = -12.5
+    st.strain, st.strain_min, st.strain_max = 1.03, 0.97, 1.05
+    st.frozen = true
+    st.acc_metro, st.att_metro = 11, 23
+    st.acc_or, st.att_or = 5, 9
+    st.acc_disp, st.att_disp = 7, 13
+    st.acc_strain, st.att_strain, st.att_strain_out = 3, 17, 4
+    st.max_drift = 1.5e-12
+    st.com_removed[1] = SVector(0.11, -0.22, 0.33)
+    st.disp_rms, st.disp_max, st.disp_rms0 = 0.021, 0.052, 0.019
+    st.disp_checks = 29
+    st.disp_ms_sum, st.disp_blk_sum, st.disp_ref_ms = 1.3e-3, 4.1e-4, 3.7e-4
+    st.disp_blk_n, st.disp_blk_cap = 6, 8
+    st.escape_strikes, st.escape_warned = 2, true
+
+    dir2 = mktempdir()
+    path = joinpath(dir2, "chain.jld2")
+    MC.jldopen(path, "w") do f
+        MC._write_chain(f, "chain", st)
+    end
+    st2 = MC.jldopen(path, "r") do f
+        MC._read_chain(f, "chain", H)
+    end
+
+    rngwords(r) = MC._rng_words(r)
+    bad = Symbol[]
+    for f in fieldnames(MC.ChainState)
+        a, b = getfield(st, f), getfield(st2, f)
+        same = f === :rng ? rngwords(a) == rngwords(b) :
+               f === :site_rngs ? all(rngwords.(a) .== rngwords.(b)) :
+               a == b
+        same || push!(bad, f)
+    end
+    @test bad == Symbol[]
+    # the loop above is only meaningful if the values were non-default to begin with
+    @test st.escape_warned && st.escape_strikes != 0 && st.disp_blk_n != 0
+    @test st.disp_blk_cap != 1 && st.disp_ref_ms != 0.0 && st.disp_blk_sum != 0.0
+    @test st.att_strain_out != 0 && st.strain_min != 1.0
+end
