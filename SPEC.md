@@ -98,3 +98,5 @@ keyword resolution).
 - `docs/specs/gpu-feasibility.md` — GPU-port assessment: strategy, measured baseline, go/no-go
 - `docs/specs/gpu-prototype.md` — GPU Metropolis prototype: keyed RNG layout, determinism contract, kernel shape, A100 readout
 - `docs/specs/strain-move.md` — the outer NPT strain move: energy contract, proposal arms, measured Jacobian exponent, driver wiring (run_mc and run_pt), schema v5
+- `docs/specs/public-scope.md` — **what is published**: the adiabatic (separated-degrees-of-freedom) surface, NPT in its quasi-harmonic form, and why coupled spin+displacement sampling is deferred rather than removed
+- `docs/specs/coupled-sites.md` — the reasoning behind `CLAUDE.md`'s coupled-sites index
