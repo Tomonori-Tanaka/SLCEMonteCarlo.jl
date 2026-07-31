@@ -489,3 +489,108 @@ interval arithmetic last fired — so the pre-existing PT resume gates
 land mid-measure and re-run 30–200 sweeps; they are NOT vacuous, but their
 non-vacuity is an accident of the chosen intervals and must be asserted
 (`0 < progress/done < total`), as the S12 gate does.
+
+## S13 — the volume exponent, settled in the SAMPLED regime (2026-07-31)
+
+S3 measured the exponent with `u ≡ 0`, which pins the acceptance rule's literal
+constant `3·N_mob + c` and nothing more. That left the *physics* of the rule
+untested, and a 2026-07-31 audit measurement on a lattice-only model duly came
+back looking wrong: sampled `⟨s⟩` sat 2–3σ above the analytic marginal
+`π(s) ∝ s^(3·N_mob − d_dim)·e^(−β n_cells j0)` at three temperatures and three
+seeds, an "effective exponent" of 14–16 against that model's 12.
+
+**The sampler is exact; the analytic model was short by `|dV/ds| ∝ s²`.** With
+`u` sampled, the affine rescale's Jacobian on the sampled displacement space
+cancels `d_dim` powers of `s` against the displacement integral, and what
+survives is the gauge factor plus the volume element:
+
+    π(s) ∝ s^(count(comp_free) + 2) · Z_u(s) · e^(−β(n_cells·j0(s) + P·V(s)))
+
+For that fixture `count(comp_free) = 12`, so the prediction is **14 exactly** —
+inside the reported range, and 132σ from the 12 the observer compared against.
+Three independent lines agree: a first-principles derivation, an implementation
+audit, and a purpose-built measurement.
+
+### Why the existing fixtures could not settle it
+
+Every earlier check was blind in one of two ways. The `u ≡ 0` toy measures the
+constant, not the physics. The joint fixture used for the 400 k-move quadrature
+has the two candidate conventions differing by only 3-of-3N — below its
+resolution. And the anomalous fixture had **four disjoint displacement
+components**, an artifact of a cutoff that does not reach across the training
+cell, which confounds `count(comp_free)` with `n_disp_comps`.
+
+### The fixture that does settle it
+
+A 2-atom cell has ONE minimum-image pair orbit, so an `(n,1,1)` supercell always
+splits into disjoint dimers — which is why no fixture in this package was
+single-component. Three atoms at asymmetric fractional `x` (`0, 0.30, 0.62`) give
+three distinct pair orbits and hence **one connected component**. The
+coefficients are not random: the bond graph is read off the Hessian's sparsity,
+the target `K = Σ_bonds |u_i − u_j|²` is built by hand, and a least squares over
+the SALC space reproduces it to ~1e-16. So `E(u)` is exactly quadratic and
+exactly `s`-independent, `Z_u(s)` is exactly constant, and with `j0 ≡ 0`, `P = 0`
+the target is a truncated power law — arithmetic, not a second Monte Carlo.
+
+`S` and `S0` are the same crystal at the same `N_mob` on the same grid; `S0` only
+adds an on-site well, which pins every rigid shift. `count(comp_free)` goes
+3 → 0 while `d_dim` goes 24 → 27, so **the two candidate countings move in
+opposite directions** and the pair separates them with no absolute normalization.
+
+Measured (4–8 independent chains; the spread of chains is the error — a
+per-chain binning error understates it by ~1.7×):
+
+| fixture | comps | `N_mob` | `F = count(comp_free)` | `d_dim` | regime | predicted | measured |
+|---|---|---|---|---|---|---|---|
+| S  | 1 | 9  | 3  | 24 | `u` sampled | `F+2 = 5`  | 5.0000 ± 0.0058 (0.0σ) |
+| S  | 1 | 9  | 3  | 24 | `u ≡ 0`     | `3N+2 = 29`| 29.026 ± 0.041 (0.6σ) |
+| S0 | 1 | 9  | 0  | 27 | `u` sampled | `F+2 = 2`  | 2.011 ± 0.010 (1.0σ) |
+| D2 | 2 | 4  | 6  | 6  | `u` sampled | 8          | 8.021 ± 0.018 |
+| C4 | 4 | 12 | 12 | 24 | `u` sampled | 14         | 14.017 ± 0.017 |
+| D4 | 4 | 8  | 12 | 12 | `u` sampled | 14         | 14.035 ± 0.024 |
+| D8 | 8 | 16 | 24 | 24 | `u` sampled | 26         | 26.013 ± 0.034 |
+
+C4 and D4 share `F` while differing in both `N_mob` and `d_dim`, and land on the
+same exponent. The rival countings are 345σ and 517σ away on S.
+
+### What it does not depend on — each varied one at a time
+
+Proposal arm (`:logvolume` 14.010 ± 0.045 vs `:scale` 14.022 ± 0.041 — the arm's
+`c` is cancelled by `dy/ds`); temperature; the displacement/strain cadence ratio;
+`n_disp_comps`; and **the re-centring cadence**, which gives *bitwise identical*
+`s` trajectories at `recenter_every ∈ {1, 4, 16, 64, 256, never}` even though
+`max|com_removed|` differs by 6.7. That is structural, not luck: `E` is exactly
+invariant along the flat directions and the affine rescale commutes with a flat
+shift, so `ΔE` is unchanged and the `s`-chain is exactly decoupled from the gauge
+coordinates. An independent probe on `_ss_grid` through `run_mc` reproduced the
+same bitwise identity.
+
+### The one assumption that remains
+
+A measurement cannot decide whether the flat directions *should* carry a `∝ s`
+measure factor — that is a statement about a gauge direction the quotient sampler
+never represents. The argument for it is the one already in §8: a rigid shift of
+a displacement component by a supercell lattice vector maps every site onto its
+own periodic image, i.e. the same microstate, so the gauge orbit is a torus of
+edge `∝ s` and contributes one factor of `s` per free (direction, component)
+pair. The data establish that the implementation is exactly self-consistent with
+that choice; they do not establish the choice itself.
+
+### Gates
+
+`test_strainschedule.jl` "the sampled volume marginal is s^(count(comp_free) + 2)"
+carries S and S0 with their fixture invariants asserted as hand predictions
+(one component, equal `N_mob`, `F` = 3 vs 0, `d_dim` = 24 vs 27, fit residual
+< 1e-12, bounded spectrum). **The pair is load-bearing, not decorative**: under
+the `d_dim` mutation the S arm fails at 23σ and the differential at 3 vs −0.065,
+while S0 alone passes at 0.5σ — a single-fixture version of this gate would be
+half blind.
+
+### Trap to avoid next time
+
+When writing an analytic target for the `s`-marginal, the proposal-variable
+Jacobian `|dV/ds|` is easy to omit — it is the whole of the `+2`, and omitting it
+looks exactly like a two-power bias in the sampler. Check the exponent against
+the frozen-`u` regime first: it must come out at `3·N_mob + 2`, and if it does
+the acceptance rule is fine and any remaining discrepancy is in the model of the
+displacement integral.

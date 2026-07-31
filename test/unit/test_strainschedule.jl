@@ -2042,3 +2042,197 @@ end
         @test MCs.StrainSchedule(zsm, Hgrid) isa MCs.StrainSchedule
     end
 end
+
+# ======================================================================================
+# The volume weight in the SAMPLED regime — the physics the toy gate above cannot see.
+#
+# The NPT-marginal toy holds `u ≡ 0`, so it measures the acceptance rule's literal
+# exponent constant (`3·N_mob + c`) and nothing else. With `u` actually sampled the
+# picture changes completely: the affine rescale's Jacobian on the sampled displacement
+# space cancels `d_dim` powers of `s` against the displacement integral, and what
+# SURVIVES is the gauge factor alone —
+#
+#     π(s) ∝ s^(count(comp_free) + 2) · Z_u(s) · e^(−β(n_cells·j0 + P·V))
+#
+# — where the `+2` is `|dV/ds|` and `count(comp_free)` counts the rigid-shift directions
+# `_recenter!` projects out. That exponent is INDEPENDENT of `N_mob` and of `d_dim`, and
+# nothing in the suite tested it: an audit measurement on a lattice-only model read the
+# marginal as `s^(3·N_mob − d_dim)` — the same formula minus the `|dV/ds|` — and reported
+# the sampler as 2–3σ off. It is not. The missing factor is 2 and the sampler is exact.
+#
+# The fixture is built to make that separation clean, which the package's other fixtures
+# cannot: a 2-atom cell has ONE minimum-image pair orbit, so an (n,1,1) supercell always
+# splits into disjoint dimers. Three atoms at asymmetric fractional x give three distinct
+# pair orbits and hence ONE connected component. The coefficients are not random — the
+# bond graph is read off the Hessian's sparsity, the target `K = Σ_bonds |u_i − u_j|²` is
+# built by hand, and a least-squares over the SALC space reproduces it to ~1e-16, so the
+# model is EXACTLY a spring network and `Z_u(s)` is exactly constant. `j0 ≡ 0`, `P = 0`,
+# coefficients identical at every grid point ⟹ the target is a truncated power law, i.e.
+# arithmetic rather than a second Monte Carlo.
+#
+# S and S0 are the same crystal, the same `N_mob` and the same grid; S0 only adds an
+# on-site well, which pins every rigid shift. So `count(comp_free)` goes 3 → 0 while
+# `d_dim` goes 24 → 27 — the two candidate countings move in OPPOSITE directions, and
+# the pair separates them without any absolute normalization.
+
+# Finite-difference Hessian of the (exactly quadratic) displacement energy. Deliberately
+# not the package's own `force_constant_matrix`: this builds the fixture, so it must not
+# come from the code the fixture is used to test.
+function _npt_uhess(H)
+    n = H.n_sites
+    h = 1e-3
+    K = zeros(3n, 3n)
+    cfg = MCs.SpinConfig([SVector(0.0, 0.0, 1.0) for _ = 1:n])
+    z = zero(SVector{3,Float64})
+    unit(a) = (i = fld1(a, 3); c = mod1(a, 3);
+               [k == i ? SVector{3,Float64}(ntuple(q -> q == c ? h : 0.0, 3)) : z
+                for k = 1:n])
+    E(v) = total_energy(H, cfg, v)
+    e0 = E([z for _ = 1:n])
+    ea = [E(unit(a)) for a = 1:3n]
+    for a = 1:3n
+        ua = unit(a)
+        for b = a:3n
+            v = (E(ua .+ unit(b)) - ea[a] - ea[b] + e0) / h^2
+            K[a, b] = v
+            K[b, a] = v
+        end
+    end
+    return K
+end
+
+_npt_crystal(s) = Crystal(Lattice(Matrix(3.0s * I(3))),
+                          [0.0 0.30 0.62; 0.0 0.0 0.0; 0.0 0.0 0.0],
+                          [1, 2, 3], ["Fe", "Co", "Ni"])
+_npt_spec(cr, s) = BasisSpec(cr; lmax = 1, pmax = 2,
+                             sectors = [Sector(disp = (degree = 2,), sites = 1:2,
+                                               cutoff = 1.2s)])
+_npt_ham(b, g, dims, fixref) =
+    TiledHamiltonian(SLCEModel(b, 0.0, g); dims = dims, keep_zero_terms = true,
+                     fixed_reference = fixref)
+
+# Build the fixture: solve for the SALC coefficients that reproduce a hand-built spring
+# Laplacian exactly. Returns the schedule, the Hamiltonian and the fit residual.
+function _npt_fixture(dims, scales; onsite = 0.0)
+    b1 = SLCEBasis(_npt_crystal(1.0), _npt_spec(_npt_crystal(1.0), 1.0))
+    ns = n_salcs(b1)
+    fixref = onsite != 0.0
+    probe = _npt_ham(b1, randn(MersenneTwister(7), ns), dims, true)
+    Kp = _npt_uhess(probe)
+    nsite = probe.n_sites
+    scale = maximum(abs, Kp)
+    bonds = [(i, j) for i = 1:nsite for j = (i + 1):nsite
+             if maximum(abs, view(Kp, (3i - 2):(3i), (3j - 2):(3j))) > 1e-8 * scale]
+    Kt = zeros(3nsite, 3nsite)                       # E = Σ_bonds |u_i − u_j|²
+    for (i, j) in bonds, c = 1:3
+        a, bb = 3(i - 1) + c, 3(j - 1) + c
+        Kt[a, a] += 2.0; Kt[bb, bb] += 2.0; Kt[a, bb] -= 2.0; Kt[bb, a] -= 2.0
+    end
+    onsite != 0.0 && (Kt .+= onsite * I(3nsite))
+    A = hcat([vec(_npt_uhess(_npt_ham(b1, [k == i ? 1.0 : 0.0 for k = 1:ns], dims, true)))
+              for i = 1:ns]...)
+    g = A \ vec(Kt)
+    resid = norm(A * g - vec(Kt)) / norm(Kt)
+    models = [SLCEModel(SLCEBasis(_npt_crystal(s), _npt_spec(_npt_crystal(s), s)), 0.0,
+                        copy(g)) for s in scales]
+    sm = SLCE.StrainedModels(models, collect(Float64, scales))
+    H = _npt_ham(SLCEBasis(_npt_crystal(1.0), _npt_spec(_npt_crystal(1.0), 1.0)), g,
+                 dims, fixref)
+    return (; sch = MCs.StrainSchedule(sm, H), H = H, resid = resid,
+            evmin = sort(eigvals(Symmetric(_npt_uhess(H))))[count(H.comp_free) + 1])
+end
+
+# One NPT chain: `ndisp` displacement sweeps → re-centring → ONE strain move, recording
+# the scale after every move. `ndisp = 0` is the frozen-`u` regime (the move maps 0 ↦ 0).
+function _npt_chain(f; kt, nstrain, ndisp, therm, seed, step = 0.05)
+    H, sch = f.H, f.sch
+    set_coefficients!(H, MCs.strain_coefficients(sch, 1.0))
+    cfg = MCs.SpinConfig([SVector(0.0, 0.0, 1.0) for _ = 1:H.n_sites])
+    st = MCs.ChainState(H, cfg, Xoshiro(seed), 0.3;
+                        disps = zeros(SVector{3,Float64}, H.n_sites), step_u = 0.05)
+    ssw = MCs.SweepScratch(H)
+    sst = MCs.StrainScratch(H)
+    acc = 0.0
+    n = 0
+    for it = 1:(therm + nstrain)
+        for _ = 1:ndisp
+            MCs.displacement_sweep!(st, H, 1 / kt, ssw)
+        end
+        ndisp > 0 && MCs._renormalize!(st, H, ssw)
+        MCs.strain_move!(st, H, sch, sst, kt; pressure = 0.0, step = step)
+        it > therm && (acc += st.strain; n += 1)
+    end
+    return acc / n
+end
+
+# mean of π(s) ∝ s^p on [a, b], and its inverse — closed form, no sampling
+_npt_smean(p, a, b) = ((p + 1) / (p + 2)) * (b^(p + 2) - a^(p + 2)) /
+                      (b^(p + 1) - a^(p + 1))
+function _npt_peff(m, a, b)
+    lo, hi = -60.0, 400.0
+    for _ = 1:200
+        mid = (lo + hi) / 2
+        _npt_smean(mid, a, b) < m ? (lo = mid) : (hi = mid)
+    end
+    return (lo + hi) / 2
+end
+
+@testset "the sampled volume marginal is s^(count(comp_free) + 2)" begin
+    scales = [0.8, 1.0, 1.2]
+    fS = _npt_fixture((3, 1, 1), scales)                    # connected springs
+    fS0 = _npt_fixture((3, 1, 1), scales; onsite = 1.0)     # …plus an on-site well
+    a, b = MCs.strain_domain(fS.sch)
+
+    @testset "the fixture has the properties the comparison needs" begin
+        for (f, F, D) in ((fS, 3, 24), (fS0, 0, 27))
+            @test f.H.n_disp_comps == 1              # ONE component, unlike every other
+            @test f.H.n_disp_active == 9             # …at equal N_mob
+            @test count(f.H.comp_free) == F          # hand prediction: 3 rigid shifts,
+            @test f.sch.d_dim == D                   # …or none once an on-site well pins
+            @test f.resid < 1e-12                    # the spring network is EXACT
+            @test f.evmin > 0.5                      # bounded below ⇒ a stationary law
+        end
+        # the two countings move in OPPOSITE directions across the pair, which is what
+        # lets the comparison separate them with no absolute normalization
+        @test count(fS.H.comp_free) > count(fS0.H.comp_free)
+        @test fS.sch.d_dim < fS0.sch.d_dim
+    end
+
+    # 4 seeds; the spread of independent chains is the error (a per-chain binning error
+    # understates it by ~1.7×). Measured deviations from the prediction over these
+    # settings are ≤ 1.0σ, so a 4σ bound carries ≈ 4× headroom — while the rival
+    # countings sit 3 whole powers away, i.e. ≳ 30σ.
+    seeds = (0x11, 0x22, 0x33, 0x44)
+    est(f; ndisp, nstrain, therm) = begin
+        ps = [_npt_peff(_npt_chain(f; kt = 0.05, nstrain = nstrain, ndisp = ndisp,
+                                   therm = therm, seed = sd), a, b) for sd in seeds]
+        m = sum(ps) / length(ps)
+        sem = sqrt(sum(abs2, ps .- m) / (length(ps) - 1) / length(ps))
+        (m, sem)
+    end
+
+    @testset "u sampled: the exponent is the gauge count, not N_mob and not d_dim" begin
+        pS, eS = est(fS; ndisp = 1, nstrain = 400_000, therm = 20_000)
+        pS0, eS0 = est(fS0; ndisp = 1, nstrain = 400_000, therm = 20_000)
+        @test abs(pS - 5.0) < 4 * eS                 # count(comp_free) + 2 = 3 + 2
+        @test abs(pS0 - 2.0) < 4 * eS0               # count(comp_free) + 2 = 0 + 2
+        # the differential kills the COM-reduced (`d_dim`) counting outright: under it
+        # BOTH fixtures would sample the same exponent, so the difference would be 0
+        @test abs((pS - pS0) - 3.0) < 4 * sqrt(eS^2 + eS0^2)
+        # …and the absolute value of the pinned arm kills the no-|dV/ds| model, which
+        # predicts count(comp_free) itself, i.e. 0 here
+        @test pS0 > 1.0
+        # both bounds must actually be tight enough to mean something
+        @test eS < 0.5 && eS0 < 0.5
+    end
+
+    @testset "u frozen: the SAME model shows the acceptance rule's own exponent" begin
+        # With `u ≡ 0` there is no displacement integral to cancel anything, so the full
+        # `3·N_mob + 2 = 29` appears — on the very model that gives 5 when `u` is
+        # sampled. That contrast IS the cancellation, measured rather than argued.
+        pf, ef = est(fS; ndisp = 0, nstrain = 200_000, therm = 5_000)
+        @test abs(pf - 29.0) < 4 * ef
+        @test ef < 1.0
+        @test pf > 20.0                              # nowhere near the sampled regime's 5
+    end
+end

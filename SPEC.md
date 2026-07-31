@@ -26,7 +26,7 @@ ferrimagnetic Nd-vs-Fe order at 250 K.
 | `src/stability.jl` | `force_constant_matrix` / `harmonic_stability` — the displacement Hessian of the TILED Hamiltonian by central differences, and its spectrum: the before-the-run screen complementing the after-the-fact escape detector |
 | `src/run.jl` | `run_mc` (single T + annealing; NPT via `strain = StrainSchedule(...)` + `pressure_GPa` XOR `pressure`, resolved once through `GPA_PER_EV_A3`), `TempResult`, `MCResult` |
 | `src/pt.jl` | `run_pt` (replica exchange over threads; NPT via the same strain keywords as `run_mc` — per-lane coefficient clones, the lane's Hamiltonian reference swapped with the payload, exchange weight `E + n_cells·j0(s) + P·V(s)`), `PTResult` |
-| `src/checkpoint.jl` | JLD2 schema v5 (strain channel incl. strained PT lanes; reference-scale model fingerprint + grid fingerprint), `resume` |
+| `src/checkpoint.jl` | JLD2 schema v6 (strain channel incl. strained PT lanes; reference-scale model fingerprint + grid fingerprint; the phase's sampled cell-scale range and the grid's refusal count), `resume` |
 | `src/geometry.jl` | `supercell_crystal`, `to_matrix`/`from_matrix` |
 | `src/reduce.jl` | `reduce_cell`/`ReducedCell{T}` — verified re-expression of a supercell-fitted model (pure-spin `SpinMultipoleTerm` or joint `DecoratedTerm`) in a user-chosen smaller cell |
 
@@ -92,11 +92,11 @@ keyword resolution).
 - `docs/specs/updates-stationarity.md` — Metropolis/OR stationarity, adaptive-step freeze
 - `docs/specs/binning-observables.md` — C/χ/U conventions (authoritative), log-binning, jackknife
 - `docs/specs/pt-threads-determinism.md` — lane/RNG discipline, bit-reproducibility
-- `docs/specs/checkpoint-schema.md` — JLD2 schema v5
+- `docs/specs/checkpoint-schema.md` — JLD2 schema v6
 - `docs/specs/cell-reduction.md` — verified reduction to a user-chosen smaller cell
 - `docs/specs/ground-state-search.md` — on-sphere descent, thermal cycling, multi-start determinism
 - `docs/specs/gpu-feasibility.md` — GPU-port assessment: strategy, measured baseline, go/no-go
 - `docs/specs/gpu-prototype.md` — GPU Metropolis prototype: keyed RNG layout, determinism contract, kernel shape, A100 readout
-- `docs/specs/strain-move.md` — the outer NPT strain move: energy contract, proposal arms, measured Jacobian exponent, driver wiring (run_mc and run_pt), schema v5
+- `docs/specs/strain-move.md` — the outer NPT strain move: energy contract, proposal arms, measured Jacobian exponent (S3 frozen-`u`, S13 sampled), driver wiring (run_mc and run_pt), schema v6
 - `docs/specs/public-scope.md` — **what is published**: the adiabatic (separated-degrees-of-freedom) surface, NPT in its quasi-harmonic form, and why coupled spin+displacement sampling is deferred rather than removed
 - `docs/specs/coupled-sites.md` — the reasoning behind `CLAUDE.md`'s coupled-sites index
