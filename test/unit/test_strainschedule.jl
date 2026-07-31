@@ -2025,8 +2025,18 @@ end
     end
 
     @testset "a grid node that pins what the Hamiltonian re-centres is refused" begin
-        # same spec, same term list, same clusters — only the frames disagree
-        Hflat = TiledHamiltonian(first(_joint_model()); dims = (2, 1, 1))
+        # Same spec, same term list, same clusters — only the frames disagree.
+        # `keep_zero_terms = true` is load-bearing, and for exactly the reason the
+        # term-count refusal above names: `_joint_model` projects onto the ASR null
+        # space, so seven of its 219 coefficients are the numerical zeros of that
+        # projection (|jϕ| down to 7e-18 here). Whether such an entry lands on
+        # EXACTLY 0.0 is a property of the LAPACK the null-space basis came from —
+        # macOS keeps all 219 after the default prune, ubuntu's CI zeroed one and
+        # dropped to 218, which made the schedule refuse on the term count and never
+        # reach the gate under test. Freezing the support on the basis rather than
+        # on the fit is what makes the premise platform-independent.
+        Hflat = TiledHamiltonian(first(_joint_model()); dims = (2, 1, 1),
+                                 keep_zero_terms = true)
         @test Hflat.n_input_terms == Hgrid.n_input_terms        # the term checks pass…
         @test any(Hflat.comp_free)                             # …and this one re-centres
         err = try
