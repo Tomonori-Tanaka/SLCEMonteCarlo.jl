@@ -1840,3 +1840,39 @@ end
         end
     end
 end
+
+# The strain cadence. `_resolve_strain_moves` has refusal tests, but nothing asserted
+# that the resolved number is the number of attempts the driver actually makes: making
+# `_resolve_strain_moves` return 1 unconditionally left the suite green, because every
+# strain gate reads `acceptance_strain` (a RATIO — unchanged by attempting ten times as
+# often) or `!isnan` of it. A cadence silently stuck at 1 costs a full from-scratch
+# energy per sweep and changes the chain's mixing, so it is worth a count.
+#
+# The count is read out of the checkpoint, which stores the raw counters: the
+# measurement phase resets them at the freeze boundary, so a phase of `m` sweeps firing
+# on `sweep % k == 0` must attempt exactly `fld(m, k)` times. That is arithmetic, not a
+# captured number.
+@testset "the strain cadence is the number of attempts, not just a ratio" begin
+    zsm, zmodels = _ss_zeta_grid()
+    H = TiledHamiltonian(zmodels[2]; dims = (2, 1, 1), fixed_reference = true)
+    sch = MCs.StrainSchedule(zsm, H)
+    obs = [Observable(:energy, 1, v -> v.energy)]
+    m = 21
+    mktempdir() do dir
+        for k in (1, 3, 7)
+            path = joinpath(dir, "cadence$(k).jld2")
+            run_mc(H; kT = 0.05, sweeps_therm = 10, sweeps_measure = m, nbins = 2,
+                   renorm_interval = 50, strain = sch, pressure = 0.0,
+                   strain_step = 0.05, strain_interval = k, seed = 4,
+                   observables = obs, evaluables = Evaluable[],
+                   checkpoint = path, checkpoint_interval = 0)
+            cnt, att_out = MCs.jldopen(path, "r") do f
+                (f["chain/counters"], f["chain/counters"][9])
+            end
+            acc_s, att_s = cnt[7], cnt[8]
+            @test att_s == fld(m, k)              # every k-th measurement sweep, exactly
+            @test 0 <= acc_s <= att_s
+            @test 0 <= att_out <= att_s           # the out-of-domain share is a subset
+        end
+    end
+end

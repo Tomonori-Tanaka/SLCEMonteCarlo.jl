@@ -6,23 +6,78 @@
     H = TiledHamiltonian(_biquadratic_model(0); dims = (2, 2, 1))
     rng = MersenneTwister(3)
 
+    # The ONE physical oracle of the whole ΔE path — the leave-one-out coefficients
+    # against a from-scratch recomputation, with no shared routine between the two
+    # sides. It used to run on a single body-2 fixture, which left the triplet and
+    # general branches of `site_coeffs!` (energy.jl's three-way dispatch) covered only
+    # by the bitwise `_site_coeffs_ref!` comparison further down — and that reference
+    # shares the entry tables, so it checks the dispatch, not the physics. Run the
+    # oracle across the body orders instead: exactness at any body order is the claim
+    # `ΔE = c_s·(Z(e′) − Z(e))` makes, and only body ≥ 3 exercises the leave-one-out
+    # contraction over more than one surviving axis.
     @testset "ΔE ≡ total-energy difference (machine precision)" begin
-        config = _rand_config(rng, H)
-        zrows = MC._zrows(H, config)
-        c = zeros(H.nlm)
-        znew = zeros(H.nlm)
-        for _ = 1:6
-            s = rand(rng, 1:n_sites(H))
-            e2 = _rand_spin(rng)
-            fill!(c, 0.0)
-            MC.site_coeffs!(c, H, s, zrows)
-            MC._zlm_row!(znew, e2, H.lmax)
-            ΔE = MC.delta_energy(c, view(zrows, :, s), znew)
+        cases = [("body 2 (fitted, l ≤ 2)",
+                  TiledHamiltonian(_biquadratic_model(0); dims = (2, 2, 1))),
+                 ("body 3", MC.TiledHamiltonian(1, _threebody_terms(0.05);
+                                                dims = (4, 1, 1))),
+                 ("body 4", MC.TiledHamiltonian(1, _fourbody_terms(0.05);
+                                                dims = (5, 1, 1))),
+                 ("bodies 1+2+3 mixed", MC.TiledHamiltonian(1, _chain_terms(0.05);
+                                                            dims = (4, 1, 1)))]
+        for (name, Hc) in cases
+            config = _rand_config(rng, Hc)
+            zrows = MC._zrows(Hc, config)
+            c = zeros(Hc.nlm)
+            znew = zeros(Hc.nlm)
+            worst = 0.0
+            for _ = 1:6
+                s = rand(rng, 1:n_sites(Hc))
+                e2 = _rand_spin(rng)
+                fill!(c, 0.0)
+                MC.site_coeffs!(c, Hc, s, zrows)
+                MC._zlm_row!(znew, e2, Hc.lmax)
+                ΔE = MC.delta_energy(c, view(zrows, :, s), znew)
 
-            config2 = copy(config)
-            config2[s] = e2
-            @test ΔE ≈ total_energy(H, config2) - total_energy(H, config) atol = 1e-12
+                config2 = copy(config)
+                config2[s] = e2
+                exact = total_energy(Hc, config2) - total_energy(Hc, config)
+                @test ΔE ≈ exact atol = 1e-12
+                worst = max(worst, abs(ΔE - exact))
+            end
+            # not merely "within 1e-12": the incremental path is exact to roundoff on
+            # every one of these, and a body order that only just passed would be a
+            # signal in itself
+            @test worst < 1e-13
         end
+    end
+
+    # `delta_energy` keeps the ROW-DIFFERENCE form `Σ cₖ(znewₖ − zoldₖ)` rather than the
+    # algebraically identical `c·znew − c·zold`, and the docstring puts the cost of the
+    # latter at two to three orders of magnitude. Nothing tested it: swapping in the
+    # two-dot form left test_energy / test_metropolis (drift gate included) /
+    # test_overrelaxation green, because every fixture there has ΔE comparable to E.
+    #
+    # The separation is a summation effect, not a subtraction one. Each `znewₖ − zoldₖ`
+    # is computed exactly (floating subtraction of nearby values is), so the difference
+    # form sums small terms and carries an absolute error ~eps·|ΔE|; the two-dot form
+    # sums two LARGE quantities and carries ~eps·Σ|cₖzₖ|, which has nothing to do with
+    # how small ΔE is. The oracle is the same sum in `BigFloat` — an independent,
+    # higher-precision evaluation, not another Float64 path.
+    @testset "delta_energy keeps its accuracy when ΔE ≪ E" begin
+        rng2 = MersenneTwister(90210)
+        n = 64
+        c = randn(rng2, n)
+        zold = 1.0e3 .* randn(rng2, n)          # a site whose rows are large…
+        znew = zold .+ 1.0e-6 .* randn(rng2, n) # …and a move that barely changes them
+        exact = sum(BigFloat(c[k]) * (BigFloat(znew[k]) - BigFloat(zold[k]))
+                    for k = 1:n)
+        impl = MC.delta_energy(c, zold, znew)
+        naive = dot(c, znew) - dot(c, zold)     # the form the docstring rejects
+        e_impl = abs(BigFloat(impl) - exact)
+        e_naive = abs(BigFloat(naive) - exact)
+        @test abs(exact) > 1e-7                 # there IS a signal to lose
+        @test e_impl < 1e-14 * abs(exact)       # correctly rounded, near enough
+        @test e_naive > 1e3 * e_impl            # …and the rejected form is not
     end
 
     @testset "site_coeffs! is independent of the site's own spin" begin

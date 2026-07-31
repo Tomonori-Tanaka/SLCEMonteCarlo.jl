@@ -49,9 +49,21 @@ end
 # sweep schedules differ) and a fitted joint model where every site carries both.
 function _joint_gpu_cases()
     tms, L = _channel_split_terms()
+    m3, L3 = _threebody_mixed_terms()
     return [("channel split", MC.TiledHamiltonian(2, tms, L; dims = (4, 2, 1),
                                                   fixed_reference = true)),
-            ("fitted joint", TiledHamiltonian(_joint_model(5)[1]; dims = (2, 2, 2)))]
+            ("fitted joint", TiledHamiltonian(_joint_model(5)[1]; dims = (2, 2, 2))),
+            # Body 3 with BOTH channels on one term (two spin slots and a displacement
+            # slot). Every other joint case here is body ≤ 2, so the entry walk's
+            # TRIPLET (`site_col < 0`) and GENERAL (`site_col == 0`) branches were
+            # gated only through PURE-SPIN fixtures while the displacement row-range
+            # masking was gated only at body ≤ 2 — the combination, a triplet
+            # contraction whose target row lands in the displacement block, was
+            # untested. (Checked correct by hand before this was added; what was
+            # missing was the gate, not the behaviour.)
+            ("3-body mixed channel",
+             MC.TiledHamiltonian(1, m3, L3; dims = (4, 1, 1),
+                                 fixed_reference = true))]
 end
 
 # Reference-side sweep loop: accumulates the energy in the driver's exact
