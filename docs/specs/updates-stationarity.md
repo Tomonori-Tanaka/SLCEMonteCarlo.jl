@@ -260,7 +260,7 @@ is set by the effective number of degrees of freedom carrying `⟨|u|²⟩`, **n
 site count — a single dominant soft mode has `ν ≈ 1` at any system size — which is why
 the blocks are averaged rather than compared point-to-point.
 
-**Every phase boundary re-anchors it** (`_reset_escape!`, called from
+**Every phase boundary re-anchors it** (`_reset_phase_diagnostics!`, called from
 `_freeze_and_reset!`, from the start of each temperature's thermalization, and from
 `_reset_config!`). The anchors are r.m.s. values and `rms ∝ √T`, so a ladder that
 carries a cold rung's anchor into a hot one manufactures growth that is pure

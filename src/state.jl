@@ -52,6 +52,13 @@ mutable struct ChainState
     step::Float64
     step_u::Float64
     strain::Float64                  # linear cell scale s (1.0 on a fixed-cell chain)
+    # The range of cell scales this PHASE has occupied. Not payload (see
+    # `_swap_payload!`): like the acceptance counters it describes the lane, and the
+    # question it answers — did this temperature's volume marginal run into the volume
+    # grid's edge, where `:pressure` / `:enthalpy` / `:npt_specific_heat` stop meaning
+    # what they say — is a property of the lane's own series.
+    strain_min::Float64
+    strain_max::Float64
     frozen::Bool
     acc_metro::Int
     att_metro::Int
@@ -61,6 +68,12 @@ mutable struct ChainState
     att_disp::Int
     acc_strain::Int
     att_strain::Int
+    # Of those attempts, how many the VOLUME GRID refused rather than the Boltzmann
+    # factor: the proposal landed outside `strain_domain` and was rejected (never
+    # clamped — a truncating clamp is an asymmetric proposal). This is the fraction of
+    # the proposal mass the domain boundary is absorbing, which is exactly the boundary
+    # term `:pressure`'s integration-by-parts identity assumes away.
+    att_strain_out::Int
     max_drift::Float64
     com_removed::Vector{SVector{3,Float64}}
     # escape detector (`_check_escape!`), all measured at renormalization points in the
@@ -92,8 +105,8 @@ function ChainState(H::TiledHamiltonian, config::SpinConfig, rng::Xoshiro,
     # collision — two sites sharing a proposal stream — has P ≈ n²/2⁶⁵).
     site_rngs = [Xoshiro(rand(rng, UInt64)) for _ = 1:H.n_sites]
     return ChainState(config, u, zrows, _total_energy(H, zrows), rng, site_rngs,
-                      Float64(step), Float64(step_u), 1.0, false,
-                      0, 0, 0, 0, 0, 0, 0, 0, 0.0,
+                      Float64(step), Float64(step_u), 1.0, 1.0, 1.0, false,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0,
                       zeros(SVector{3,Float64}, H.n_disp_comps),
                       0.0, 0.0, 0.0, 0, 0.0, 0.0, 0, 1, 0.0, 0, false)
 end
@@ -206,7 +219,7 @@ function _reset_config!(st::ChainState, H::TiledHamiltonian, config::SpinConfig,
         copyto!(st.disps, _initial_disps(H, disps))
     end
     fill!(st.com_removed, zero(SVector{3,Float64}))
-    _reset_escape!(st)     # a fresh chain is a fresh phase for the detector
+    _reset_phase_diagnostics!(st)     # a fresh chain is a fresh phase for the detector
     plm = Vector{Float64}(undef, max(0, H.lmax + 1))
     rbuf = Vector{Float64}(undef, max(0, (H.disp_lmax + 1)^2))
     joint = has_disp(H)
@@ -239,12 +252,16 @@ function _freeze_and_reset!(st::ChainState)::ChainState
     st.att_disp = 0
     st.acc_strain = 0
     st.att_strain = 0
+    st.att_strain_out = 0
     st.max_drift = 0.0
-    _reset_escape!(st)
+    _reset_phase_diagnostics!(st)
     return st
 end
 
-# Re-anchor the escape detector on the phase that is about to start.
+# Re-anchor the per-phase diagnostics — the escape detector and the sampled-scale
+# range — on the phase that is about to start. They reset together because they are
+# reset for the same reason and at the same three places; splitting them into two
+# functions is how one of them acquires a call site the other lacks.
 #
 # EVERY phase boundary must call this, not just the thermalization→measurement one:
 # the test is "is the r.m.s. displacement of THIS phase flat", and its anchors
@@ -256,7 +273,13 @@ end
 # measurement boundary), the start of each temperature's thermalization, and
 # `_reset_config!` (the `carryover = false` restart); they are one function so they
 # cannot drift apart.
-function _reset_escape!(st::ChainState)::ChainState
+function _reset_phase_diagnostics!(st::ChainState)::ChainState
+    # From the CURRENT scale, not from 1.0: a warm-started run (`strain_init`) and every
+    # temperature after the first begin the phase wherever the previous one left the
+    # cell, and seeding the range with a scale the chain never occupied would report a
+    # spurious excursion — or, worse, hide a real one by widening the interval.
+    st.strain_min = st.strain
+    st.strain_max = st.strain
     st.disp_rms = 0.0
     st.disp_max = 0.0
     st.disp_rms0 = 0.0
@@ -272,17 +295,39 @@ function _reset_escape!(st::ChainState)::ChainState
 end
 
 # An accepted strain move rescales every displacement by exactly λ, so the escape
-# detector's length statistics are COVARIANT, not stale: rescale them in place and
+# DETECTOR's length statistics are COVARIANT, not stale: rescale them in place and
 # keep the block ladder armed. Resetting instead would disarm the ladder on every
 # accepted move — i.e. permanently, at the default one-attempt-per-sweep cadence —
 # leaving U8's only unboundedness diagnostic blind exactly on the NPT runs where a
 # volume runaway makes it most needed. The counters (`disp_checks`, `disp_blk_n`,
 # `disp_blk_cap`, `escape_strikes`) are scale-free and stay.
+#
+# THE REPORTING ACCUMULATORS ARE NOT RESCALED, and the split is the whole point of
+# this function. The detector asks a RELATIVE question — "is the r.m.s. growing beyond
+# the affine rescaling?" — which is only meaningful with both sides expressed in the
+# current frame, so its anchors (`disp_rms0`, the block pair `disp_blk_sum`/
+# `disp_ref_ms`) are converted along with the state, as is the `disp_rms` snapshot the
+# warning text prints. `disp_ms_sum` and `disp_max` answer an ABSOLUTE one — the phase
+# time-average of `|u|²` and the largest single displacement the phase ever contained,
+# in model length units — and they accumulate over states that are now in the past.
+# Rescaling them re-expresses that history in whatever frame the LAST accepted move
+# happened to leave, which is not a frame the chain ever occupied for most of the
+# phase: `TempResult.disp_rms²` then tracks `final_strain²` instead of `⟨|u|²⟩` (a
+# 10 %-scale, seed-dependent bias measured against a 1 % error bar on `:u2`), breaking
+# the standing invariant that it and the `:u2` observable are the same quantity.
+# Fold the chain's current cell scale into the phase's sampled range. Called at the
+# start of every strain attempt and again after an accepted one, so the interval
+# brackets every scale the chain actually held — including the one a warm start
+# installed and the one an out-of-domain rejection left it sitting at.
+function _note_strain!(st::ChainState)::ChainState
+    st.strain_min = min(st.strain_min, st.strain)
+    st.strain_max = max(st.strain_max, st.strain)
+    return st
+end
+
 function _rescale_escape!(st::ChainState, lam::Float64)::ChainState
     st.disp_rms *= lam
-    st.disp_max *= lam
     st.disp_rms0 *= lam
-    st.disp_ms_sum *= lam^2
     st.disp_blk_sum *= lam^2
     st.disp_ref_ms *= lam^2
     return st

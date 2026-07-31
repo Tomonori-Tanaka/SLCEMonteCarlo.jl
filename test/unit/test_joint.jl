@@ -907,6 +907,51 @@ end
     end
 end
 
+# A displacement model OF A CRYSTAL is connected: every atom couples, directly or
+# through neighbours, to every other. Splitting into several components means the term
+# list joins none of them — a lattice of independent pieces rather than a solid — and
+# the two truncations that produce it (a cutoff that does not reach across the training
+# cell; upstream's inability to form a self-image pair `(a,0)–(a,R)`, which deletes the
+# like-atom bonds of a single-species cell) do it silently. Nothing else in this package
+# can say so: each piece is separately translation-invariant, so `translation_invariant`
+# stays true, the acoustic residual stays at roundoff and `harmonic_stability` returns a
+# clean verdict — only the number of zero modes changes, from 3 to 3·n_disp_comps.
+#
+# It is a warning and not a refusal because sampling such a model is legitimate, and the
+# suite's own joint fixture is exactly one: `_joint_model` puts its two atoms at x =
+# ±1/6 of a 3.0 Å cubic cell, so the in-cell pair is 1.0 Å apart while the nearest
+# cross-cell pair is 2.0 Å — beyond every sector's 1.1 Å cutoff. No instance can cross a
+# cell boundary, so each tile is its own component and the count is `prod(dims)`. That
+# is hand geometry, independent of the component finder it checks.
+@testset "disjoint displacement components are announced" begin
+    m = first(_joint_model())
+    warned(logs) = count(l -> occursin("disjoint components", string(l.message)), logs)
+
+    @testset "one component: the connected case is silent" begin
+        logs, H = Test.collect_test_logs() do
+            MC.TiledHamiltonian(m; dims = (1, 1, 1))
+        end
+        @test H.n_disp_comps == 1
+        @test H.translation_invariant                   # …and every other screen agrees
+        @test warned(logs) == 0
+    end
+
+    @testset "prod(dims) components: the count is geometry, and it is announced" begin
+        for dims in [(2, 1, 1), (2, 2, 1), (3, 1, 2)]
+            logs, H = Test.collect_test_logs() do
+                MC.TiledHamiltonian(m; dims = dims)
+            end
+            @test H.n_disp_comps == prod(dims)          # hand geometry, see above
+            @test H.translation_invariant               # the screen that stays quiet
+            @test warned(logs) == 1
+            @test occursin("$(3 * prod(dims)) independent rigid-shift",
+                           string(logs[findfirst(l -> occursin("disjoint components",
+                                                               string(l.message)),
+                                                 logs)].message))
+        end
+    end
+end
+
 # The drivers' displacement pass scheduling and the second proposal width — M4 slice
 # 3c/3. Two things are being pinned:
 #   1. `disp_per_metropolis` resolves from the MODEL, not from a constant. The failure
@@ -950,12 +995,27 @@ end
         @test p.final_step_u != 0.3
         @test MC._STEP_U_MIN <= p.final_step_u <= MC._STEP_U_MAX
 
-        # explicitly freezing them is a different ensemble, and says so: no attempts,
-        # so no acceptance, and the chain never leaves the clamped-ion state
-        f = run_mc(Hj; kw..., disp_per_metropolis = 0)
+        # On a model that also has SPINS, explicitly freezing the displacement pass is a
+        # different ensemble (clamped-ion), and says so: no displacement attempts, so no
+        # acceptance, and the chain never leaves u = 0 — while the spin sweep still runs.
+        Hjs = TiledHamiltonian(first(_joint_model()); dims = (2, 2, 1))
+        f = run_mc(Hjs; kw..., disp_per_metropolis = 0)
         @test isnan(f.points[1].acceptance_disp)
         @test f.points[1].disp_rms == 0.0
         @test f.points[1].final_step_u == 0.3          # nothing to adapt on
+        @test f.points[1].acceptance_metropolis > 0.0  # the spin channel did run
+
+        # On a LATTICE-ONLY model there is no such ensemble: freezing the only channel
+        # leaves a run that attempts nothing at all and would report `E = 0.0 ± 0.0`,
+        # `NaN` acceptances and the initial configuration as if it had converged. The
+        # device driver has refused this since G8; the host driver must agree.
+        @test Hj.n_spin_active == 0
+        err = try
+            run_mc(Hj; kw..., disp_per_metropolis = 0)
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin("attempt no move at all", err.msg)
     end
 
     @testset "an unscreened phase is reported as unscreened, not as clean" begin

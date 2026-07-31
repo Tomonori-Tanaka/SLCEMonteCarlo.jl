@@ -9,7 +9,7 @@
 # stored counters, so a resumed run is bit-identical to an uninterrupted one.
 # Writes go to a temp file, then an atomic `mv`. Checkpoint writing consumes no RNG.
 
-const _CKPT_SCHEMA_VERSION = 5
+const _CKPT_SCHEMA_VERSION = 6
 
 # The run-side checkpoint writer: the target path, the write cadence, and the
 # run-description needed to make the file self-contained.
@@ -199,9 +199,15 @@ function _write_chain(f, g::String, st::ChainState)
     f["$g/step"] = st.step
     f["$g/step_u"] = st.step_u
     f["$g/strain"] = st.strain
+    # The phase's sampled scale range. Like the escape accumulators it steers no random
+    # decision, so a resume is bit-identical without it — but dropping it would restart
+    # the interval at every checkpoint, and the boundary screen would then only ever see
+    # the excursions of the final segment.
+    f["$g/strain_range"] = Float64[st.strain_min, st.strain_max]
     f["$g/frozen"] = st.frozen
     f["$g/counters"] = Int[st.acc_metro, st.att_metro, st.acc_or, st.att_or,
-                           st.acc_disp, st.att_disp, st.acc_strain, st.att_strain]
+                           st.acc_disp, st.att_disp, st.acc_strain, st.att_strain,
+                           st.att_strain_out]
     f["$g/max_drift"] = st.max_drift
     # The escape detector's accumulators. They steer no random decision, so a resume
     # is bit-identical with or without them — but dropping them would restart the
@@ -240,10 +246,12 @@ function _read_chain(f, g::String, H::TiledHamiltonian)::ChainState
     site_rngs = [_rng_from_words(srw[:, s]) for s = 1:H.n_sites]
     ef = f["$g/escape_f"]
     ei = f["$g/escape_i"]
+    sr = f["$g/strain_range"]
     return ChainState(config, disps, zrows, f["$g/energy"],
                       _rng_from_words(f["$g/rng"]), site_rngs, f["$g/step"],
-                      f["$g/step_u"], f["$g/strain"], f["$g/frozen"], cnt[1], cnt[2],
-                      cnt[3], cnt[4], cnt[5], cnt[6], cnt[7], cnt[8],
+                      f["$g/step_u"], f["$g/strain"], sr[1], sr[2],
+                      f["$g/frozen"], cnt[1], cnt[2],
+                      cnt[3], cnt[4], cnt[5], cnt[6], cnt[7], cnt[8], cnt[9],
                       f["$g/max_drift"], com,
                       ef[1], ef[2], ef[3], ei[1], ef[4], ef[5], ei[2], ei[3], ef[6],
                       ei[4], f["$g/escape_warned"])
@@ -290,6 +298,7 @@ function _write_point(f, g::String, p::TempResult)
     f["$g/acceptance_or"] = p.acceptance_or
     f["$g/acceptance_disp"] = p.acceptance_disp
     f["$g/acceptance_strain"] = p.acceptance_strain
+    f["$g/strain_range"] = Float64[p.strain_min, p.strain_max, p.strain_outside]
     f["$g/final_step"] = p.final_step
     f["$g/final_step_u"] = p.final_step_u
     f["$g/max_drift"] = p.max_drift
@@ -315,9 +324,10 @@ function _read_point(f, g::String)::TempResult
                                   f["$g/stats/$k/tau_int"], f["$g/stats/$k/count"])
     end
     kt = f["$g/kT"]
+    sr = f["$g/strain_range"]
     return TempResult(kt, kt / KB_EV, stats, f["$g/acceptance_metropolis"],
                       f["$g/acceptance_or"], f["$g/acceptance_disp"],
-                      f["$g/acceptance_strain"],
+                      f["$g/acceptance_strain"], sr[1], sr[2], sr[3],
                       f["$g/final_step"], f["$g/final_step_u"], f["$g/max_drift"],
                       f["$g/disp_rms"], f["$g/disp_max"], f["$g/disp_checks"],
                       f["$g/escaped"])
@@ -504,8 +514,11 @@ function resume(path::AbstractString, H::TiledHamiltonian;
             "v$(_CKPT_SCHEMA_VERSION) of this package version" *
             (f["schema_version"] < _CKPT_SCHEMA_VERSION ?
              " (v5 marks the strained-PT-capable format — an older reader would " *
-             "silently continue a strained PT run as fixed-cell; resume this file " *
-             "with the package version that wrote it)" : ""))
+             "silently continue a strained PT run as fixed-cell; v6 adds the " *
+             "sampled cell-scale range, without which a resumed run's " *
+             "volume-grid-boundary screen only sees the final segment and reports a " *
+             "narrower excursion than the run actually made. Resume this file with " *
+             "the package version that wrote it)" : ""))
         plan = _read_plan(f)
         # The strain handshake comes BEFORE the model fingerprint: on a strained
         # run the stored fingerprint is the model's at the REFERENCE scale, and the

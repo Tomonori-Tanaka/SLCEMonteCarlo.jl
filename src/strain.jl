@@ -469,11 +469,13 @@ ensemble — a different ensemble giving `F(T, ε)` with neither the volume Jaco
 the `P·V` term, which is what magnetostriction under fixed geometry wants; the two
 specific heats differ.
 
-An accepted move rescales the escape detector's accumulators together with the state:
-its statistics are absolute lengths, and the affine map is exactly known, so they are
-covariant (`rms → λ·rms`) rather than a phase boundary to reset at — a reset would
-disarm the detector's block ladder on every accepted move, i.e. permanently at the
-default cadence.
+An accepted move rescales the escape **detector's** anchors together with the state:
+the affine map is exactly known, so they are covariant (`rms → λ·rms`) rather than a
+phase boundary to reset at — a reset would disarm the detector's block ladder on every
+accepted move, i.e. permanently at the default cadence. The phase's REPORTING
+accumulators (`TempResult`'s `disp_rms` and `disp_max`) are deliberately left alone, so
+they stay absolute time-averages comparable with the `:u2` observable; see
+`_rescale_escape!`.
 """
 function strain_move!(st::ChainState, H::TiledHamiltonian, sch::StrainSchedule,
                       sc::StrainScratch, kt::Real; pressure::Real, step::Real,
@@ -491,8 +493,12 @@ function strain_move!(st::ChainState, H::TiledHamiltonian, sch::StrainSchedule,
         "$(strain_domain(sch)): the Hamiltonian and the schedule disagree about " *
         "which grid this chain samples"))
     st.att_strain += 1
+    _note_strain!(st)
     sp = _strain_s_of_y(proposal, _strain_y(proposal, s) + step * randn(st.rng))
-    in_strain_domain(sch, sp) || return false
+    if !in_strain_domain(sch, sp)
+        st.att_strain_out += 1
+        return false
+    end
     lam = sp / s
 
     # Both sides of ΔE from the same estimator: `st.energy` is the incrementally
@@ -527,6 +533,7 @@ function strain_move!(st::ChainState, H::TiledHamiltonian, sch::StrainSchedule,
                              pressure = Float64(pressure))
     if log(rand(st.rng)) < _strain_log_weight(sch, proposal, s, sp, de, kt)
         st.strain = sp
+        _note_strain!(st)
         st.energy = e_new + drift
         st.disps, sc.unew = sc.unew, st.disps
         st.zrows, sc.zrows = sc.zrows, st.zrows

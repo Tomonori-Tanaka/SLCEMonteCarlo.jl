@@ -638,6 +638,44 @@ struct TiledHamiltonian
                 "`fixed_reference = true`. Re-centring is then disabled and the " *
                 "displacement guard works in the absolute frame."))
         end
+        # A displacement model of a CRYSTAL has one component: every atom is bonded,
+        # directly or through neighbours, to every other. Several components mean the
+        # term list contains no instance joining them — a lattice of independent pieces,
+        # not a solid. Two truncations produce it silently: a cutoff that does not reach
+        # across the training cell (the pieces are then whatever the cutoff does span,
+        # replicated once per tile — so the count grows like `prod(dims)`), and the
+        # upstream self-image gap, where `MinimumImage` keeps only the closest image of
+        # each ATOM PAIR and so cannot represent an `(a,0)–(a,R)` bond, deleting every
+        # like-atom bond of a single-species cell (SLCE's `slce-selfpair-defect`).
+        #
+        # Nothing else here can say so. Each component is separately translation-invariant,
+        # so `translation_invariant` stays `true`, the acoustic residual stays at roundoff
+        # and `harmonic_stability` returns a clean verdict — the spectrum simply has
+        # `3·n_disp_comps` zero modes instead of three, and the bonds that are missing are
+        # missing from `force_constant_matrix` and from `D(q)` at every `q`. The sampler
+        # itself stays correct on whatever model it is handed (`_recenter!` is per
+        # component precisely because the components are independent symmetries); what is
+        # at stake is whether this is the model the caller meant to build. Hence a warning
+        # and not a refusal — a deliberately disconnected fixture is a legitimate thing to
+        # sample, and the test suite's own joint fixture is one.
+        if ncomp > 1
+            @warn "this Hamiltonian's displacement couplings split into $(ncomp) " *
+                  "disjoint components (site groups sharing no instance), so it has " *
+                  "$(3 * ncomp) independent rigid-shift symmetries instead of 3 and the " *
+                  "displacement dynamics of one group do not touch the others. A crystal " *
+                  "has ONE component. Check whether the model's cutoff reaches across " *
+                  "the training cell (if the count tracks prod(dims), it does not), and " *
+                  "whether the upstream basis could form the bonds that would join the " *
+                  "groups — a `MinimumImage` enumeration cannot represent a self-image " *
+                  "pair `(a,0)–(a,R)`, which removes every like-atom bond of a " *
+                  "single-species cell. This is the only screen that reports it: " *
+                  "`translation_invariant`, the acoustic residual and " *
+                  "`harmonic_stability` all call such a model healthy."
+            # deliberately NOT `maxlog`: `@warn`'s log limit is keyed by SOURCE LINE, so
+            # one per session — a script that builds a good model and then a broken one
+            # would hear about the good one only. This fires per construction, which is
+            # rare, and it is the single screen for the condition.
+        end
         return new(n_cell_atoms, d, n_sites, lmax, nlm, layout.nrows, disp_lmax,
                    layout, terms, tsrc, tscl, Int(n_input_terms),
                    inst_term, inst_ptr, inst_sites, site_ptr, site_inst, site_slot,

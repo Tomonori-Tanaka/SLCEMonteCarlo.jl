@@ -236,9 +236,40 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   reinstalls the reference from the supplied schedule before comparing — reorder
   either and every strained resume refuses or, worse, accepts a wrong model. (5) An
   accepted rescale is exactly affine, so `disps`, `com_removed` AND the escape
-  detector's length statistics rescale together (`_rescale_escape!` — a reset would
+  DETECTOR's anchors rescale together (`_rescale_escape!` — a reset would
   disarm the block ladder permanently at the default cadence), and ΔE's two sides
   come from one estimator (`e_old` recomputed from scratch, drift carried across).
+  **`_rescale_escape!` splits its fields on purpose, and the split is the whole
+  function.** The detector asks a RELATIVE question — is the r.m.s. growing beyond
+  the affine map — so `disp_rms`/`disp_rms0`/`disp_blk_sum`/`disp_ref_ms` convert to
+  the new frame. `disp_ms_sum`/`disp_max` answer an ABSOLUTE one (the phase's
+  time-average and running maximum of `|u|`, which is exactly what
+  `TempResult.disp_rms`/`disp_max` report), and they accumulate over states already
+  in the past: rescaling them re-expresses that history in whatever frame the LAST
+  accepted move left, so the reported r.m.s. tracks `final_strain` instead of
+  `⟨|u|²⟩` — measured as a 10 %-scale, seed-dependent bias against a 1 % error bar on
+  `:u2` — and breaks the same-quantity invariant the displacement-observables bullet
+  below states. No fixed-cell gate can see it (λ ≡ 1 there). Gate: the six-field
+  rescale table in `test_strainschedule.jl` "strain driver corners", each field
+  asserted by name and in its own direction, with a `λ ≠ 1` non-vacuity count.
+  (5b) **The volume grid's domain is a boundary the chain can be pinned against, and
+  that must be recorded.** A proposal outside `strain_domain` is rejected, never
+  clamped (a truncating clamp is an asymmetric proposal) — so a chain the pressure
+  pushes past the grid does not fail, it piles up at the edge, and `:pressure`'s
+  stationarity identity then drops exactly the boundary term it assumes negligible
+  while `:enthalpy`/`:npt_specific_heat` average a truncated marginal, all three
+  still returning confident finite numbers. `ChainState` therefore carries the
+  phase's sampled scale range (`strain_min`/`strain_max`, reset with the escape
+  detector in `_reset_phase_diagnostics!` — one function, three call sites, so they
+  cannot acquire different ones) and `att_strain_out`; `TempResult` surfaces all
+  three, and `_warn_strain_boundary` screens both drivers. Its rule needs BOTH
+  conditions and the measurements are in the source: a rate-only rule cries wolf on
+  an oversized `strain_step` (24.6 % refused, marginal entirely interior — those are
+  ordinary Metropolis rejections and nothing is wrong), and a margin-only rule misses,
+  because `strain_min`/`strain_max` are extreme-value statistics that a long healthy
+  run eventually pushes to the edge. Like the escape accumulators the three are
+  payload-free (they describe the LANE, not the replica) and are serialized (schema
+  v6) so a resumed run's screen does not see only its final segment.
   (6) a host `set_coefficients!` under a live
   `GPUTiledHamiltonian` needs `sync_coefficients!` — `sent_w` is the ONE
   coefficient-dependent device array, and forgetting the call is undetectable from
@@ -425,6 +456,50 @@ During development the dependency is a path-dev: `Pkg.develop(path="../SLCE.jl")
   on the layout there measures `:u2 = 0.0` and returns a 0×0 Hessian — the confident
   zero and the "clean" empty spectrum the design exists to prevent. The spin side has
   always gated on `n_spin_active`; mirror it.
+- **A run must be able to move something: `_require_moves` ↔ `_resolve_or_passes` ↔
+  `_resolve_disp_passes` ↔ `_compound_sweep!`'s spin skip ↔ the sweep entry guards**
+  (`run.jl`, `updates.jl`, `hamiltonian.jl` `_require_spin_sites`,
+  `gpu/gpu_sweep.jl`). A **lattice-only** Hamiltonian (a displacement-only sector, or
+  a joint basis whose spin couplings all fitted to zero) is a first-class model here,
+  and it is the case every spin-shaped assumption fails on. Four rules move together.
+  (1) `_compound_sweep!` **omits** the spin sweep when `n_spin_active == 0` — the skip
+  consumes no randomness (a sweep's draws come from the per-site streams of the sites
+  it attempts), so every pure-spin trajectory stays bit-identical. (2) The public
+  `metropolis_sweep!`/`overrelaxation_sweep!` **refuse** it (`_require_spin_sites`,
+  `O(1)` on the field) — a direct call is a caller mistake, and the GPU sweep has
+  refused since G8, so leaving the host silent was a CPU/GPU behavioural split.
+  (3) `_require_moves` refuses a run with no spin-active site AND no displacement
+  pass: it would walk its whole sweep budget attempting nothing and report
+  `E = 0.0 ± 0.0`, `NaN` acceptances and the initial configuration — which reads as a
+  converged run. This mirrors `gpu_run_sweeps!`'s guard, `n_disp_active` and not
+  `has_disp` on the displacement side. (4) `_resolve_or_passes` refuses
+  `or_per_metropolis > 0` when no site carries an `l = 1` channel, the exact mirror of
+  `_resolve_disp_passes` — overrelaxation reflects a spin about its local field, so
+  without that channel every site is skipped, and the asymmetry (a silent no-op on one
+  side, a named error on the other) was real. Zero stays legal everywhere: it is the
+  default, not a request. Gates: `test_joint.jl` "joint drivers: pass scheduling…",
+  which now runs the clamped-ion arm on a model that HAS spins and asserts the refusal
+  on the lattice-only one.
+- **`n_disp_comps > 1` is announced at construction, and this is the only screen for
+  it** (`hamiltonian.jl` ctor). A displacement model of a CRYSTAL is connected; several
+  components mean the term list joins none of them — a lattice of independent pieces.
+  Two truncations produce it silently: a cutoff that does not reach across the training
+  cell (the count then tracks `prod(dims)`), and upstream's inability to represent a
+  self-image pair `(a,0)–(a,R)`, which deletes every like-atom bond of a single-species
+  cell (SLCE's `slce-selfpair-defect`). Nothing else notices: each piece is separately
+  translation-invariant, so `translation_invariant` stays `true`, the acoustic residual
+  stays at roundoff and `harmonic_stability` returns a clean verdict — only the zero-mode
+  count changes, 3 → `3·n_disp_comps`, and the absent bonds are absent from
+  `force_constant_matrix` and from `D(q)` at every `q`. A **warning, not a refusal**: the
+  sampler is correct on whatever it is handed (`_recenter!` is per component precisely
+  because the components are independent symmetries), and a deliberately disconnected
+  fixture is legitimate — `_joint_model` is one (atoms at `x = ±1/6` of a 3.0 Å cell,
+  so the 1.0 Å in-cell pair is inside the 1.1 Å cutoff and the 2.0 Å cross-cell pair is
+  not). Deliberately **no `maxlog`**: `@warn`'s limit is keyed by source line, i.e. once
+  per session, so a script building a good model and then a broken one would hear only
+  about the good one. Gate: `test_joint.jl` "disjoint displacement components are
+  announced", whose expected count `prod(dims)` is hand geometry, not the finder's own
+  output.
 - **`harmonic_stability`'s verdict tolerance ↔ the acoustic modes**
   (`stability.jl`): a translation-invariant model has `3·n_disp_comps` EXACT zero
   eigenvalues, and finite differences scatter each across zero at the `ε|E|/h²` floor,

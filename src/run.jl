@@ -117,6 +117,22 @@ result (and through checkpoints) so a post-hoc analysis can screen on it.
 detector to have been able to speak (the drivers warn up front when it is not — see
 [`run_mc`](@ref)'s `renorm_interval`). With too few checks it means *not screened*,
 not *clean*.
+
+On a strained (NPT) run, `strain_min` / `strain_max` bracket the linear cell scales the
+phase actually visited and `strain_outside` is the fraction of strain proposals that
+fell outside the volume grid's [`strain_domain`](@ref) and were therefore rejected by
+the grid rather than by the Boltzmann factor (all three `NaN` on a fixed-cell run,
+where there is no scale to report — the same convention as `acceptance_strain`).
+
+They exist because a chain the pressure pushes past the grid does not fail: a proposal
+beyond the domain is rejected, never clamped, so the chain piles up at the edge with a
+merely low strain acceptance — and a low acceptance is also what an oversized
+`strain_step` gives. Its volume marginal is then truncated rather than sampled, which
+is precisely the boundary term `:pressure`'s stationarity identity assumes negligible;
+`:enthalpy` and `:npt_specific_heat` average over the truncated distribution. All three
+keep returning confident finite numbers. `strain_outside` is the sharp diagnostic (a
+rate, so it does not grow with run length the way the sampled extremes do) and the
+drivers warn on it; the range is what says which edge.
 """
 struct TempResult
     kT::Float64
@@ -126,6 +142,9 @@ struct TempResult
     acceptance_or::Float64
     acceptance_disp::Float64
     acceptance_strain::Float64       # NaN on a fixed-cell run
+    strain_min::Float64              # the phase's sampled cell-scale range, and the
+    strain_max::Float64              # fraction of strain proposals the volume grid
+    strain_outside::Float64          # refused; all NaN on a fixed-cell run
     final_step::Float64
     final_step_u::Float64
     max_drift::Float64
@@ -144,6 +163,14 @@ function _chain_summary(st::ChainState, joint::Bool)
             acc_o = st.att_or == 0 ? NaN : st.acc_or / st.att_or,
             acc_d = st.att_disp == 0 ? NaN : st.acc_disp / st.att_disp,
             acc_s = st.att_strain == 0 ? NaN : st.acc_strain / st.att_strain,
+            # gated on the same counter as `acc_s`: a chain that never attempted a
+            # strain move has a scale, but not a sampled RANGE, and reporting the fixed
+            # 1.0 as `[min, max]` would read as a measured — and reassuringly narrow —
+            # volume distribution
+            s_min = st.att_strain == 0 ? NaN : st.strain_min,
+            s_max = st.att_strain == 0 ? NaN : st.strain_max,
+            s_out = st.att_strain == 0 ? NaN :
+                    st.att_strain_out / st.att_strain,
             step_u = joint ? st.step_u : NaN,
             # the PHASE AVERAGE, not the last snapshot: on a handful of sites the
             # single-check r.m.s. scatters by ~1/√(6·n_disp) and would be read off the
@@ -263,7 +290,12 @@ end
 # whole trajectory — is bit-identical to the pre-M4 sampler.
 function _compound_sweep!(st::ChainState, H::TiledHamiltonian, β::Float64,
                           scs::Vector{SweepScratch}, plan::UpdatePlan)
-    metropolis_sweep!(st, H, β, scs)
+    # Omitted, not refused, on a lattice-only model: `metropolis_sweep!` guards its own
+    # entry (a direct call there is a caller mistake), but here the absence of spins is
+    # the model's shape, and the displacement passes below are the whole run. The skip
+    # consumes no randomness — the sweep's draws come from the per-site streams of the
+    # sites it attempts — so every pure-spin trajectory is bit-identical to before.
+    H.n_spin_active > 0 && metropolis_sweep!(st, H, β, scs)
     for _ = 1:plan.or_per_metropolis
         overrelaxation_sweep!(st, H, β, scs)
     end
@@ -297,7 +329,7 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
         # temperature, so the escape detector re-anchors with `max_drift`. Its anchors
         # are r.m.s. values, and `rms ∝ √T` — carrying a colder rung's anchor into a
         # hotter one manufactures growth that is pure thermodynamics.
-        sweep0 == 0 && (st.max_drift = 0.0; _reset_escape!(st))
+        sweep0 == 0 && (st.max_drift = 0.0; _reset_phase_diagnostics!(st))
         for sweep = (sweep0 + 1):plan.sweeps_therm
             _compound_sweep!(st, H, β, scs, plan)
             # The strain move runs during thermalization too — volume equilibration is
@@ -342,6 +374,7 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
     s = _chain_summary(st, has_disp(H))
     stats = _finalize_stats(accs, evaluables, kt, H.n_spin_active, H.n_active)
     return TempResult(kt, kt / KB_EV, stats, s.acc_m, s.acc_o, s.acc_d, s.acc_s,
+                      s.s_min, s.s_max, s.s_out,
                       st.step, s.step_u, st.max_drift, s.disp_rms, s.disp_max,
                       s.disp_checks, s.escaped)
 end
@@ -384,6 +417,7 @@ function _mc_loop!(points::Vector{TempResult}, st::ChainState, H::TiledHamiltoni
         ck === nothing ||
             _write_ckpt_mc(ck, H, st, points, i + 1, :therm, 0, nothing)
     end
+    _warn_strain_boundary(points, sctx === nothing ? nothing : sctx[1], plan)
     return MCResult(points, copy(st.config), _final_disps(H, st),
                     sctx === nothing ? nothing : st.strain, plan.seed)
 end
@@ -515,6 +549,8 @@ function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                 pressure_GPa::Union{Nothing,Real} = nothing,
                 pressure::Union{Nothing,Real} = nothing)::MCResult
     ndisp = _resolve_disp_passes(H, disp_per_metropolis)
+    nor = _resolve_or_passes(H, or_per_metropolis)
+    _require_moves(H, ndisp)
     s0 = _resolve_strain_init(strain, strain_init)
     nstrain = _resolve_strain_moves(strain, strain_interval)
     p_model = _resolve_pressure(strain, pressure_GPa, pressure)
@@ -524,7 +560,7 @@ function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
     plan = UpdatePlan(resolve_kt(temperature, kT); sweeps_therm = sweeps_therm,
                       sweeps_measure = sweeps_measure,
                       measure_interval = measure_interval,
-                      or_per_metropolis = or_per_metropolis,
+                      or_per_metropolis = nor,
                       disp_per_metropolis = ndisp, step = step, step_u = step_u,
                       adapt_target = adapt_target, adapt_interval = adapt_interval,
                       renorm_interval = renorm_interval, nbins = nbins,
@@ -667,6 +703,72 @@ function _warn_step_u_saturated(st::ChainState, H::TiledHamiltonian, plan::Updat
     return nothing
 end
 
+# Screen a finished strained run for a chain that piled up against the volume grid.
+#
+# A proposal outside `strain_domain` is REJECTED, never clamped — correct as a move
+# rule (a truncating clamp is an asymmetric proposal), but it means a chain the
+# pressure pushes past the grid does not fail: it sits at the edge with a low strain
+# acceptance and keeps producing numbers. Every mechanical observable then describes a
+# volume-CLAMPED cell rather than the NPT ensemble it names — `:pressure`'s
+# integration-by-parts identity drops exactly the boundary term it assumes negligible,
+# and `:enthalpy` / `:npt_specific_heat` average `W` over a truncated volume marginal
+# — while still returning confident finite values. Nothing else notices: the strain
+# acceptance is merely low, not zero, and a low acceptance is also what an oversized
+# `strain_step` gives.
+#
+# TWO conditions, because neither alone separates the pathology from a merely
+# inefficient run. Measured on the `_ss_zeta_grid` fixture (domain [0.9, 1.1], (2,1,1),
+# kT = 0.05, 5000 measurement sweeps):
+#
+#   P = 0,    strain_step = 0.05   outside  0.0 %  acc 0.71  range [0.9396, 1.0628]
+#   P = 0,    strain_step = 0.25   outside 24.6 %  acc 0.25  range [0.9434, 1.0565]
+#   P = -0.5, strain_step = 0.05   outside 49.8 %  acc 0.03  range [1.0967, 1.1000]
+#   P = -1.0, strain_step = 0.05   outside 50.8 %  acc 0.02  range [1.0981, 1.1000]
+#   P = +1.0, strain_step = 0.05   outside 48.2 %  acc 0.02  range [0.9000, 0.9028]
+#
+# Row 2 is the trap: an oversized step throws a quarter of its proposals out of the
+# domain while the chain's marginal stays entirely INSIDE it. That run is inefficient,
+# not wrong — the rejections are ordinary Metropolis rejections and no boundary term is
+# being dropped — so a rate-only rule false-fires on it. Conversely a margin-only rule
+# fails the other way: `strain_min`/`strain_max` are extreme-value statistics, so a long
+# healthy run eventually brushes the edge once.
+#
+# So: the grid must be absorbing real proposal mass AND the chain must actually be
+# sitting at an edge. The thresholds bracket the measurements with room on both sides —
+# 5 % against 0.0 % healthy and ~50 % pinned; 5 % of the domain width (0.01 here)
+# against ≤ 1.7 % for every pinned row and 21.5 % for the oversized-step row.
+const _STRAIN_OUTSIDE_WARN = 0.05
+const _STRAIN_EDGE_WARN = 0.05
+
+function _warn_strain_boundary(points::Vector{TempResult},
+                               sch::Union{Nothing,StrainSchedule}, plan::UpdatePlan)
+    sch === nothing && return nothing
+    lo, hi = strain_domain(sch)
+    margin = _STRAIN_EDGE_WARN * (hi - lo)
+    for p in points
+        isnan(p.strain_outside) && continue
+        p.strain_outside > _STRAIN_OUTSIDE_WARN || continue
+        at_lo = p.strain_min - lo < margin
+        at_hi = hi - p.strain_max < margin
+        (at_lo || at_hi) || continue
+        @warn "at kT = $(p.kT) the chain is pinned against the " *
+              "$(at_lo ? "lower" : "upper") edge of the volume grid's domain " *
+              "[$lo, $hi]: it sampled cell scales " *
+              "[$(p.strain_min), $(p.strain_max)] and the grid refused " *
+              "$(round(100 * p.strain_outside; digits = 1)) % of the strain proposals " *
+              "for falling outside it (strain acceptance $(p.acceptance_strain)). A " *
+              "proposal beyond the grid is rejected rather than clamped, so the cell " *
+              "is effectively held there and this point's volume marginal is " *
+              "TRUNCATED rather than sampled: `:pressure`'s stationarity identity " *
+              "drops exactly the boundary term it assumes negligible, and " *
+              "`:enthalpy` / `:npt_specific_heat` average over the truncated " *
+              "distribution — all three still return confident finite numbers. Widen " *
+              "the volume grid to cover the equilibrium volume at this pressure and " *
+              "temperature."
+    end
+    return nothing
+end
+
 # Resolve the driver's `disp_per_metropolis` default. `nothing` means "whatever this
 # Hamiltonian needs": one pass on a joint model, none on a pure-spin one. A plain
 # integer default of 0 would be the silent-wrong-ensemble trap — a joint model sampled
@@ -682,6 +784,43 @@ function _resolve_disp_passes(H::TiledHamiltonian,
         "describes the clamped-ion (u = 0) energy only, so the displacement sweeps " *
         "would have no site to attempt"))
     return n
+end
+
+# The overrelaxation analogue. Asked for on a model with no `l = 1` channel anywhere,
+# the sweep walks every site, skips every one of them and returns 0 — the same silent
+# no-op `_resolve_disp_passes` refuses on the displacement side, and the asymmetry was
+# real: a lattice-only model (or a purely biquadratic spin model) accepted
+# `or_per_metropolis > 0` and reported `acceptance_or = NaN` from a run that had done
+# nothing with it. Zero stays legal on every model — that is the default, not a request.
+function _resolve_or_passes(H::TiledHamiltonian, or_per_metropolis::Integer)::Int
+    n = Int(or_per_metropolis)
+    n > 0 && !any(H.site_has_l1) && throw(ArgumentError(
+        "or_per_metropolis = $n, but no site of this Hamiltonian carries an l = 1 " *
+        "spin channel$(H.lmax < 0 ? " (it is a lattice-only model)" : ""): the " *
+        "overrelaxation move reflects a spin about its local field, which is built " *
+        "from exactly that channel, so every site would be skipped and the sweep " *
+        "would attempt no move at all"))
+    return n
+end
+
+# A run must be able to move SOMETHING. Mirrors the guard the device driver has
+# carried since G8 (`gpu_run_sweeps!`): with no spin-active site and no displacement
+# pass, `run_mc` walks its whole sweep budget attempting nothing and returns
+# zero-variance "results" — `E = 0.0 ± 0.0`, `NaN` acceptances, the initial
+# configuration handed back unchanged — which reads as a converged run, not as a
+# refusal. `n_disp_active`, not `has_disp`: displacement rows whose couplings all
+# fitted to zero give a sweep with no site to attempt either.
+#
+# Note this is deliberately NOT `_require_spin_sites`: a lattice-only model with a
+# displacement pass is a first-class run here, and `_compound_sweep!` simply omits the
+# spin sweep for it.
+function _require_moves(H::TiledHamiltonian, ndisp::Int)
+    H.n_spin_active > 0 || (ndisp > 0 && H.n_disp_active > 0) || throw(ArgumentError(
+        "this run would attempt no move at all: the Hamiltonian has no spin-active " *
+        "site and no displacement pass to run. It has " *
+        "$(H.n_spin_active) spin-active and $(H.n_disp_active) displacement-active " *
+        "sites, with disp_per_metropolis = $ndisp"))
+    return nothing
 end
 
 # Resolve the strain cadence, mirroring `_resolve_disp_passes`: `nothing` means

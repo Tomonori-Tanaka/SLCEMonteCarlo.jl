@@ -791,8 +791,17 @@ _ss_vk_mean(k, va, vb) =
         MCs._swap_payload!(stA, stB)
         @test stA.strain == 0.99 && stB.strain == 1.01
 
-        # an accepted rescale keeps the escape detector ARMED and covariant: the
-        # length statistics scale by λ, the counters stay
+        # An accepted rescale keeps the escape DETECTOR armed and covariant while
+        # leaving the phase's REPORTING accumulators in absolute lengths. Every one of
+        # the six length fields is asserted by name and in the right direction, because
+        # the split is the whole content of `_rescale_escape!` and a mutation that
+        # rescales one group like the other is exactly the defect this replaces: the
+        # detector fields must convert to the new frame (they answer "is the r.m.s.
+        # growing BEYOND the affine map?"), and `disp_ms_sum`/`disp_max` must not (they
+        # are the phase's time-average and running maximum of |u|, the quantities
+        # `TempResult.disp_rms`/`disp_max` report and the `:u2` observable must agree
+        # with — rescaling them re-expresses the phase's past in the last accepted
+        # move's frame).
         st = MCs.ChainState(H, _ss_cfg(H.n_sites, 63), Xoshiro(0x63), 0.3;
                             disps = _ss_disps(H.n_sites, 63))
         sc = MCs.StrainScratch(H)
@@ -800,19 +809,28 @@ _ss_vk_mean(k, va, vb) =
         st.disp_ms_sum, st.disp_blk_sum, st.disp_ref_ms = 1e-3, 4e-4, 3.9e-4
         st.disp_checks, st.disp_blk_n, st.disp_blk_cap = 7, 2, 4
         naccept = 0
+        nlam = 0
         for _ = 1:20
             s0 = st.strain
-            rms0 = st.disp_rms
-            ms0 = st.disp_ms_sum
+            rms0, rms00, max0 = st.disp_rms, st.disp_rms0, st.disp_max
+            ms0, blk0, ref0 = st.disp_ms_sum, st.disp_blk_sum, st.disp_ref_ms
             if MCs.strain_move!(st, H, sch, sc, 0.05; pressure = 0.0, step = 0.05)
                 naccept += 1
                 lam = st.strain / s0
+                lam == 1.0 || (nlam += 1)        # a λ ≡ 1 move could not tell them apart
+                # covariant: the detector's anchors move to the new frame
                 @test st.disp_rms == lam * rms0
-                @test st.disp_ms_sum == lam^2 * ms0
+                @test st.disp_rms0 == lam * rms00
+                @test st.disp_blk_sum == lam^2 * blk0
+                @test st.disp_ref_ms == lam^2 * ref0
+                # absolute: the reported phase statistics are NOT re-framed
+                @test st.disp_ms_sum == ms0
+                @test st.disp_max == max0
                 @test st.disp_checks == 7        # counters untouched — ladder armed
             end
         end
         @test naccept > 0
+        @test nlam > 0
     end
 
     @testset "a pure-spin volume grid: J(V) with no displacement channel" begin
@@ -1703,5 +1721,122 @@ _ss_vk_mean(k, va, vb) =
             e
         end
         @test err isa ArgumentError && occursin("ladder of 2 rungs", err.msg)
+    end
+end
+
+# The volume-grid boundary screen. A proposal outside `strain_domain` is rejected, never
+# clamped — correct as a move rule, but it means a chain the pressure pushes past the
+# grid does not fail: it piles up at the edge and every mechanical observable goes on
+# describing a volume-CLAMPED cell in confident finite numbers. Before this screen
+# nothing recorded that at all: no counter, no field, no warning.
+#
+# The gate is the SEPARATION, not the firing. Two runs must stay silent — a healthy one,
+# and (the trap) one whose step is so wide that a quarter of its proposals leave the
+# domain while its marginal stays entirely inside — and three pinned ones must speak.
+# The oversized-step arm is what makes this more than a smoke test: a rate-only rule
+# passes every "does it warn" check and still cries wolf on it.
+@testset "the volume-grid boundary is screened, and only when it bites" begin
+    zsm, zmodels = _ss_zeta_grid()
+    H = TiledHamiltonian(zmodels[2]; dims = (2, 1, 1), fixed_reference = true)
+    sch = MCs.StrainSchedule(zsm, H)
+    lo, hi = MCs.strain_domain(sch)
+    obs = [Observable(:energy, 1, v -> v.energy)]
+    base = (; kT = 0.05, sweeps_therm = 300, sweeps_measure = 2000, nbins = 4,
+            renorm_interval = 50, seed = 7, observables = obs,
+            evaluables = Evaluable[])
+
+    pinned(p) = occursin("pinned against the", p)
+    run_logs(kw) = Test.collect_test_logs() do
+        run_mc(H; base..., kw...)
+    end
+
+    @testset "a fixed-cell run has no scale range to report" begin
+        r = run_mc(H; base...)
+        p = r.points[1]
+        @test isnan(p.strain_min) && isnan(p.strain_max) && isnan(p.strain_outside)
+        @test isnan(p.acceptance_strain)     # the same convention, the same gate
+    end
+
+    @testset "a healthy strained run reports a range strictly inside the grid" begin
+        logs, r = run_logs((; strain = sch, pressure = 0.0, strain_step = 0.05))
+        p = r.points[1]
+        @test lo < p.strain_min <= p.strain_max < hi
+        @test p.strain_min <= r.final_strain <= p.strain_max
+        @test p.strain_outside == 0.0
+        @test !any(l -> pinned(string(l.message)), logs)
+    end
+
+    @testset "an oversized step is inefficient, not pinned — and is not warned about" begin
+        # The discriminating arm: `strain_step` comparable to the whole domain throws a
+        # large fraction of proposals out of it (ordinary Metropolis rejections — the
+        # domain is part of the state space), yet the chain's marginal never approaches
+        # an edge, so no boundary term is being dropped and nothing is wrong.
+        logs, r = run_logs((; strain = sch, pressure = 0.0, strain_step = 0.25))
+        p = r.points[1]
+        @test p.strain_outside > MCs._STRAIN_OUTSIDE_WARN   # the rate alone would fire…
+        margin = MCs._STRAIN_EDGE_WARN * (hi - lo)
+        @test p.strain_min - lo > margin && hi - p.strain_max > margin   # …the edge saves it
+        @test !any(l -> pinned(string(l.message)), logs)
+    end
+
+    @testset "a chain the pressure pins against an edge is named" begin
+        for (P, edge) in [(-0.5, "upper"), (-1.0, "upper"), (1.0, "lower")]
+            logs, r = run_logs((; strain = sch, pressure = P, strain_step = 0.05))
+            p = r.points[1]
+            hits = filter(l -> pinned(string(l.message)), logs)
+            @test length(hits) == 1
+            @test occursin("$(edge) edge", string(hits[1].message))
+            # and the fields a post-hoc screen would read agree with the verdict
+            @test p.strain_outside > MCs._STRAIN_OUTSIDE_WARN
+            @test min(p.strain_min - lo, hi - p.strain_max) <
+                  MCs._STRAIN_EDGE_WARN * (hi - lo)
+        end
+    end
+
+    @testset "the decision rule itself: both conditions are load-bearing" begin
+        # The sampled arms above kill the EDGE condition (the oversized-step run has a
+        # high refusal rate and must stay silent) but not the RATE one: no sampled run
+        # here has a low rate AND an extreme at the edge, so dropping the rate test
+        # would survive them. Pin the predicate directly on hand-built points instead —
+        # a four-cell truth table, no chain involved.
+        pt(smin, smax, out) =
+            MCs.TempResult(0.05, 0.05 / MCs.KB_EV, Dict{Symbol,MCs.ObservableStat}(),
+                           NaN, NaN, NaN, 0.5, smin, smax, out,
+                           0.3, 0.01, 0.0, NaN, NaN, 0, false)
+        margin = MCs._STRAIN_EDGE_WARN * (hi - lo)
+        near, far = hi - 0.2 * margin, hi - 5 * margin
+        hot, cold = 4 * MCs._STRAIN_OUTSIDE_WARN, 0.2 * MCs._STRAIN_OUTSIDE_WARN
+        plan = MCs.UpdatePlan([0.05]; sweeps_therm = 1, sweeps_measure = 1,
+                              measure_interval = 1, or_per_metropolis = 0,
+                              disp_per_metropolis = 1, step = 0.3, step_u = 0.01,
+                              adapt_target = 0.5, adapt_interval = 1,
+                              renorm_interval = 1, nbins = 2, carryover = true,
+                              seed = 1, strain_interval = 1, strain_step = 0.05)
+        fires(p) = !isempty(filter(l -> pinned(string(l.message)),
+                                   first(Test.collect_test_logs() do
+                                             MCs._warn_strain_boundary([p], sch, plan)
+                                         end)))
+        @test fires(pt(lo + 5 * margin, near, hot))     # at the edge AND refused a lot
+        @test !fires(pt(lo + 5 * margin, near, cold))   # at the edge, but not refused
+        @test !fires(pt(lo + 5 * margin, far, hot))     # refused a lot, but never there
+        @test !fires(pt(lo + 5 * margin, far, cold))    # neither
+        # the lower edge is screened too, and named as such
+        @test fires(pt(lo + 0.2 * margin, hi - 5 * margin, hot))
+        # a fixed-cell point carries NaN and must not be interpreted as either
+        @test !fires(pt(NaN, NaN, NaN))
+    end
+
+    @testset "the range and the refusal rate survive a checkpoint" begin
+        mktempdir() do dir
+            path = joinpath(dir, "npt.jld2")
+            r = run_mc(H; base..., strain = sch, pressure = 0.0, strain_step = 0.05,
+                       checkpoint = path, checkpoint_interval = 10_000)
+            p = r.points[1]
+            q = MCs.jldopen(path, "r") do f
+                MCs._read_point(f, "points/1")
+            end
+            @test q.strain_min == p.strain_min && q.strain_max == p.strain_max
+            @test q.strain_outside == p.strain_outside
+        end
     end
 end

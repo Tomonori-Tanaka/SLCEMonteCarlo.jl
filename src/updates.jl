@@ -188,6 +188,7 @@ number of accepted moves.
 """
 function metropolis_sweep!(st::ChainState, H::TiledHamiltonian, β::Float64,
                            sc::SweepScratch)::Int
+    _require_spin_sites(H, "metropolis_sweep!")
     fill!(sc.dE, 0.0)
     nacc = 0
     @inbounds for q in eachindex(H.color_sites)
@@ -205,6 +206,7 @@ end
 function metropolis_sweep!(st::ChainState, H::TiledHamiltonian, β::Float64,
                            scs::Vector{SweepScratch})::Int
     isempty(scs) && throw(ArgumentError("scs must hold at least one SweepScratch"))
+    _require_spin_sites(H, "metropolis_sweep!")
     length(scs) == 1 && return metropolis_sweep!(st, H, β, scs[1])
     ntasks = length(scs)
     dE = scs[1].dE
@@ -264,6 +266,7 @@ attempts. Returns the number of accepted moves.
 """
 function overrelaxation_sweep!(st::ChainState, H::TiledHamiltonian, β::Float64,
                                sc::SweepScratch)::Int
+    _require_spin_sites(H, "overrelaxation_sweep!")
     fill!(sc.dE, 0.0)
     nacc = 0
     natt = 0
@@ -284,6 +287,7 @@ end
 function overrelaxation_sweep!(st::ChainState, H::TiledHamiltonian, β::Float64,
                                scs::Vector{SweepScratch})::Int
     isempty(scs) && throw(ArgumentError("scs must hold at least one SweepScratch"))
+    _require_spin_sites(H, "overrelaxation_sweep!")
     length(scs) == 1 && return overrelaxation_sweep!(st, H, β, scs[1])
     ntasks = length(scs)
     dE = scs[1].dE

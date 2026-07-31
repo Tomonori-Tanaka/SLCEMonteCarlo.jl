@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — the reported displacement r.m.s. was biased by the final cell scale
+
+`_rescale_escape!` multiplied the phase's **reporting** accumulators
+(`disp_ms_sum`, `disp_max`) by the affine factor of every accepted strain move,
+along with the escape detector's own anchors. The detector's anchors must be
+converted — it asks whether the r.m.s. is growing *beyond* the affine map, which
+is only meaningful with both sides in the current frame. The reporting pair must
+not: they accumulate over states already in the past, so rescaling re-expresses
+the phase's history in whatever frame the last accepted move happened to leave.
+`TempResult.disp_rms` therefore tracked `final_strain` rather than `⟨|u|²⟩` —
+measured across five seeds as `disp_rms²/⟨u2⟩` of 0.90–1.07 moving monotonically
+with `final_strain`, a 10 %-scale seed-dependent bias against a 1 % error bar on
+the `:u2` observable — and broke the standing invariant that the two are the same
+quantity. NVT runs are unaffected (λ ≡ 1), which is why no existing gate saw it.
+The rescale testset now asserts all six length fields by name and in their own
+direction, with a non-vacuity count of `λ ≠ 1` moves.
+
+### Added — the volume grid's domain boundary is screened
+
+A strain proposal outside `strain_domain` is rejected, never clamped. Correct as
+a move rule, but it means a chain the pressure pushes past the grid does not
+fail: it piles up at the edge with a merely low strain acceptance — which is also
+what an oversized `strain_step` gives — and its volume marginal is then truncated
+rather than sampled. That is exactly the boundary term `:pressure`'s stationarity
+identity assumes negligible, and `:enthalpy`/`:npt_specific_heat` average over the
+truncated distribution; all three kept returning confident finite numbers, with no
+counter, no field and no warning recording that anything had happened.
+
+`ChainState` now carries the phase's sampled scale range and the count of
+proposals the grid refused; `TempResult` surfaces `strain_min`, `strain_max` and
+`strain_outside` (all `NaN` on a fixed-cell run, the `acceptance_strain`
+convention), and both drivers screen them. The rule needs **both** a refusal rate
+and an edge margin, and the thresholds bracket measurements rather than guesses
+(`_ss_zeta_grid`, domain `[0.9, 1.1]`): healthy `P = 0` refuses 0.0 % and stays in
+`[0.940, 1.063]`; the same chain with `strain_step = 0.25` refuses 24.6 % while
+its marginal stays entirely interior (inefficient, not wrong — a rate-only rule
+cries wolf on it); `P = ±0.5…1.0` refuses 48–51 % sitting within 0.3 % of an edge.
+The decision rule is additionally pinned as a four-cell truth table on hand-built
+points, so neither condition can be dropped. Checkpoint schema v5 → **v6**.
+
+### Fixed — a run that attempts no move at all is now refused, not reported as clean
+
+On a lattice-only Hamiltonian (a displacement-only sector, or a joint basis whose
+spin couplings all fitted to zero) the host drivers walked their whole sweep
+budget attempting nothing whenever the displacement pass was also off, and
+returned `E = 0.0 ± 0.0` with `NaN` acceptances and the initial configuration —
+indistinguishable from a converged run. The device driver has refused this since
+G8; `_require_moves` gives the host the same guard. Alongside it:
+`_compound_sweep!` now **omits** the spin sweep when there is no spin-active site
+(consuming no randomness, so pure-spin trajectories stay bit-identical) rather
+than running a whole-lattice scan that attempts nothing and reports `NaN`;
+`metropolis_sweep!`/`overrelaxation_sweep!` refuse such a Hamiltonian at their own
+entry, as `gpu_metropolis_sweep!` already did; and `_resolve_or_passes` refuses
+`or_per_metropolis > 0` on a model with no `l = 1` channel anywhere — the mirror
+of `_resolve_disp_passes`, whose absence made a silent no-op on one side and a
+named error on the other.
+
+### Added — a displacement model that is not connected says so
+
+A displacement model of a crystal is connected: every atom couples, directly or
+through neighbours, to every other. Several disjoint components mean the term list
+joins none of them, and two truncations produce that silently — a cutoff that does
+not reach across the training cell, and upstream's inability to represent a
+self-image pair `(a,0)–(a,R)`, which deletes every like-atom bond of a
+single-species cell. No existing screen could say so: each piece is separately
+translation-invariant, so `translation_invariant` stays `true`, the acoustic
+residual stays at roundoff and `harmonic_stability` returns a clean verdict, while
+the zero-mode count is `3·n_disp_comps` and the absent bonds are absent from
+`force_constant_matrix` and `D(q)` at every `q`. The `TiledHamiltonian`
+constructor now warns, naming both causes. A warning and not a refusal, because
+sampling such a model is legitimate and the suite's own `_joint_model` is one.
+
 ### Changed — documentation: the site now describes what the sampler samples
 
 The manual still presented a pure-spin sampler, with displacements and NPT

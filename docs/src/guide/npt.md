@@ -45,6 +45,36 @@ downstream. `strain_interval` (default: one attempt per compound sweep),
 of the grid's domain; fixed for the run) tune the move; a poor width shows up in
 `acceptance_strain`, never in the sampled ensemble.
 
+## Check that the grid actually contained the run
+
+A proposal outside the grid's [`strain_domain`](@ref) is **rejected, never
+clamped** — a truncating clamp would be an asymmetric proposal and would bias the
+chain toward the edge. The consequence is that a chain whose equilibrium volume
+lies outside the grid does not fail. It piles up against the boundary and keeps
+producing numbers, and every mechanical quantity then describes a volume-*clamped*
+cell: `:pressure`'s stationarity identity drops exactly the boundary term it
+assumes negligible, and `:enthalpy` / `:npt_specific_heat` average over a
+truncated volume marginal. All three still return confident finite values.
+
+Each [`TempResult`](@ref) therefore reports where its chain actually went:
+
+```julia
+p = r.points[1]
+p.strain_min, p.strain_max   # the cell scales this temperature visited
+p.strain_outside             # fraction of proposals the grid refused
+```
+
+`strain_outside` is the sharp one — it is a rate, so unlike the sampled extremes
+it does not creep upward with run length — and the drivers warn when a chain
+combines a high refusal rate with an extreme sitting at an edge. A high rate
+*alone* is not a problem: an oversized `strain_step` throws proposals out of the
+domain while the marginal stays entirely interior, which is merely inefficient.
+All three fields are `NaN` on a fixed-cell run, like `acceptance_strain`.
+
+If the screen fires, widen the volume grid to cover the equilibrium volume at
+your pressure and temperature — the run's numbers cannot be repaired after the
+fact.
+
 Inside an NPT run every measurement's [`MCView`](@ref) carries the cell scale
 ([`strain(v)`](@ref strain), with [`has_strain(v)`](@ref has_strain) false on a
 fixed-cell run — a confident `1.0` would let a magnetostriction observable average

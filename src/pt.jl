@@ -416,12 +416,15 @@ function _pt_run!(lanes::Vector{_PTLane}, plan::UpdatePlan,
                   TempResult(lane.kt, lane.kt / KB_EV,
                              _finalize_stats(lane.accs, evaluables, lane.kt,
                                              lane.H.n_spin_active, lane.H.n_active),
-                             s.acc_m, s.acc_o, s.acc_d, s.acc_s, st.step, s.step_u,
+                             s.acc_m, s.acc_o, s.acc_d, s.acc_s,
+                             s.s_min, s.s_max, s.s_out, st.step, s.step_u,
                              st.max_drift, s.disp_rms, s.disp_max, s.disp_checks,
                              s.escaped)
               end
               for lane in lanes]
     swaps = [swap_att[i] == 0 ? NaN : swap_acc[i] / swap_att[i] for i = 1:(R - 1)]
+    _warn_strain_boundary(points, first(lanes).sctx === nothing ? nothing :
+                                  first(lanes).sctx[1], plan)
     return PTResult(points, swaps, [copy(lane.st.config) for lane in lanes],
                     [_final_disps(lane.H, lane.st) for lane in lanes],
                     first(lanes).sctx === nothing ? nothing :
@@ -531,6 +534,8 @@ function run_pt(H::TiledHamiltonian; temperature = nothing, kT = nothing,
     nt = ntasks === nothing ? min(R, Threads.nthreads()) : Int(ntasks)
     nt >= 1 || throw(ArgumentError("ntasks must be ≥ 1; got $nt"))
     ndisp = _resolve_disp_passes(H, disp_per_metropolis)
+    nor = _resolve_or_passes(H, or_per_metropolis)
+    _require_moves(H, ndisp)
     nstrain = _resolve_strain_moves(strain, strain_interval)
     p_model = _resolve_pressure(strain, pressure_GPa, pressure)
     s0s = _resolve_strain_init_pt(strain, strain_init, R)
@@ -540,7 +545,7 @@ function run_pt(H::TiledHamiltonian; temperature = nothing, kT = nothing,
     plan = UpdatePlan(kts; sweeps_therm = sweeps_therm,
                       sweeps_measure = sweeps_measure,
                       measure_interval = measure_interval,
-                      or_per_metropolis = or_per_metropolis,
+                      or_per_metropolis = nor,
                       disp_per_metropolis = ndisp, step = step, step_u = step_u,
                       adapt_target = adapt_target, adapt_interval = adapt_interval,
                       renorm_interval = renorm_interval, nbins = nbins,

@@ -1,6 +1,6 @@
-# Decision record — checkpoint schema (v5; landed as v1) and bit-identical resume
+# Decision record — checkpoint schema (v6; landed as v1) and bit-identical resume
 
-Status: landed (M6; v4 with M5-4, v5 with PT + strain). Owner: `src/checkpoint.jl`;
+Status: landed (M6; v4 with M5-4, v5 with PT + strain, v6 with the volume-grid boundary screen). Owner: `src/checkpoint.jl`;
 gates in `test/unit/test_checkpoint.jl` and (strain / PT + strain)
 `test/unit/test_strainschedule.jl`.
 
@@ -17,7 +17,7 @@ concurrent runs must use distinct paths). Checkpoint writing consumes no RNG
 Rejected: `Serialization` stdlib (positional, Julia-version-fragile), TOML/JSON
 (no bit-exact `Float64` round-trip without hex-float contortions, huge configs).
 
-## C2 — schema v5
+## C2 — schema v6
 
 v2 (2026-07-15, colored sweeps): adds `plan/sweep_tasks` and the per-site RNG
 streams `chain/site_rngs` (a `words × n_sites` UInt64 matrix — one Xoshiro per
@@ -53,8 +53,20 @@ reference (`_pt_run!` had no strain support). The version bump turns that silent
 wrong physics into a named refusal in both directions — the same refuse-by-name
 precedent as v3 → v4.
 
+v6 (2026-07-31, the volume-grid boundary screen): `chain/strain_range` (the
+phase's `[min, max]` sampled cell scale) and a ninth entry in `chain/counters`
+(`att_strain_out`, the strain attempts the volume grid refused for landing
+outside its domain), plus the matching per-point `points/i/strain_range` — three
+Float64: `strain_min`, `strain_max`, `strain_outside`. Like the escape
+accumulators these steer no random decision, so a resume is bit-identical with or
+without them; they are serialized because dropping them would restart the
+interval and the rate at every checkpoint, leaving a resumed run's boundary screen
+able to see only its final segment — and under-reporting a truncated volume
+marginal is exactly the failure the screen exists to catch. v5 files are rejected
+by the version check with that named as the reason.
+
 ```
-schema_version    Int     == 5, hard-checked on load
+schema_version    Int     == 6, hard-checked on load
 kind              String  "mc" | "pt"
 julia_version, package_version   String (informational)
 model_fingerprint UInt64  stable FNV-1a over (n_cell_atoms, dims, the row layout
@@ -72,13 +84,16 @@ plan/*            every UpdatePlan field (kts, sweeps, intervals,
 plan/observable_names, plan/observable_ncomps   resume-compatibility check
 -- kind == "mc":
 progress/{temp_index, phase ("therm"|"measure"), sweep}
-npoints; points/<i>/{kT, acceptance_* (incl. acceptance_strain), final_step,
-                     final_step_u, max_drift, disp_rms, disp_max, disp_checks,
-                     escaped, stat_names, stats/<name>/{mean, err, tau_int, count}}
+npoints; points/<i>/{kT, acceptance_* (incl. acceptance_strain),
+                     strain_range (3: strain_min, strain_max, strain_outside),
+                     final_step, final_step_u, max_drift, disp_rms, disp_max,
+                     disp_checks, escaped, stat_names,
+                     stats/<name>/{mean, err, tau_int, count}}
 chain/{config (3×n), disps (3×n), com_removed (3×n_disp_comps), energy,
        rng (UInt64 words), site_rngs (words × n_sites), step, step_u, strain,
-       frozen, counters (8: metro/or/disp/strain × acc/att), max_drift,
-       escape_f (6 Float64), escape_i (4 Int), escape_warned}
+       strain_range (2: the phase's sampled [min, max] scale),
+       frozen, counters (9: metro/or/disp/strain × acc/att, + strain-outside),
+       max_drift, escape_f (6 Float64), escape_i (4 Int), escape_warned}
 has_accs; accs/<obs>/{binner/{count, sums, sums2, pending, pending_full, n},
                       store/{bin_size, means, nfull, acc, nacc}}
 -- kind == "pt":
