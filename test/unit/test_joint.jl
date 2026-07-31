@@ -907,6 +907,68 @@ end
     end
 end
 
+# What a replica exchange moves between lanes, over EVERY field of `ChainState` rather
+# than a hand-picked sample. A swap moves a whole physical state — the configuration,
+# the displacements, the frame they are expressed in, the cached rows, the energy and
+# the cell scale — while the RNG streams, the proposal widths, the acceptance counters
+# and the escape/boundary diagnostics stay with the lane, because a lane is a fixed
+# temperature and those describe it.
+#
+# An exhaustive partition is the point. The existing PT gates cannot see a payload
+# field's swap being dropped: `test_checkpoint.jl`'s resume gates compare a resumed
+# ladder against an uninterrupted one and BOTH sides run the same swap rule, so any
+# rule passes them, and the statistical rung marginals were measured too coarse to
+# resolve it. (Verified: deleting the `disps`/`com_removed` swap left `test_pt.jl`,
+# `test_joint.jl` and `test_checkpoint.jl` entirely green while moving the rung-2 mean
+# energy from 1.593 to 1.322.) This asserts the two sets by name and requires their
+# union to be every field, so a new field must be classified rather than forgotten.
+@testset "replica exchange moves the physical state and nothing else" begin
+    H = TiledHamiltonian(first(_joint_model()); dims = (2, 2, 1))
+    payload = (:config, :disps, :com_removed, :zrows, :energy, :strain)
+
+    # Every mutable scalar gets a value unique to its chain, so `===` can tell a field
+    # that swapped from one that did not; the arrays are distinct objects already.
+    function distinct!(st, k)
+        st.energy = 100.0k
+        st.step, st.step_u = 0.1k, 0.01k
+        st.strain = 1.0 + 0.01k
+        st.strain_min, st.strain_max = 0.9 - 0.01k, 1.1 + 0.01k
+        st.frozen = isodd(k)
+        st.acc_metro, st.att_metro = 1k, 2k
+        st.acc_or, st.att_or = 3k, 4k
+        st.acc_disp, st.att_disp = 5k, 6k
+        st.acc_strain, st.att_strain, st.att_strain_out = 7k, 8k, 9k
+        st.max_drift = 0.001k
+        st.disp_rms, st.disp_max, st.disp_rms0 = 0.02k, 0.05k, 0.019k
+        st.disp_checks = 10k
+        st.disp_ms_sum, st.disp_blk_sum, st.disp_ref_ms = 1e-3k, 4e-4k, 3.9e-4k
+        st.disp_blk_n, st.disp_blk_cap = 11k, 12k
+        st.escape_strikes, st.escape_warned = 13k, isodd(k)
+        return st
+    end
+
+    mkst(k) = distinct!(MC.ChainState(H, _rand_config(MersenneTwister(40 + k), H),
+                                      Xoshiro(40 + k), 0.3;
+                                      disps = [SVector{3,Float64}(0.01k, 0.02k, 0.03k)
+                                               for _ = 1:H.n_sites]), k)
+    a, b = mkst(1), mkst(2)
+    before_a = Dict(f => getfield(a, f) for f in fieldnames(MC.ChainState))
+    before_b = Dict(f => getfield(b, f) for f in fieldnames(MC.ChainState))
+    # every field really is distinguishable, or the partition below would be vacuous
+    @test all(f -> before_a[f] !== before_b[f], fieldnames(MC.ChainState))
+
+    MC._swap_payload!(a, b)
+    moved = [f for f in fieldnames(MC.ChainState) if getfield(a, f) === before_b[f]]
+    stayed = [f for f in fieldnames(MC.ChainState) if getfield(a, f) === before_a[f]]
+
+    @test Set(moved) == Set(payload)
+    @test Set(moved) ∪ Set(stayed) == Set(fieldnames(MC.ChainState))  # all classified
+    @test isempty(Set(moved) ∩ Set(stayed))
+    # and the other chain received the mirror image, not a copy of its own state
+    @test all(f -> getfield(b, f) === before_a[f], payload)
+    @test all(f -> getfield(b, f) === before_b[f], stayed)
+end
+
 # A displacement model OF A CRYSTAL is connected: every atom couples, directly or
 # through neighbours, to every other. Splitting into several components means the term
 # list joins none of them — a lattice of independent pieces rather than a solid — and

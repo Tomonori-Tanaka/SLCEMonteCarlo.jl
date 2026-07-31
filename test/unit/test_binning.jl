@@ -2,6 +2,30 @@
 # answers, BinStore layout semantics, and jackknife identities.
 
 @testset "binning" begin
+    @testset "the level-1 error is the Bessel-corrected SEM, exactly" begin
+        # The iid / AR(1) arms below compare against asymptotic formulas at n ~ 10⁴ with
+        # rtol 0.2-0.5, where an unbiased and a biased variance differ by ~1/n — far
+        # under the tolerance. So the Bessel correction itself is unprotected there, and
+        # dropping it is a silent ~(1 - 1/n) shrink of every error bar in the package.
+        # Pin it where the two are far apart instead: four hand-chosen values, arithmetic
+        # done by hand.
+        #
+        #   x = [1, 2, 3, 4]   Σx = 10   Σx² = 30   n = 4
+        #   unbiased  var = (30 - 10²/4)/(4-1) = 5/3   ⇒ SEM = √(5/12) = 0.645497…
+        #   biased    var = (30 - 10²/4)/4     = 5/4   ⇒ SEM = √(5/16) = 0.559017…
+        b = MC.LogBinner(1)
+        for x in (1.0, 2.0, 3.0, 4.0)
+            push!(b, x)
+        end
+        @test b.count[1] == 4
+        @test MC._level_error(b, 1, 1) ≈ sqrt(5 / 12) rtol = 1e-14
+        @test !isapprox(MC._level_error(b, 1, 1), sqrt(5 / 16); rtol = 1e-3)
+        # …and fewer than two entries is NaN, not a zero error bar
+        b1 = MC.LogBinner(1)
+        push!(b1, 7.0)
+        @test isnan(MC._level_error(b1, 1, 1))
+    end
+
     @testset "LogBinner: iid Gaussian" begin
         rng = MersenneTwister(42)
         n = 2^14

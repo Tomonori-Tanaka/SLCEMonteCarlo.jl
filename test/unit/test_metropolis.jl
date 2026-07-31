@@ -2,9 +2,6 @@
 # Langevin), adaptive-step behavior, seed reproducibility, drift, annealing.
 # Statistical tolerances mirror the proven SLCETools MC suite (fixed seeds).
 
-# ⟨e₁·e₂⟩ of the dimer's coupled pair, as a user observable.
-_corr12_obs() = Observable(:corr12, 1, v -> dot(v.config[1], v.config[2]))
-
 @testset "Metropolis / run_mc" begin
     Hd = TiledHamiltonian(_dimer_model())
     J = _dimer_J(Hd)                       # < 0 (ferro)

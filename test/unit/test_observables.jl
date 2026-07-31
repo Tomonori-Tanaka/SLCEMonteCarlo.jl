@@ -120,3 +120,33 @@
         @test isnan(s1[:specific_heat].mean[1])
     end
 end
+
+# The two spin evaluables had no oracle at all: the suite checked `isfinite` and `> 0`,
+# so `χ ∝ 1/kT²` or a stray factor in the Binder ratio would have shipped silently
+# (both mutations were confirmed to leave the whole suite green). Pin them against
+# closed forms instead, in the one regime where closed forms exist.
+#
+# FREE SPINS. At kT ≫ |J| the couplings are negligible and `m = Σe/N` is the mean of N
+# iid unit vectors, so for large N it is Gaussian with per-component variance 1/(3N):
+#
+#   ⟨m²⟩ = 1/N;  |Σe| is Maxwell with σ² = N/3, so ⟨|m|⟩² = 4σ²(2/π)/N² = 8/(3πN)
+#   ⇒  χ = N(⟨m²⟩ − ⟨|m|⟩²)/kT = (1 − 8/3π)/kT          — note the FIRST power of kT
+#   ⇒  U = ⟨m⁴⟩/⟨m²⟩² = 5/3                              — the 3-d Gaussian ratio
+#
+# Neither number comes from this package. Tolerance: 5× the run's own binning error.
+# Measured across three seeds at this kT the worst deviation was 2.6σ (χ) and 2.1σ (U),
+# so the bound carries ≈ 2× headroom — while the mutations it must resolve sit ~40σ
+# (χ, a whole factor of kT) and ~28σ (U, a factor of two) away.
+@testset "susceptibility and Binder against their free-spin closed forms" begin
+    Hf = TiledHamiltonian(_dimer_model(); dims = (4, 4, 4))    # 128 sites
+    kT = 200 * abs(_dimer_J(Hf))                               # deep in the free regime
+    for seed in (12, 13)
+        r = run_mc(Hf; kT = kT, sweeps_therm = 2000, sweeps_measure = 20_000,
+                   measure_interval = 5, nbins = 8, seed = seed)
+        chi, U = r.points[1].stats[:susceptibility], r.points[1].stats[:binder]
+        @test abs(chi.mean[1] - (1 - 8 / (3π)) / kT) < 5 * chi.err[1]
+        @test abs(U.mean[1] - 5 / 3) < 5 * U.err[1]
+        # the error bars themselves must be small enough for the above to mean anything
+        @test chi.err[1] < 0.1 * chi.mean[1] && U.err[1] < 0.1 * U.mean[1]
+    end
+end
