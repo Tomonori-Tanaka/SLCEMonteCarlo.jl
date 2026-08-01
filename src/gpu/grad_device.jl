@@ -38,9 +38,12 @@ the order-`n + 1` derivative lift).
     # _barP / _dbarP, verbatim (two sequential dnPl calls share the cache)
     plm = _zlm_parity(n) * _zlm_plm_norm(l, n) * _zlm_dnpl(z, l, n, cache)
     dplm = _zlm_parity(n) * _zlm_plm_norm(l, n) * _zlm_dnpl_or0(z, l, n + 1, cache)
-    # _grad_zlm_assemble, expression for expression
+    # _grad_zlm_assemble, expression for expression (including the `/ r2` radial
+    # removal — dropping it here while the host divides would break the bitwise
+    # host ≡ device parity gate, which is exactly what that gate is for)
+    r2 = x * x + y * y + z * z
     if m == 0
-        zz = z * dplm
+        zz = z * dplm / r2
         return SVector{3,Float64}(-x * zz, -y * zz, dplm - z * zz)
     end
     c = _zlm_parity(n) * sqrt(2.0)
@@ -54,7 +57,7 @@ the order-`n + 1` derivative lift).
     else
         (c * n * plm * in1, c * n * plm * rn1, c * dplm * iN)
     end
-    zz = x * dZx + y * dZy + z * dZz   # u · ∂Z, the radial part to remove
+    zz = (x * dZx + y * dZy + z * dZz) / r2   # û · ∂Z, the radial part to remove
     return SVector{3,Float64}(dZx - x * zz, dZy - y * zz, dZz - z * zz)
 end
 

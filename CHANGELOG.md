@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `e_s · G[s] == 0` "exactly" is now true for a drifted configuration
+
+`_grad_zlm_device` mirrors `SLCE.Harmonics._grad_zlm_assemble`, whose radial removal
+was `u(u·∂Z)` rather than `û(û·∂Z)`. Both sides now divide by `r² = ‖u‖²`; they had
+to move in the same commit, because the bitwise host ≡ device gate (`test_gpu.jl`
+"gpu: device grad row ≡ host grad_Zlm_unsafe") is the guard on this coupled site.
+
+Why it mattered here specifically: `_attempt_metro!` and `_attempt_or!` write a
+proposal back without renormalizing, and `_renormalize!` only repairs periodically —
+measured drift 4.3e-13 after 10^7 unrepaired moves. Against the old form that state
+carried a radial residue of `≈ 2·C_l·δ ≈ 7e-12`, so `energy_gradient!`'s documented
+"exactly" was false in ordinary use while every tangency test passed, because the
+tests sample exactly-unit configurations. New gate `test/unit/test_gradient.jl`
+"tangency survives unrenormalized sweep drift" evaluates the gradient at `δ` up to
+1e-6; the oracle is the analytic identity, so the expected value is zero at every
+`δ` and the pre-fix form misses by ~4 orders while `δ = 0` stays green.
+
+Gradient-derived numbers move by up to ~3.6e-15 relative (`r²` is exactly `1.0` for
+only ~50 % of normalized directions). No pin moved; suite green at 19686.
+
 ### Changed — internal names spelled out (no public surface touched)
 
 The `STYLE_GUIDE.md` §1 naming contract's safe tier, applied: internal locals and

@@ -7,6 +7,30 @@
 @testset "energy_gradient" begin
     rng = MersenneTwister(11)
 
+    # The docstring's `e_s · G[s] == 0` "exactly" has to survive the drift a sweep
+    # accumulates BETWEEN renormalizations, because that is the state a caller
+    # actually holds: `_attempt_metro!` / `_attempt_or!` write back without
+    # renormalizing and `_renormalize!` only repairs periodically (measured drift
+    # 4.3e-13 after 10^7 unrepaired moves). The oracle is the analytic identity
+    # `û·(∂Z − û(û·∂Z)) = 0`, exact for every `u ≠ 0`, so the expected value is zero
+    # at every δ below and the bound is the rounding floor with headroom.
+    #
+    # This gates the `/ r²` in `SLCE.Harmonics._grad_zlm_assemble` from the consumer
+    # side. With the pre-fix `u(u·∂Z)` form the residue is `≈ 2·C_l·δ`, so the
+    # δ = 1e-6 row misses by ~4 orders while δ = 0 stays green — which is exactly
+    # how the claim came to be false while every existing tangency test passed.
+    @testset "tangency survives unrenormalized sweep drift" begin
+        H = TiledHamiltonian(_biquadratic_model(1); dims = (2, 2, 1))
+        config = _rand_config(rng, H)
+        for δ in (0.0, 1e-12, 1e-8, 1e-6)
+            drifted = [(1 + δ) * e for e in config]
+            G = MC.energy_gradient(H, drifted)
+            for s = 1:n_sites(H)
+                @test abs(dot(G[s], config[s])) < 1e-13 * (1 + norm(G[s]))
+            end
+        end
+    end
+
     @testset "≡ site_gradient (bitwise), tangency, finite differences" begin
         H = TiledHamiltonian(_biquadratic_model(1); dims = (2, 2, 1))
         config = _rand_config(rng, H)

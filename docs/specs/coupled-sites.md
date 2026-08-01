@@ -529,7 +529,12 @@ them by that phrase.
   `_grad_zlm_device` is the operation-order-faithful replica of
   `Harmonics.grad_Zlm_unsafe`/`_grad_zlm_assemble`/`_barP`/`_dbarP` and of
   LegendrePolynomials' `dnPl` `l < n` trivial-zero branch (`_zlm_dnpl_or0`;
-  signed zeros are part of the `===` gate). The pipeline is deliberately
+  signed zeros are part of the `===` gate). **The radial removal's `/ r²` is part
+  of that replica**, and it is the one edit in this chain whose omission is
+  invisible on-sphere: dropping it on either side leaves the tangency identity
+  intact for exactly-unit input and wrong by `≈ 2·C_l·δ` for the drifted state a
+  sweep actually holds, so the bitwise gate — not a tangency assertion — is what
+  catches a one-sided change. The pipeline is deliberately
   libm-free — keep `muladd`/`@fastmath` out. `_gradient_lane_ref!` is called by
   qualified name from SLCEDynamics' GPU-LLG composite gate — renaming it is
   a cross-package break. Gates: the G7 sections of `test/unit/test_gpu.jl`.
