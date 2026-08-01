@@ -4,6 +4,13 @@
 > policy, Conventional Commits, Julia style, shared subagents) is inherited from
 > `~/Packages/CLAUDE.md`. Only package-specific rules live here.
 
+**Before writing, reviewing, or renaming code here, read
+[`STYLE_GUIDE.md`](STYLE_GUIDE.md).** Its §1 is the SLCE-family naming contract —
+mirrored verbatim in all five packages, canonical copy in `SLCE.jl` — and the
+sections after it are this package's own deltas. **Read
+[`ARCHITECTURE.md`](ARCHITECTURE.md)** when you need the dependency graph, the
+include layering, or a reading order through the source.
+
 ## Project goal
 
 Full classical spin Monte Carlo for fitted SLCE models from

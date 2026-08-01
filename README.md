@@ -5,6 +5,8 @@
 
 **Documentation:** <https://tomonori-tanaka.github.io/SLCEMonteCarlo.jl/dev/>
 
+**Reading the source:** [`ARCHITECTURE.md`](ARCHITECTURE.md) — dependency graph, include layering, and an ordered reading path through `src/`.
+
 Classical Monte Carlo for fitted SLCE (spin–lattice cluster expansion)
 models from [SLCE.jl](https://github.com/Tomonori-Tanaka/SLCE.jl) — spins, atomic
 displacements, and the cell volume.
