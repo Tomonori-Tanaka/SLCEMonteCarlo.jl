@@ -89,8 +89,8 @@
     @testset "jackknife: linear function ≡ plain mean/error" begin
         rng = MersenneTwister(5)
         bins = randn(rng, 64)
-        est, err = MC.jackknife(m -> 2m + 1, [bins])
-        @test est ≈ 2 * mean(bins) + 1 atol = 1e-12
+        estimator, err = MC.jackknife(m -> 2m + 1, [bins])
+        @test estimator ≈ 2 * mean(bins) + 1 atol = 1e-12
         @test err ≈ 2 * std(bins) / sqrt(64) atol = 1e-12
     end
 
@@ -99,8 +99,8 @@
         rng = MersenneTwister(9)
         nb = 256
         xs = randn(rng, nb)
-        est, err = MC.jackknife((m1, m2) -> m2 - m1^2, [xs, xs .^ 2])
-        @test abs(est - 1.0) < 4 * err
+        estimator, err = MC.jackknife((m1, m2) -> m2 - m1^2, [xs, xs .^ 2])
+        @test abs(estimator - 1.0) < 4 * err
         @test 0 < err < 0.2
         @test_throws DimensionMismatch MC.jackknife(+, [xs, randn(rng, 8)])
         @test_throws ArgumentError MC.jackknife(identity, [Float64[1.0]])

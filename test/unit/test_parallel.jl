@@ -112,7 +112,7 @@
     @testset "checkpoint carries sweep_tasks and site streams (bit-identity)" begin
         H = MC.TiledHamiltonian(1, _chain_terms(-0.02); dims = (4, 1, 1))
         dir = mktempdir()
-        path = joinpath(dir, "ck.jld2")
+        path = joinpath(dir, "checkpointer.jld2")
         # seed ≥ 2^63 also gates the UInt64 seed round-trip (Int() would throw)
         args = (; kT = 0.02, sweeps_therm = 10, sweeps_measure = 30, nbins = 4,
                 seed = 0x8000000000000003, sweep_tasks = 2)

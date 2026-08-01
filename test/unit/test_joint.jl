@@ -354,9 +354,9 @@ using Test
         HB = MC.TiledHamiltonian(2, mk(1), SLCE.RowLayout(7, 1, 4, [(1, 1)], [4]);
                                  fixed_reference = true)
         @test MC.model_fingerprint(HA) != MC.model_fingerprint(HB)
-        cfg = MC.SpinConfig([SVector(0.0, 0.0, 1.0), SVector(1.0, 0.0, 0.0)])
+        config = MC.SpinConfig([SVector(0.0, 0.0, 1.0), SVector(1.0, 0.0, 0.0)])
         u = [SVector(0.1, -0.2, 0.3), SVector(-0.05, 0.15, 0.2)]
-        @test total_energy(HA, cfg, u) != total_energy(HB, cfg, u)
+        @test total_energy(HA, config, u) != total_energy(HB, config, u)
     end
 
     @testset "the uniform-shift direction must be flat, or be declared physical" begin
@@ -408,10 +408,10 @@ using Test
         @test total_energy(Hs, _rand_config(rng, Hs)) isa Float64
         # all-zero displacements are the state such a model describes, so they are fine;
         # nonzero ones would be silently ignored, so they throw
-        cfg = _rand_config(rng, Hs)
+        config = _rand_config(rng, Hs)
         zu = [zero(SVector{3,Float64}) for _ = 1:n_sites(Hs)]
-        @test total_energy(Hs, cfg, zu) == total_energy(Hs, cfg)
-        @test_throws ArgumentError total_energy(Hs, cfg, _rand_disps(rng, Hs))
+        @test total_energy(Hs, config, zu) == total_energy(Hs, config)
+        @test_throws ArgumentError total_energy(Hs, config, _rand_disps(rng, Hs))
     end
 end
 
@@ -458,8 +458,8 @@ end
         end
         @test MC.model_fingerprint(Ha) == MC.model_fingerprint(Hb)
 
-        cfg = _rand_config(rng, Ha)
-        za, zb = MC._zrows(Ha, cfg), MC._zrows(Hb, cfg)
+        config = _rand_config(rng, Ha)
+        za, zb = MC._zrows(Ha, config), MC._zrows(Hb, config)
         @test za == zb
         @test MC._total_energy(Ha, za) == MC._total_energy(Hb, zb)
         for s = 1:n_sites(Ha)
@@ -536,23 +536,23 @@ end
          (H.disp_comp_ptr[c + 1] - H.disp_comp_ptr[c]) for c = 1:H.n_disp_comps]
 
     @testset "the chain carries displacements" begin
-        cfg = _rand_config(rng, H)
-        st = MC.ChainState(H, cfg, Xoshiro(7), 0.5; step_u = 0.03)
+        config = _rand_config(rng, H)
+        st = MC.ChainState(H, config, Xoshiro(7), 0.5; step_u = 0.03)
         @test length(st.disps) == H.n_sites
         @test all(iszero, st.disps)                     # clamped-ion start
         @test length(st.com_removed) == H.n_disp_comps == 8
         @test all(iszero, st.com_removed)
         @test st.step_u == 0.03
         # the cached rows and the incremental energy are the from-scratch ones
-        @test st.zrows == MC._zrows(H, cfg, st.disps)
-        @test st.energy === total_energy(H, cfg, st.disps)
-        @test_throws ArgumentError MC.ChainState(H, cfg, Xoshiro(7), 0.5; step_u = 0)
+        @test st.zrows == MC._zrows(H, config, st.disps)
+        @test st.energy === total_energy(H, config, st.disps)
+        @test_throws ArgumentError MC.ChainState(H, config, Xoshiro(7), 0.5; step_u = 0)
         # an explicit start, in either I/O layout
         u0 = _rand_disps(rng, H)
-        @test MC.ChainState(H, cfg, Xoshiro(7), 0.5; disps = u0).disps == u0
-        @test MC.ChainState(H, cfg, Xoshiro(7), 0.5;
+        @test MC.ChainState(H, config, Xoshiro(7), 0.5; disps = u0).disps == u0
+        @test MC.ChainState(H, config, Xoshiro(7), 0.5;
                             disps = _disp_matrix(u0)).disps == u0
-        @test_throws DimensionMismatch MC.ChainState(H, cfg, Xoshiro(7), 0.5;
+        @test_throws DimensionMismatch MC.ChainState(H, config, Xoshiro(7), 0.5;
                                                      disps = u0[1:3])
         # a pure-spin chain refuses a nonzero start rather than sampling u = 0
         Hs = TiledHamiltonian(_dimer_model())
@@ -603,9 +603,9 @@ end
     end
 
     @testset "displacement sweeps are bit-deterministic across tasks" begin
-        cfg = _rand_config(rng, H)
+        config = _rand_config(rng, H)
         function chain(ntasks)
-            st = MC.ChainState(H, copy(cfg), Xoshiro(99), 0.5; step_u = 0.04)
+            st = MC.ChainState(H, copy(config), Xoshiro(99), 0.5; step_u = 0.04)
             scs = [MC.SweepScratch(H) for _ = 1:ntasks]
             for _ = 1:6
                 MC.displacement_sweep!(st, H, 2.0, scs)
@@ -693,12 +693,12 @@ end
 
     @testset "a pure-spin chain is untouched by the new machinery" begin
         Hs = TiledHamiltonian(_biquadratic_model(0); dims = (2, 2, 1))
-        cfg = _rand_config(rng, Hs)
+        config = _rand_config(rng, Hs)
         @test Hs.n_disp_active == 0 && Hs.n_disp_comps == 0
         # the sweep is a no-op that consumes NO randomness: interposing it cannot
         # change what the following Metropolis sweep does
         function chain(with_disp::Bool)
-            st = MC.ChainState(Hs, copy(cfg), Xoshiro(21), 0.5)
+            st = MC.ChainState(Hs, copy(config), Xoshiro(21), 0.5)
             sc = MC.SweepScratch(Hs)
             for _ = 1:4
                 with_disp && @test MC.displacement_sweep!(st, Hs, 3.0, sc) == 0
@@ -743,11 +743,11 @@ end
         @test H.translation_residual == maximum(H.comp_residual)
         # the energy really is a|u|², bitwise
         u = [SVector(0.3, -0.2, 0.5) for _ = 1:H.n_sites]
-        cfg = MC.SpinConfig([SVector(0.0, 0.0, 1.0) for _ = 1:H.n_sites])
-        @test total_energy(H, cfg, u) ≈ H.n_sites * a * 0.38 rtol = 1e-14
+        config = MC.SpinConfig([SVector(0.0, 0.0, 1.0) for _ = 1:H.n_sites])
+        @test total_energy(H, config, u) ≈ H.n_sites * a * 0.38 rtol = 1e-14
 
         kT = 0.5
-        st = MC.ChainState(H, cfg, Xoshiro(4), 0.5; step_u = 0.3)
+        st = MC.ChainState(H, config, Xoshiro(4), 0.5; step_u = 0.3)
         sc = MC.SweepScratch(H)
         acc = Float64[]
         for sw = 1:12_000
@@ -1334,12 +1334,12 @@ end
         # move — the invariance above is a property of the flat directions, not a
         # blindness of the observable
         @test !any(Hj.comp_free)
-        cfg = MC.SpinConfig([SVector(0.0, 0.0, 1.0) for _ = 1:Hj.n_sites])
+        config = MC.SpinConfig([SVector(0.0, 0.0, 1.0) for _ = 1:Hj.n_sites])
         u0 = [0.1 .* SVector{3,Float64}(randn(rng2), randn(rng2), randn(rng2))
               for _ = 1:Hj.n_sites]
         g = Dict(o.name => o for o in standard_observables(Hj))[:u2].f
-        @test g(MCView(Hj, cfg, [u + shift for u in u0], 0.0)) !=
-              g(MCView(Hj, cfg, u0, 0.0))
+        @test g(MCView(Hj, config, [u + shift for u in u0], 0.0)) !=
+              g(MCView(Hj, config, u0, 0.0))
         # a pure-spin view carries NO displacements at all — the view empties them
         # whatever the producer passed — so a user observable that reads one fails
         # loudly instead of reporting a confident zero
@@ -1395,13 +1395,13 @@ end
         terms2, L2 = _einstein_terms(a)
         He = MC.TiledHamiltonian(1, terms2, L2; dims = (2, 1, 1),
                                  fixed_reference = true)
-        cfg = MC.SpinConfig([SVector(0.0, 0.0, 1.0) for _ = 1:He.n_sites])
-        Φ = force_constant_matrix(He, cfg)
+        config = MC.SpinConfig([SVector(0.0, 0.0, 1.0) for _ = 1:He.n_sites])
+        Φ = force_constant_matrix(He, config)
         # E = a|u|² ⇒ Φ = 2a·I, exactly, and the finite differences reproduce it to
         # the roundoff floor rather than to a tolerance chosen to pass
         @test size(Φ) == (6, 6)
         @test maximum(abs, Matrix(Φ) - 2a * I) < 1e-9
-        s = harmonic_stability(He, cfg)
+        s = harmonic_stability(He, config)
         @test isapprox(s.min_eigenvalue, 2a; rtol = 1e-9)
         @test s.n_negative == 0
         # a pinned frame is NOT translation invariant, and the residual says so
@@ -1453,7 +1453,7 @@ end
             @test allequal(counts)               # step-invariant, over 10³ in `step`
             # a bounded model reports no branches at all, and its minimum sits far
             # above the floor rather than straddling it
-            vs = harmonic_stability(He, cfg)
+            vs = harmonic_stability(He, config)
             @test vs.n_negative == 0 && vs.min_eigenvalue > 1e6 * vs.tol
         end
 

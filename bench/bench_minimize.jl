@@ -23,14 +23,14 @@ bench_header("ground-state search — bcc Fe $(n_bcc)³ / Nd2Fe14B $(n_2141)³, 
 function minimize_report(name, H)
     println()
     println("--- $name: ", describe(H))
-    cfg   = rand_config(H)
+    config   = rand_config(H)
     ms    = MC._MinimizeScratch(H)
-    t_g = @belapsed MC._gradient!($(ms.G), $H, $cfg, $(ms.zrows), $(ms.c), $(ms.plm))
+    t_g = @belapsed MC._gradient!($(ms.G), $H, $config, $(ms.zrows), $(ms.c), $(ms.plm))
     @printf("%-28s  %10.3f ms/pass   %8.1f ns/site\n",
             "_gradient! (all sites)", 1e3 * t_g, 1e9 * t_g / n_sites(H))
 
-    minimize_energy(H; init = cfg, maxiter = 5)       # warm-up / compile
-    t = @elapsed r = minimize_energy(H; init = cfg)
+    minimize_energy(H; init = config, maxiter = 5)       # warm-up / compile
+    t = @elapsed r = minimize_energy(H; init = config)
     @printf("%-28s  %10.3f s   iters=%-5d  %8.3f ms/iter   converged=%s\n",
             "minimize_energy", t, r.iterations, 1e3 * t / max(r.iterations, 1),
             r.converged)

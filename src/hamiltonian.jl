@@ -99,7 +99,7 @@ struct _ContractionPrograms
     # site programs, one per (template, member slot) — leave-one-out accumulation:
     site_prog::Vector{Int32}   # adjacency entry j → program id (parallel to site_inst)
     sprog_ptr::Vector{Int32}   # program p's entries: sprog_ptr[p]:sprog_ptr[p+1]-1
-    sent_w::Vector{Float64}    # coef · folded[idx], nonzero entries only
+    sent_w::Vector{Float64}    # coef · folded[index], nonzero entries only
     # The same weight FACTORED, so a coefficient rewrite is a fused stream multiply
     # rather than a rebuild (`set_coefficients!`): `sent_w[i] ==
     # term_coef[sent_term[i]] · sent_base[i]` is an invariant of every program array,
@@ -107,7 +107,7 @@ struct _ContractionPrograms
     # coefficient-independent — the skip below is on `folded`, so a term's entries do
     # not appear or vanish when its coefficient changes (this is what makes an
     # in-place rewrite sound at all, and why the strain move can afford one per sweep).
-    sent_base::Vector{Float64} # raw folded[idx], parallel to `sent_w`
+    sent_base::Vector{Float64} # raw folded[index], parallel to `sent_w`
     sent_term::Vector{Int32}   # owning template index, parallel to `sent_w`
     sent_tgt::Vector{Int32}    # target row lm_index(ls[slot], μ_slot) in `c`
     sfac_ptr::Vector{Int32}    # entry e's factors: sfac_ptr[e]:sfac_ptr[e+1]-1
@@ -128,7 +128,7 @@ struct _ContractionPrograms
     pent_row2::Vector{Int32}   # entry e → its second factor row (0 → ≠ 2 factors)
     # energy programs, one per template — the full contraction:
     eprog_ptr::Vector{Int32}   # template k's entries: eprog_ptr[k]:eprog_ptr[k+1]-1
-    eent_w::Vector{Float64}    # raw folded[idx] (the coef multiplies the per-instance
+    eent_w::Vector{Float64}    # raw folded[index] (the coef multiplies the per-instance
                                #   entry sum — the reference kernel's operation order)
     efac_ptr::Vector{Int32}    # entry e's factors: efac_ptr[e]:efac_ptr[e+1]-1
     efac_row::Vector{Int32}    # factor rows, one per axis in slot order
@@ -160,7 +160,7 @@ function _push_term_programs!(pr::_ContractionPrograms, k::Int, coef::Float64,
                               folded::Array{Float64,D}) where {D}
     for axes in q_axes                   # site program of member site position q
         for v in axes
-            for idx in CartesianIndices(folded)
+            for index in CartesianIndices(folded)
                 # Skip on `folded`, NOT on `coef · folded`. For a term with `coef ≠ 0`
                 # the two predicates select the same entries (a product of finite
                 # nonzeros is nonzero), so this is byte-identical to the pre-
@@ -170,15 +170,15 @@ function _push_term_programs!(pr::_ContractionPrograms, k::Int, coef::Float64,
                 # more entry). Gating on `coef` instead would leave a zero-coefficient
                 # term with NO program to rewrite, which is exactly what
                 # `keep_zero_terms` exists to prevent.
-                fw = folded[idx]
+                fw = folded[index]
                 fw == 0.0 && continue
                 push!(pr.sent_w, coef * fw)
                 push!(pr.sent_base, fw)
                 push!(pr.sent_term, Int32(k))
-                push!(pr.sent_tgt, slot_rows[v][idx[v]])
+                push!(pr.sent_tgt, slot_rows[v][index[v]])
                 for k = 1:D
                     k == v && continue
-                    push!(pr.sfac_row, slot_rows[k][idx[k]])
+                    push!(pr.sfac_row, slot_rows[k][index[k]])
                     push!(pr.sfac_slot, slot_site[k])
                 end
                 push!(pr.sfac_ptr, Int32(length(pr.sfac_row) + 1))
@@ -192,12 +192,12 @@ function _push_term_programs!(pr::_ContractionPrograms, k::Int, coef::Float64,
         end
         push!(pr.sprog_ptr, Int32(length(pr.sent_w) + 1))
     end
-    for idx in CartesianIndices(folded)  # energy program (every axis is a factor)
-        w = folded[idx]
+    for index in CartesianIndices(folded)  # energy program (every axis is a factor)
+        w = folded[index]
         w == 0.0 && continue
         push!(pr.eent_w, w)
         for k = 1:D
-            push!(pr.efac_row, slot_rows[k][idx[k]])
+            push!(pr.efac_row, slot_rows[k][index[k]])
             push!(pr.efac_site, slot_site[k])
         end
         push!(pr.efac_ptr, Int32(length(pr.efac_row) + 1))
@@ -770,8 +770,8 @@ end
 const _TRANSLATION_TOL = 1e-10
 
 function _translation_residuals(H::TiledHamiltonian)::Matrix{Float64}
-    cfg, u = _probe_state(H)
-    E0 = _total_energy(H, _zrows(H, cfg, u))
+    config, u = _probe_state(H)
+    E0 = _total_energy(H, _zrows(H, config, u))
     resid = zeros(3, H.n_disp_comps)
     ushift = similar(u)
     for t in (0.02, 0.2)
@@ -795,7 +795,7 @@ function _translation_residuals(H::TiledHamiltonian)::Matrix{Float64}
                 ushift[s] += t * SVector(0.6 * sin(1.7s), -0.8 * cos(2.3s),
                                          0.5 * sin(0.9s + 1.1))   # generic
             end
-            scale = max(abs(_total_energy(H, _zrows(H, cfg, ushift)) - E0),
+            scale = max(abs(_total_energy(H, _zrows(H, config, ushift)) - E0),
                         abs(E0), 1e-300)
             # ONE RIGID PROBE PER CARTESIAN DIRECTION. A component's flat directions can
             # be a proper subspace of the three: a substrate-clamped slab is pinned along
@@ -810,7 +810,7 @@ function _translation_residuals(H::TiledHamiltonian)::Matrix{Float64}
                 for q = H.disp_comp_ptr[c]:(H.disp_comp_ptr[c + 1] - 1)
                     ushift[Int(H.disp_comp_sites[q])] += t * ê
                 end
-                num = abs(_total_energy(H, _zrows(H, cfg, ushift)) - E0)
+                num = abs(_total_energy(H, _zrows(H, config, ushift)) - E0)
                 resid[d, c] = max(resid[d, c], num / scale)
             end
         end
@@ -822,16 +822,16 @@ end
 # term list. Spins are a golden-angle spiral (unit by construction); displacements are a
 # small incommensurate pattern.
 function _probe_state(H::TiledHamiltonian)
-    cfg = SpinConfig(undef, H.n_sites)
+    config = SpinConfig(undef, H.n_sites)
     u = Vector{SVector{3,Float64}}(undef, H.n_sites)
     for s = 1:H.n_sites
         φ = 2.399963229728653 * s
         z = 1 - 2 * (s - 0.5) / H.n_sites
         r = sqrt(max(0.0, 1 - z * z))
-        cfg[s] = SVector(r * cos(φ), r * sin(φ), z)
+        config[s] = SVector(r * cos(φ), r * sin(φ), z)
         u[s] = 0.05 * SVector(sin(0.7s), cos(1.3s), sin(2.1s + 0.4))
     end
-    return cfg, u
+    return config, u
 end
 
 # --- term ingest: the two upstream introspection surfaces -> ScaledTerm --------------

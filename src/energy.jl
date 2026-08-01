@@ -11,7 +11,7 @@
 # pair/triplet fast paths (`site_col`(2)/`pent_row`(2)). The rank-generic
 # *reference kernels* at the bottom of this file are the readable spec — the
 # site-generalized siblings of SLCETools' `mc/metropolis.jl`
-# (`_accumulate_site_term!` / `_term_energy`): the same `μ = idx − l − 1` index
+# (`_accumulate_site_term!` / `_term_energy`): the same `μ = index − l − 1` index
 # mapping, rank-specialized function barriers over `folded`, contracted against
 # concrete tesseral rows — here columns of a dense `nlm × n_sites` matrix, with the
 # member slot precomputed in the CSR adjacency instead of a `findfirst`. The program
@@ -257,9 +257,9 @@ function delta_energy(c::Vector{Float64}, zold::AbstractVector{Float64},
                       hi::Integer)::Float64
     ΔE = 0.0
     @inbounds for k = Int(lo):Int(hi)
-        ck = c[k]
-        ck == 0.0 && continue
-        ΔE += ck * (znew[k] - zold[k])
+        checkpointer = c[k]
+        checkpointer == 0.0 && continue
+        ΔE += checkpointer * (znew[k] - zold[k])
     end
     return ΔE
 end
@@ -283,9 +283,9 @@ function site_gradient(H::TiledHamiltonian, s::Integer,
     i = 0
     for l = 0:H.lmax, m = -l:l
         i += 1
-        ck = c[i]
-        ck == 0.0 && continue
-        g += ck * Harmonics.grad_Zlm_unsafe(l, m, e)
+        checkpointer = c[i]
+        checkpointer == 0.0 && continue
+        g += checkpointer * Harmonics.grad_Zlm_unsafe(l, m, e)
     end
     return g
 end
@@ -293,7 +293,7 @@ end
 # Single-site gradient from precomputed rows and caller-owned scratch: the ONE
 # per-site kernel behind `energy_gradient!` and `minimize.jl`'s `_gradient!`, and
 # arithmetically identical to the public `site_gradient` (same `(l, m)` loop over
-# `lm_index` order, same `ck == 0` skip — the bitwise `==` gates in
+# `lm_index` order, same `checkpointer == 0` skip — the bitwise `==` gates in
 # test_gradient.jl / test_minimize.jl pin all three together). `c` is scratch
 # (zeroed here); `plm` is the associated-Legendre recursion workspace.
 function _site_grad(H::TiledHamiltonian, s::Int, e::SVector{3,Float64},
@@ -305,10 +305,10 @@ function _site_grad(H::TiledHamiltonian, s::Int, e::SVector{3,Float64},
     i = 0
     for l = 0:H.lmax, m = -l:l
         i += 1
-        ck = c[i]
-        ck == 0.0 && continue
+        checkpointer = c[i]
+        checkpointer == 0.0 && continue
         # cache-threaded variant — bit-identical to the plain call (the == gate)
-        g += ck * Harmonics.grad_Zlm_unsafe(l, m, e, plm)
+        g += checkpointer * Harmonics.grad_Zlm_unsafe(l, m, e, plm)
     end
     return g
 end
@@ -390,13 +390,13 @@ end
                                   slots::Vector{TermSlot}, folded::Array{Float64,D},
                                   zrows::Matrix{Float64})::Float64 where {D}
     E = 0.0
-    @inbounds for idx in CartesianIndices(folded)
-        w = folded[idx]
+    @inbounds for index in CartesianIndices(folded)
+        w = folded[index]
         w == 0.0 && continue
         p = 1.0
         for k = 1:D
-            # row of component μ = idx − l − 1 is row0 + μ + l + 1 = row0 + idx
-            p *= zrows[slots[k].row0 + idx[k], sites[slots[k].site]]
+            # row of component μ = index − l − 1 is row0 + μ + l + 1 = row0 + index
+            p *= zrows[slots[k].row0 + index[k], sites[slots[k].site]]
         end
         E += w * p
     end
@@ -425,16 +425,16 @@ end
                                        zrows::Matrix{Float64}) where {D}
     @inbounds for v = 1:D
         slots[v].site == q || continue
-        for idx in CartesianIndices(folded)
-            w = coef * folded[idx]
+        for index in CartesianIndices(folded)
+            w = coef * folded[index]
             w == 0.0 && continue
             p = 1.0
             for k = 1:D
                 k == v && continue
-                p *= zrows[slots[k].row0 + idx[k], inst_sites[off + slots[k].site]]
+                p *= zrows[slots[k].row0 + index[k], inst_sites[off + slots[k].site]]
             end
             p == 0.0 && continue
-            c[slots[v].row0 + idx[v]] += w * p
+            c[slots[v].row0 + index[v]] += w * p
         end
     end
     return c

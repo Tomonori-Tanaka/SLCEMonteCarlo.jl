@@ -87,9 +87,9 @@ rand_disps(rng, H; amp = 0.02) =
 function setup(H; seed = 0xd15b, step = 0.6, step_u = 0.05, amp = 0.02,
                clamped = false)
     rng = Xoshiro(21)
-    cfg = rand_config(rng, H)
-    st = clamped ? MC.ChainState(H, cfg, rng, step; step_u = step_u) :
-         MC.ChainState(H, cfg, rng, step; disps = rand_disps(rng, H; amp = amp),
+    config = rand_config(rng, H)
+    st = clamped ? MC.ChainState(H, config, rng, step; step_u = step_u) :
+         MC.ChainState(H, config, rng, step; disps = rand_disps(rng, H; amp = amp),
                        step_u = step_u)
     gH = GPUTiledHamiltonian(BACKEND, H)
     gst = GPUChainState(gH, st; seed = UInt64(seed))

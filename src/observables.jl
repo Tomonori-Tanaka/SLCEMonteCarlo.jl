@@ -526,8 +526,8 @@ function _finalize_stats(accs::Vector{ObsAccumulator}, evals::Vector{Evaluable},
         # lattice contribution that no magnetic site accounts for.
         n = ev.scope === :energy ? n_active : n_spin_active
         f = (ms...) -> ev.f(NamedTuple{keys_tuple}(ms), kT, n)
-        est, err = jackknife(f, cols)
-        stats[ev.name] = ObservableStat(ev.name, [est], [err], [NaN], nb)
+        estimator, err = jackknife(f, cols)
+        stats[ev.name] = ObservableStat(ev.name, [estimator], [err], [NaN], nb)
     end
     return stats
 end

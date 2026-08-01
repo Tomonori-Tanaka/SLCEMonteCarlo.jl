@@ -41,9 +41,9 @@ function _reduce_perm(red, H_tr, H_red)
     perm = zeros(Int, H_tr.n_sites)
     for s = 1:H_tr.n_sites
         a = MC.site_atom(H_tr, s)
-        idx = (s - a) ÷ H_tr.n_cell_atoms
-        c = SVector(idx % H_tr.dims[1], (idx ÷ H_tr.dims[1]) % H_tr.dims[2],
-                    idx ÷ (H_tr.dims[1] * H_tr.dims[2]))
+        index = (s - a) ÷ H_tr.n_cell_atoms
+        c = SVector(index % H_tr.dims[1], (index ÷ H_tr.dims[1]) % H_tr.dims[2],
+                    index ÷ (H_tr.dims[1] * H_tr.dims[2]))
         b, o = red.atom_map[a]
         perm[s] = MC.site_index(H_red, b, mod.(o + md .* c, H_red.dims))
     end
@@ -54,7 +54,7 @@ end
 # (c ≡ o_a mod M·ℤ³, decided exactly with the integer adjugate).
 function _coset_atom(red, c::SVector{3,Int})
     m = red.M
-    dt = MC._det3(m)
+    dt = MC._determinant3(m)
     adj = SMatrix{3,3,Int}(m[2, 2] * m[3, 3] - m[2, 3] * m[3, 2],
                            m[2, 3] * m[3, 1] - m[2, 1] * m[3, 3],
                            m[2, 1] * m[3, 2] - m[2, 2] * m[3, 1],
@@ -71,10 +71,10 @@ function _coset_atom(red, c::SVector{3,Int})
     error("reduced cell $c matches no coset of M = $(red.M)")
 end
 
-_permute_config(cfg, perm) = begin
-    out = MC.SpinConfig(undef, length(cfg))
-    for s = 1:length(cfg)
-        out[perm[s]] = cfg[s]
+_permute_config(config, perm) = begin
+    out = MC.SpinConfig(undef, length(config))
+    for s = 1:length(config)
+        out[perm[s]] = config[s]
     end
     out
 end
@@ -141,9 +141,9 @@ end
         H_tr = MC.TiledHamiltonian(4, tr_terms; dims = (1, 1, 1))
         H_red = TiledHamiltonian(red; dims = (2, 2, 1))
         rng = MersenneTwister(11)
-        cfg = _rand_config(rng, H_tr)
-        cfg_red = _permute_config(cfg, _reduce_perm(red, H_tr, H_red))
-        @test total_energy(H_red, cfg_red) ≈ total_energy(H_tr, cfg) atol = 1e-13
+        config = _rand_config(rng, H_tr)
+        cfg_red = _permute_config(config, _reduce_perm(red, H_tr, H_red))
+        @test total_energy(H_red, cfg_red) ≈ total_energy(H_tr, config) atol = 1e-13
         # equal to tiling the original small-cell terms directly (the reduced list
         # regroups the ±x pair, so equality is to summation order)
         H_sub = MC.TiledHamiltonian(1, sub_terms; dims = (2, 2, 1))
@@ -202,8 +202,8 @@ end
         @test length(red.terms) == length(spin_multipole_terms(model))
         H_a = TiledHamiltonian(model; dims = (2, 1, 2))
         H_b = TiledHamiltonian(red; dims = (2, 1, 2))
-        cfg = _rand_config(MersenneTwister(5), H_a)
-        @test total_energy(H_b, cfg) ≈ total_energy(H_a, cfg) atol = 1e-13
+        config = _rand_config(MersenneTwister(5), H_a)
+        @test total_energy(H_b, config) ≈ total_energy(H_a, config) atol = 1e-13
     end
 
     @testset "fitted model, genuine 2× reduction + predict_energy gate" begin
@@ -214,11 +214,11 @@ end
         H_tr = TiledHamiltonian(model; dims = (1, 1, 1))
         H_red = TiledHamiltonian(red; dims = (1, 1, 2))
         rng = MersenneTwister(17)
-        cfg = _rand_config(rng, H_tr)
-        cfg_red = _permute_config(cfg, _reduce_perm(red, H_tr, H_red))
+        config = _rand_config(rng, H_tr)
+        cfg_red = _permute_config(config, _reduce_perm(red, H_tr, H_red))
         E = total_energy(H_red, cfg_red)
-        @test E ≈ total_energy(H_tr, cfg) atol = 1e-13
-        @test E ≈ predict_energy(model, _config_matrix(cfg)) - intercept(model) atol =
+        @test E ≈ total_energy(H_tr, config) atol = 1e-13
+        @test E ≈ predict_energy(model, _config_matrix(config)) - intercept(model) atol =
             1e-12
         # a larger, non-commensurate tiling stays consistent with a training tiling
         H_tr2 = TiledHamiltonian(model; dims = (2, 2, 1))
@@ -251,8 +251,8 @@ end
         end
         H_sub2 = MC.TiledHamiltonian(1, sub2; dims = (2, 2, 1))
         H_red = TiledHamiltonian(red; dims = (2, 2, 1))
-        cfg = _rand_config(MersenneTwister(19), H_red)
-        @test total_energy(H_red, cfg) ≈ total_energy(H_sub2, cfg) atol = 1e-13
+        config = _rand_config(MersenneTwister(19), H_red)
+        @test total_energy(H_red, config) ≈ total_energy(H_sub2, config) atol = 1e-13
     end
 
     @testset "fitted anisotropic model: channels survive a 2× reduction" begin
@@ -266,11 +266,11 @@ end
         @test length(unique(keys)) < length(keys)
         H_tr = TiledHamiltonian(model; dims = (1, 1, 1))
         H_red = TiledHamiltonian(red; dims = (1, 1, 2))
-        cfg = _rand_config(MersenneTwister(23), H_tr)
-        cfg_red = _permute_config(cfg, _reduce_perm(red, H_tr, H_red))
+        config = _rand_config(MersenneTwister(23), H_tr)
+        cfg_red = _permute_config(config, _reduce_perm(red, H_tr, H_red))
         E = total_energy(H_red, cfg_red)
-        @test E ≈ total_energy(H_tr, cfg) atol = 1e-12
-        @test E ≈ predict_energy(model, _config_matrix(cfg)) - intercept(model) atol =
+        @test E ≈ total_energy(H_tr, config) atol = 1e-12
+        @test E ≈ predict_energy(model, _config_matrix(config)) - intercept(model) atol =
             1e-12
 
         # NoSymmetry per-bond orbits do NOT align their SALC tensor bases across
@@ -297,8 +297,8 @@ end
         cfg_tr = MC.SpinConfig([_rand_spin(rng), _rand_spin(rng)])
         cfg_red = MC.SpinConfig(undef, MC.n_sites(H_red))
         for s = 1:MC.n_sites(H_red)
-            idx = s - 1                          # one atom per reduced cell
-            c = SVector(idx % 2, (idx ÷ 2) % 2, idx ÷ 4)
+            index = s - 1                          # one atom per reduced cell
+            c = SVector(index % 2, (index ÷ 2) % 2, index ÷ 4)
             cfg_red[s] = cfg_tr[_coset_atom(red, c)]
         end
         E_tr = total_energy(H_tr, cfg_tr)
@@ -311,7 +311,7 @@ end
         tr_cr = supercell_crystal(sub_cr, (2, 2, 1))
         tr_terms = _unfold_diag(sub_terms, 1, (2, 2, 1))
         red = reduce_cell(tr_cr, tr_terms, Matrix(Diagonal([1.0, -1.0, 1.0])))
-        @test MC._det3(red.M) == -4              # M = diag(2, -2, 1)
+        @test MC._determinant3(red.M) == -4              # M = diag(2, -2, 1)
         @test n_atoms(red) == 1
         @test length(red.terms) == 2
         for rt in red.terms                     # ±x untouched by the y flip;
@@ -321,9 +321,9 @@ end
         end
         H_tr = MC.TiledHamiltonian(4, tr_terms; dims = (1, 1, 1))
         H_red = TiledHamiltonian(red; dims = (2, 2, 1))
-        cfg = _rand_config(MersenneTwister(31), H_tr)
-        cfg_red = _permute_config(cfg, _reduce_perm(red, H_tr, H_red))
-        @test total_energy(H_red, cfg_red) ≈ total_energy(H_tr, cfg) atol = 1e-13
+        config = _rand_config(MersenneTwister(31), H_tr)
+        cfg_red = _permute_config(config, _reduce_perm(red, H_tr, H_red))
+        @test total_energy(H_red, cfg_red) ≈ total_energy(H_tr, config) atol = 1e-13
     end
 
     @testset "hand-built mixed-channel terms: exact recovery and the (4π) pin" begin
@@ -362,13 +362,13 @@ end
         H_sub = MC.TiledHamiltonian(1, sub_mixed, L; dims = (2, 1, 1),
                                     fixed_reference = true)
         rng = MersenneTwister(37)
-        cfg = _rand_config(rng, H_tr)
+        config = _rand_config(rng, H_tr)
         disps = _rand_disps(rng, H_tr)
         perm = _reduce_perm(red, H_tr, H_red)
-        cfg_red = _permute_config(cfg, perm)
+        cfg_red = _permute_config(config, perm)
         dis_red = _permute_disps(disps, perm)
         E = total_energy(H_red, cfg_red, dis_red)
-        @test E ≈ total_energy(H_tr, cfg, disps) atol = 1e-13
+        @test E ≈ total_energy(H_tr, config, disps) atol = 1e-13
         @test E ≈ total_energy(H_sub, cfg_red, dis_red) atol = 1e-13
 
         # slot bookkeeping errors of a hand-built list
@@ -464,11 +464,11 @@ end
         H_sub = MC.TiledHamiltonian(1, sub3, L3; dims = (3, 1, 1),
                                     fixed_reference = true)
         perm = _reduce_perm(red, H_can, H_red)
-        cfg = _permute_config(cfg0, perm)
+        config = _permute_config(cfg0, perm)
         dis = _permute_disps(dis0, perm)
-        E = total_energy(H_red, cfg, dis)
+        E = total_energy(H_red, config, dis)
         @test E ≈ total_energy(H_can, cfg0, dis0) atol = 1e-13
-        @test E ≈ total_energy(H_sub, cfg, dis) atol = 1e-13
+        @test E ≈ total_energy(H_sub, config, dis) atol = 1e-13
     end
 
     @testset "fitted joint model: DecoratedTerm reduction survives 2×" begin
@@ -511,12 +511,12 @@ end
         H_tr = TiledHamiltonian(model; dims = (1, 1, 1))
         H_red = TiledHamiltonian(red; dims = (1, 1, 2))
         rng = MersenneTwister(43)
-        cfg = _rand_config(rng, H_tr)
+        config = _rand_config(rng, H_tr)
         disps = _rand_disps(rng, H_tr)
         perm = _reduce_perm(red, H_tr, H_red)
-        E = total_energy(H_red, _permute_config(cfg, perm), _permute_disps(disps, perm))
-        @test E ≈ total_energy(H_tr, cfg, disps) atol = 1e-13
-        @test E ≈ predict_energy(model, _config_matrix(cfg), _disp_matrix(disps)) -
+        E = total_energy(H_red, _permute_config(config, perm), _permute_disps(disps, perm))
+        @test E ≈ total_energy(H_tr, config, disps) atol = 1e-13
+        @test E ≈ predict_energy(model, _config_matrix(config), _disp_matrix(disps)) -
                   intercept(model) atol = 1e-12
 
         # a larger tiling, and the point of the whole feature: an ODD number of reduced

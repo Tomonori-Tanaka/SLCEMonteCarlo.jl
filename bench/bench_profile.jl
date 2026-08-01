@@ -26,7 +26,7 @@ println(describe(H))
 
 st, sc = chain_state(H)
 β = 1 / BENCH_KT
-cfg = rand_config(H)
+config = rand_config(H)
 ms = MC._MinimizeScratch(H)
 
 # One unit of the chosen workload (compiled before profiling starts).
@@ -37,9 +37,9 @@ elseif target == "or"
 elseif target == "total_energy"
     () -> MC._total_energy(H, st.zrows)
 elseif target == "gradient"
-    () -> MC._gradient!(ms.G, H, cfg, ms.zrows, ms.c, ms.plm)
+    () -> MC._gradient!(ms.G, H, config, ms.zrows, ms.c, ms.plm)
 elseif target == "minimize"
-    () -> minimize_energy(H; init = cfg, maxiter = 50)
+    () -> minimize_energy(H; init = config, maxiter = 50)
 else
     error("unknown target $(repr(target)) (sweep | or | total_energy | gradient " *
           "| minimize)")

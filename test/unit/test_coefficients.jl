@@ -35,8 +35,8 @@ _rand_cfg(n, seed) = MC.SpinConfig([SVector{3,Float64}(normalize(randn(MersenneT
     terms = _chain_terms(0.7)
     H = TiledHamiltonian(1, terms; dims = (4, 1, 1))
     fresh = TiledHamiltonian(1, terms; dims = (4, 1, 1))
-    cfg = _rand_cfg(H.n_sites, 3)
-    E0 = total_energy(H, cfg)
+    config = _rand_cfg(H.n_sites, 3)
+    E0 = total_energy(H, config)
 
     @test H.n_input_terms == length(terms)
     @test H.term_source == 1:length(terms)
@@ -45,7 +45,7 @@ _rand_cfg(n, seed) = MC.SpinConfig([SVector{3,Float64}(normalize(randn(MersenneT
         @test a == b                       # byte-identical, not approximately equal
     end
     @test [t.coef for t in H.terms] == [t.coef for t in fresh.terms]
-    @test total_energy(H, cfg) === E0      # and the energy did not move by an ulp
+    @test total_energy(H, config) === E0      # and the energy did not move by an ulp
 
     # the factored stream is an invariant, not an implementation detail
     pr = H.progs
@@ -56,7 +56,7 @@ end
 @testset "set_coefficients!: a swap reproduces a fresh build" begin
     terms = _threebody_terms(0.9)                       # triplet fast path
     H = TiledHamiltonian(1, terms; dims = (4, 1, 1))
-    cfg = _rand_cfg(H.n_sites, 11)
+    config = _rand_cfg(H.n_sites, 11)
     new_coefs = [-0.35]
     swapped = [SpinMultipoleTerm(new_coefs[k], t.body, t.atoms, t.shifts, t.ls, t.folded)
                for (k, t) in enumerate(terms)]
@@ -65,14 +65,14 @@ end
     for (a, b) in zip(_prog_arrays(H), _prog_arrays(fresh))
         @test a == b
     end
-    @test total_energy(H, cfg) === total_energy(fresh, cfg)
+    @test total_energy(H, config) === total_energy(fresh, config)
 
     # the energy is linear in the coefficients (j0 is excluded everywhere), so a
     # uniform rescale is an independent check that the SCALE was re-applied once and
     # not re-derived or dropped
-    E1 = total_energy(H, cfg)
+    E1 = total_energy(H, config)
     set_coefficients!(H, 2 .* new_coefs)
-    @test total_energy(H, cfg) ≈ 2 * E1 rtol = 1e-13
+    @test total_energy(H, config) ≈ 2 * E1 rtol = 1e-13
 end
 
 @testset "set_coefficients!: the support is fixed at construction" begin
@@ -101,8 +101,8 @@ end
     live = [_chain_terms(0.5); _threebody_terms(0.3)]
     fresh = TiledHamiltonian(1, live; dims = (4, 1, 1))
     set_coefficients!(Hk, [t.coef for t in live])
-    cfg = _rand_cfg(Hk.n_sites, 5)
-    @test total_energy(Hk, cfg) ≈ total_energy(fresh, cfg) rtol = 1e-13
+    config = _rand_cfg(Hk.n_sites, 5)
+    @test total_energy(Hk, config) ≈ total_energy(fresh, config) rtol = 1e-13
 end
 
 @testset "set_coefficients!: keep_zero_terms is byte-neutral without zeros" begin

@@ -2,7 +2,7 @@
 # rebuilding its tiling, adjacency, coloring or program index arrays.
 #
 # WHY THIS IS POSSIBLE AT ALL. The program entry SET is coefficient-independent: the
-# site-program skip is on `folded[idx]`, not on `coef · folded[idx]`, so a term's
+# site-program skip is on `folded[index]`, not on `coef · folded[index]`, so a term's
 # entries neither appear nor vanish when its coefficient changes, and the weight
 # stream factors as `sent_w[i] == term_coef[sent_term[i]] · sent_base[i]`. A rewrite is
 # then a fused multiply over that stream plus one scalar per template.

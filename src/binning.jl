@@ -212,7 +212,7 @@ function jackknife(f::F, cols::Vector{Vector{Float64}}) where {F}
         θ[i] = f(loo...)
     end
     θbar = mean(θ)
-    est = nb * θfull - (nb - 1) * θbar
+    estimator = nb * θfull - (nb - 1) * θbar
     err = sqrt((nb - 1) / nb * sum(abs2, θ .- θbar))
-    return est, err
+    return estimator, err
 end

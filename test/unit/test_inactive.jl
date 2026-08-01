@@ -33,8 +33,8 @@
         Hb = TiledHamiltonian(1, vcat(terms, [zero_term]); dims = (3, 1, 1))
         @test length(Hb.terms) == length(Ha.terms)
         rng = Xoshiro(5)
-        cfg = MC.SpinConfig([MC._random_unit(rng) for _ = 1:n_sites(Ha)])
-        @test total_energy(Hb, cfg) == total_energy(Ha, cfg)
+        config = MC.SpinConfig([MC._random_unit(rng) for _ = 1:n_sites(Ha)])
+        @test total_energy(Hb, config) == total_energy(Ha, config)
         # all-zero coefficients leave no spin-dependent term: a loud error
         @test_throws ArgumentError TiledHamiltonian(1, [zero_term])
     end
@@ -57,9 +57,9 @@
     @testset "standard observables exclude inactive sites" begin
         up = SVector(0.0, 0.0, 1.0)
         x = SVector(1.0, 0.0, 0.0)
-        cfg = MC.SpinConfig([up, up, x, x])     # active aligned +z, inactive +x
-        @test MC._mean_spin(_view(Hd, cfg)) == up
-        sub = MC._sublattice_m(_view(Hd, cfg))
+        config = MC.SpinConfig([up, up, x, x])     # active aligned +z, inactive +x
+        @test MC._mean_spin(_view(Hd, config)) == up
+        sub = MC._sublattice_m(_view(Hd, config))
         @test sub[1:6] == [0, 0, 1, 0, 0, 1]
         @test sub[7:12] == zeros(6)             # inactive sublattices exactly zero
         # evaluables receive n_active, not n_sites
@@ -80,8 +80,8 @@
                    sweeps_measure = 100, exchange_interval = 5, nbins = 4,
                    evaluables = [nprobe], seed = 9)
         @test sum(r.swap_acceptance) > 0        # swaps actually happened
-        for cfg in r.final_configs
-            @test cfg[3] === x && cfg[4] === x
+        for config in r.final_configs
+            @test config[3] === x && config[4] === x
         end
         for p in r.points
             @test p.stats[:nprobe].mean[1] == Hd.n_active
@@ -103,13 +103,13 @@
 
     @testset "ground-state search keeps inactive spins bitwise" begin
         rng = Xoshiro(4)
-        cfg = _rand_config(rng, Hd)
+        config = _rand_config(rng, Hd)
         # exactly-unit inactive spins: the init-boundary renormalization (e/‖e‖,
         # applied to every spin) is then bitwise a no-op, isolating the descent
-        cfg[3] = SVector(1.0, 0.0, 0.0)
-        cfg[4] = SVector(0.0, 1.0, 0.0)
-        frozen = (cfg[3], cfg[4])
-        r = minimize_energy(Hd; init = cfg)
+        config[3] = SVector(1.0, 0.0, 0.0)
+        config[4] = SVector(0.0, 1.0, 0.0)
+        frozen = (config[3], config[4])
+        r = minimize_energy(Hd; init = config)
         @test r.converged
         @test r.config[3] == frozen[1] && r.config[4] == frozen[2]
         @test MC.site_gradient(Hd, 3, r.config) == zero(SVector{3,Float64})

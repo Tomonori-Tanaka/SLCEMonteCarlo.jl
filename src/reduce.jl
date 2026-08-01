@@ -68,7 +68,7 @@ end
 
 Base.show(io::IO, red::ReducedCell) =
     print(io, "ReducedCell(", red.n_atoms, " atoms, ", length(red.terms),
-          " terms, |det M| = ", abs(_det3(red.M)), ")")
+          " terms, |det M| = ", abs(_determinant3(red.M)), ")")
 
 """
     n_atoms(red::ReducedCell) -> Int
@@ -77,14 +77,14 @@ Number of atoms in the reduced cell (`n_atoms(training crystal) / |det M|`).
 """
 n_atoms(red::ReducedCell)::Int = red.n_atoms
 
-_det3(m::SMatrix{3,3,Int})::Int =
+_determinant3(m::SMatrix{3,3,Int})::Int =
     m[1, 1] * (m[2, 2] * m[3, 3] - m[2, 3] * m[3, 2]) -
     m[1, 2] * (m[2, 1] * m[3, 3] - m[2, 3] * m[3, 1]) +
     m[1, 3] * (m[2, 1] * m[3, 2] - m[2, 2] * m[3, 1])
 
 # The integer adjugate, `adj(M) · M = det(M) · I` — the exact-arithmetic stand-in for
 # `M⁻¹` used to decide coset membership without ever leaving ℤ.
-_adj3(m::SMatrix{3,3,Int})::SMatrix{3,3,Int,9} =
+_adjugate3(m::SMatrix{3,3,Int})::SMatrix{3,3,Int,9} =
     SMatrix{3,3,Int}(m[2, 2] * m[3, 3] - m[2, 3] * m[3, 2],
                      m[2, 3] * m[3, 1] - m[2, 1] * m[3, 3],
                      m[2, 1] * m[3, 2] - m[2, 2] * m[3, 1],
@@ -219,7 +219,7 @@ function _reduce_cell(crystal::Crystal, mterms::Vector{T},
             "the training lattice is not an integer combination of the given " *
             "cell's vectors: A_sub \\ A_train = $mf"))
     m = SMatrix{3,3,Int}(mi)
-    nc = abs(_det3(m))
+    nc = abs(_determinant3(m))
     # defensive — a singular integer mi cannot pass the full-rank residual check above
     nc >= 1 || throw(ArgumentError(
         "the given cell is singular relative to the training cell (det M = 0)"))
@@ -298,9 +298,9 @@ function _reduce_terms(mterms::Vector{T},
                        m::SMatrix{3,3,Int,9}, nc::Int, nat::Int,
                        coef_rtol::Float64)::Vector{T} where {T}
     Key = _reduced_key_type(T)
-    adj = _adj3(m)
+    adj = _adjugate3(m)
     keys_order = Key[]                       # deterministic output ordering
-    # per key: (term idx, aligned folded, the anchor's coset label)
+    # per key: (term index, aligned folded, the anchor's coset label)
     Entry = Tuple{Int,Array{Float64},SVector{3,Int}}
     bucket = Dict{Key,Vector{Entry}}()
     for (k, mt) in enumerate(mterms)

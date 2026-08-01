@@ -36,9 +36,9 @@ end
 function _gpu_setup(H; seed_cfg = 7, seed_dev = UInt64(0xc0ffee), step = 0.6,
                     with_disps = false)
     rng = Xoshiro(seed_cfg)
-    cfg = _rand_config(rng, H)
-    st = with_disps ? MC.ChainState(H, cfg, rng, step; disps = _rand_disps(rng, H)) :
-         MC.ChainState(H, cfg, rng, step)
+    config = _rand_config(rng, H)
+    st = with_disps ? MC.ChainState(H, config, rng, step; disps = _rand_disps(rng, H)) :
+         MC.ChainState(H, config, rng, step)
     gH = MC.GPUTiledHamiltonian(CPU(), H)
     gst = MC.GPUChainState(gH, st; seed = seed_dev)
     return st, gH, gst
@@ -68,11 +68,11 @@ end
 
 # Reference-side sweep loop: accumulates the energy in the driver's exact
 # association order (`E0 += reduce` per sweep) so the comparison is bitwise.
-function _ref_sweeps!(cfg, zr, dE, acc, H, β, step, seed, E0, nsweeps, ws)
+function _ref_sweeps!(config, zr, dE, acc, H, β, step, seed, E0, nsweeps, ws)
     E = E0
     naccs = Int[]
     for sw = 1:nsweeps
-        push!(naccs, MC._metropolis_sweep_keyed_ref!(cfg, zr, dE, acc, H, β, step,
+        push!(naccs, MC._metropolis_sweep_keyed_ref!(config, zr, dE, acc, H, β, step,
                                                      seed, Int32(sw), ws))
         E += MC._reduce_dE(H, dE)
     end

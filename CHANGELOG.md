@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — internal names spelled out (no public surface touched)
+
+The `STYLE_GUIDE.md` §1 naming contract's safe tier, applied: internal locals and
+private helper functions now spell their words out. Nothing exported, nothing in the
+`public` tier, no struct field and no persisted key changed, so this is invisible to
+every caller and to every file on disk; the suites are green at the same counts.
+
+Locals: `ck` → `checkpointer`, `cfg` → `config`, `idx` → `index`, `est` →
+`estimator`. Helpers: `_ck_mc!`/`_ck_pt!` → `_checkpoint_mc!`/`_checkpoint_pt!`,
+`_sch_*` → `_schedule_*`, `_fp_mix` → `_fingerprint_mix`, `_det3`/`_adj3` →
+`_determinant3`/`_adjugate3`. `H`, `st` and `sc` keep their meanings — they are the
+reserved short locals of §1.5, and this package owns all three.
+
+`STYLE_GUIDE.md` §1.9 records what was renamed and what deliberately was not.
+
 ### Fixed — `strain_move!` did not check that the schedule describes this Hamiltonian
 
 `strain_move!` is a public entry point and installs coefficients through

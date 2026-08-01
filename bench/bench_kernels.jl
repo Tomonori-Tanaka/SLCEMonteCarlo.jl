@@ -34,11 +34,11 @@ end
 function kernel_report(name, H)
     println()
     println("--- $name: ", describe(H))
-    cfg   = rand_config(H)
-    zrows = MC._zrows(H, cfg)
+    config   = rand_config(H)
+    zrows = MC._zrows(H, config)
     c     = zeros(H.nlm)
     znew  = zeros(H.nlm)
-    e     = cfg[1]
+    e     = config[1]
     # The busiest site (a non-magnetic sublattice — B in Nd2Fe14B — has adjacency 0,
     # so a "middle site" sample can be meaningless; the mean below is the sweep-
     # relevant number).
@@ -72,10 +72,10 @@ function kernel_report(name, H)
     a_E = @allocations MC._total_energy(H, zrows)
     @printf("%-28s  %10.3f µs   allocs=%d\n", "_total_energy", 1e6 * t_E, a_E)
 
-    t_zr = @belapsed MC._zrows($H, $cfg)
+    t_zr = @belapsed MC._zrows($H, $config)
     @printf("%-28s  %10.3f µs\n", "_zrows (full rebuild)", 1e6 * t_zr)
 
-    t_g = @belapsed site_gradient($H, $smax, $cfg)
+    t_g = @belapsed site_gradient($H, $smax, $config)
     @printf("%-28s  %10.3f µs   (diagnostic path — rebuilds zrows)\n",
             "site_gradient", 1e6 * t_g)
     return nothing

@@ -9,15 +9,15 @@ _rugged_H() = MC.TiledHamiltonian(_biquadratic_model(0); dims = (2, 1, 1))
 
 @testset "gradient consistency" begin
     H = _rugged_H()
-    cfg = _rand_config(Xoshiro(3), H)
+    config = _rand_config(Xoshiro(3), H)
     G = Vector{SVector{3,Float64}}(undef, H.n_sites)
-    gsup = MC._gradient!(G, H, cfg, MC._zrows(H, cfg), zeros(H.nlm),
+    gsup = MC._gradient!(G, H, config, MC._zrows(H, config), zeros(H.nlm),
                          Vector{Float64}(undef, H.lmax + 1))
     # bit-identical to the public per-site gradient (the coupled-site gate: both
     # walk the same (l, m) loop in energy.jl / minimize.jl)
     for s = 1:H.n_sites
-        @test G[s] == MC.site_gradient(H, s, cfg)
-        @test abs(dot(cfg[s], G[s])) <= 1e-14 * (1 + norm(G[s]))   # tangency
+        @test G[s] == MC.site_gradient(H, s, config)
+        @test abs(dot(config[s], G[s])) <= 1e-14 * (1 + norm(G[s]))   # tangency
     end
     @test gsup == maximum(norm(g) for g in G)
     @test gsup > 0
@@ -154,13 +154,13 @@ end
 
 @testset "init passthrough" begin
     H = MC.TiledHamiltonian(_dimer_model())
-    cfg = _rand_config(Xoshiro(8), H)
-    rv = minimize_energy(H; init = cfg, seed = 1)
-    rm = minimize_energy(H; init = _config_matrix(cfg), seed = 2)
+    config = _rand_config(Xoshiro(8), H)
+    rv = minimize_energy(H; init = config, seed = 1)
+    rm = minimize_energy(H; init = _config_matrix(config), seed = 2)
     @test rv.config == rm.config && rv.energy == rm.energy   # seed-independent
     @test_throws DimensionMismatch minimize_energy(H; init = zeros(3, H.n_sites + 1))
-    @test_throws DimensionMismatch minimize_energy(H; init = cfg[1:2])
-    bad = copy(cfg)
+    @test_throws DimensionMismatch minimize_energy(H; init = config[1:2])
+    bad = copy(config)
     bad[1] = SVector(0.0, 0.0, 0.0)
     @test_throws ArgumentError minimize_energy(H; init = bad)
 end
@@ -183,8 +183,8 @@ end
     fgs = find_ground_state(H; inits = [cfg1, cfg2], anneal_sweeps = 0, seed = 1,
                             ntasks = 1)
     @test length(fgs.energies) == 2
-    for (r, cfg) in ((1, cfg1), (2, cfg2))     # RNG-free polish ⇒ exact match
-        m = minimize_energy(H; init = cfg, seed = 42)
+    for (r, config) in ((1, cfg1), (2, cfg2))     # RNG-free polish ⇒ exact match
+        m = minimize_energy(H; init = config, seed = 42)
         @test fgs.energies[r] == m.energy
         @test fgs.configs[r] == m.config
     end
