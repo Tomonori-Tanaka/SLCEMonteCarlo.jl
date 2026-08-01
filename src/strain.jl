@@ -82,15 +82,15 @@ end
 function _schedule_term_fp(H::TiledHamiltonian)::UInt64
     h = 0xcbf29ce484222325
     @inbounds for k in eachindex(H.terms)
-        h = _fp_mix(h, Int(H.term_source[k]))
+        h = _fingerprint_mix(h, Int(H.term_source[k]))
         t = H.terms[k]
         for a in t.atoms
-            h = _fp_mix(h, a)
+            h = _fingerprint_mix(h, a)
         end
         for sv in t.shifts
-            h = _fp_mix(h, sv[1])
-            h = _fp_mix(h, sv[2])
-            h = _fp_mix(h, sv[3])
+            h = _fingerprint_mix(h, sv[1])
+            h = _fingerprint_mix(h, sv[2])
+            h = _fingerprint_mix(h, sv[3])
         end
     end
     return h
@@ -125,7 +125,7 @@ in_strain_domain(sch::StrainSchedule, s::Real) =
 
 # The abscissa, centred and scaled exactly as the upstream interpolation does — a raw
 # Vandermonde in volumes of a few hundred Å³ is unusable by degree 3.
-function _sch_z(sch::StrainSchedule, s::Real)::Float64
+function _schedule_z(sch::StrainSchedule, s::Real)::Float64
     x = sch.abscissa === :linear ? Float64(s) :
         sch.abscissa === :volume ? sch.v_train * s^3 :
         log(sch.v_train * s^3)
@@ -143,7 +143,7 @@ function strain_coefficients!(dst::AbstractVector{Float64}, sch::StrainSchedule,
     n = size(sch.coefpoly, 2)
     length(dst) == n || throw(DimensionMismatch(
         "dst has $(length(dst)) entries for $n terms"))
-    z = _sch_z(sch, s)
+    z = _schedule_z(sch, s)
     d = size(sch.coefpoly, 1)
     @inbounds for j = 1:n
         acc = sch.coefpoly[d, j]
@@ -172,7 +172,7 @@ from the sweep energy as a constant — the strain move is precisely where it st
 one, so a strain `ΔE` must carry `n_cells · Δj0` (design record §8).
 """
 function strain_j0(sch::StrainSchedule, s::Real)::Float64
-    z = _sch_z(sch, s)
+    z = _schedule_z(sch, s)
     acc = last(sch.j0poly)
     @inbounds for p = (length(sch.j0poly) - 1):-1:1
         acc = acc * z + sch.j0poly[p]
@@ -288,7 +288,7 @@ function StrainSchedule(sm::SLCE.StrainedModels, H::TiledHamiltonian)
         "an integer. (A `reduce_cell` Hamiltonian never reaches this point — its term "*
         "count differs from the grid's, so the term check above refuses it first; "*
         "strain + reduced cells is unsupported.)"))
-    x = [_sch_abscissa(sm.abscissa, v_train, s) for s in scales]
+    x = [_schedule_abscissa(sm.abscissa, v_train, s) for s in scales]
     x0 = sum(x) / npt
     xw = maximum(abs, x .- x0)
     xw = xw == 0 ? 1.0 : xw
@@ -309,7 +309,7 @@ function StrainSchedule(sm::SLCE.StrainedModels, H::TiledHamiltonian)
                           _schedule_term_fp(H))
 end
 
-_sch_abscissa(abscissa::Symbol, v_train::Float64, s::Real)::Float64 =
+_schedule_abscissa(abscissa::Symbol, v_train::Float64, s::Real)::Float64 =
     abscissa === :linear ? Float64(s) :
     abscissa === :volume ? v_train * s^3 :
     abscissa === :logvolume ? log(v_train * s^3) :
@@ -479,7 +479,18 @@ they stay absolute time-averages comparable with the `:u2` observable; see
 """
 function strain_move!(st::ChainState, H::TiledHamiltonian, sch::StrainSchedule,
                       sc::StrainScratch, kt::Real; pressure::Real, step::Real,
-                      proposal::Symbol = :logvolume)::Bool
+                      proposal::Symbol = :logvolume, check_pairing::Bool = true)::Bool
+    # The schedule↔Hamiltonian pairing, checked here because this is a PUBLIC entry
+    # point: `set_coefficients!` below validates only the term COUNT, so a schedule
+    # converted against a different model of the same shape would write each
+    # interpolated coefficient onto another model's cluster — silently, with every
+    # other diagnostic green. That is exactly what `_schedule_term_fp` exists to catch,
+    # and every other public consumer of a schedule (the drivers, `resume`,
+    # `energy_volume_derivative`, `pressure_diagnostics`, `npt_observables`) already
+    # asks for it. `check_pairing = false` is for the in-package drivers, which check
+    # once at entry — the fingerprint walks every tiled term, so it does not belong in
+    # a per-move path.
+    check_pairing && _check_strain_pairing(H, sch)
     _strain_check_proposal(proposal)
     kt > 0 || throw(ArgumentError("kt must be > 0; got $kt"))
     step > 0 || throw(ArgumentError("the strain proposal width must be > 0; got $step"))
@@ -578,7 +589,7 @@ end
 # d(centred abscissa)/ds — the chain-rule factor between the Horner variable `z` and the
 # linear scale. Differentiating in `z` alone would be silently wrong by `xw` (and by
 # `3·v·s²` on a :volume grid).
-_sch_dz_ds(sch::StrainSchedule, s::Real)::Float64 =
+_schedule_dz_ds(sch::StrainSchedule, s::Real)::Float64 =
     (sch.abscissa === :linear ? 1.0 :
      sch.abscissa === :volume ? 3 * sch.v_train * Float64(s)^2 :
      3.0 / Float64(s)) / sch.xw          # :logvolume — d ln(v·s³)/ds = 3/s
@@ -591,8 +602,8 @@ function _strain_dcoefficients!(dst::AbstractVector{Float64}, sch::StrainSchedul
     n = size(sch.coefpoly, 2)
     length(dst) == n || throw(DimensionMismatch(
         "dst has $(length(dst)) entries for $n terms"))
-    z = _sch_z(sch, s)
-    dzds = _sch_dz_ds(sch, s)
+    z = _schedule_z(sch, s)
+    dzds = _schedule_dz_ds(sch, s)
     d = size(sch.coefpoly, 1)
     @inbounds for j = 1:n
         acc = (d - 1) * sch.coefpoly[d, j]
@@ -606,13 +617,13 @@ end
 
 # dj0/ds, per TRAINING cell — the derivative of `strain_j0`'s Horner pass.
 function _strain_dj0(sch::StrainSchedule, s::Real)::Float64
-    z = _sch_z(sch, s)
+    z = _schedule_z(sch, s)
     d = length(sch.j0poly)
     acc = (d - 1) * sch.j0poly[d]
     @inbounds for p = (d - 1):-1:2
         acc = acc * z + (p - 1) * sch.j0poly[p]
     end
-    return acc * _sch_dz_ds(sch, s)
+    return acc * _schedule_dz_ds(sch, s)
 end
 
 # Per-template displacement homogeneity degree `Σ_disp-slots (2k + l)`. The `k` is

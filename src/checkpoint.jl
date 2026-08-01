@@ -50,19 +50,19 @@ end
 # --- model fingerprint (stable FNV-1a — deliberately NOT Base.hash, which is
 # --- Julia-version-dependent) -------------------------------------------------------
 
-@inline _fp_mix(h::UInt64, x::UInt64)::UInt64 = (h ⊻ x) * 0x00000100000001b3
-@inline _fp_mix(h::UInt64, x::Integer)::UInt64 =
-    _fp_mix(h, reinterpret(UInt64, Int64(x)))
-@inline _fp_mix(h::UInt64, x::Float64)::UInt64 = _fp_mix(h, reinterpret(UInt64, x))
+@inline _fingerprint_mix(h::UInt64, x::UInt64)::UInt64 = (h ⊻ x) * 0x00000100000001b3
+@inline _fingerprint_mix(h::UInt64, x::Integer)::UInt64 =
+    _fingerprint_mix(h, reinterpret(UInt64, Int64(x)))
+@inline _fingerprint_mix(h::UInt64, x::Float64)::UInt64 = _fingerprint_mix(h, reinterpret(UInt64, x))
 
 # Fingerprint of the tiled Hamiltonian a checkpoint belongs to: dims + every term's
 # payload. A resume against a different model/dims errors instead of silently
 # continuing the wrong physics.
 function _fingerprint(H::TiledHamiltonian)::UInt64
     h = 0xcbf29ce484222325
-    h = _fp_mix(h, H.n_cell_atoms)
+    h = _fingerprint_mix(h, H.n_cell_atoms)
     for d in H.dims
-        h = _fp_mix(h, d)
+        h = _fingerprint_mix(h, d)
     end
     # The row layout, mixed only on a joint Hamiltonian (zero change for every
     # pure-spin model, so pre-M4 checkpoints still identify theirs). It is NOT
@@ -74,25 +74,25 @@ function _fingerprint(H::TiledHamiltonian)::UInt64
     # energies. Mixing `disp_factors` also separates a pure-spin model from a joint one
     # whose displacement couplings all fitted to zero.
     if has_disp(H)
-        h = _fp_mix(h, H.layout.nrows)
-        h = _fp_mix(h, H.layout.spin_lmax)
+        h = _fingerprint_mix(h, H.layout.nrows)
+        h = _fingerprint_mix(h, H.layout.spin_lmax)
         for (k, l) in H.layout.disp_factors
-            h = _fp_mix(h, k)
-            h = _fp_mix(h, l)
+            h = _fingerprint_mix(h, k)
+            h = _fingerprint_mix(h, l)
         end
     end
     for t in H.terms
-        h = _fp_mix(h, t.coef)
+        h = _fingerprint_mix(h, t.coef)
         for a in t.atoms
-            h = _fp_mix(h, a)
+            h = _fingerprint_mix(h, a)
         end
         for s in t.shifts
-            h = _fp_mix(h, s[1])
-            h = _fp_mix(h, s[2])
-            h = _fp_mix(h, s[3])
+            h = _fingerprint_mix(h, s[1])
+            h = _fingerprint_mix(h, s[2])
+            h = _fingerprint_mix(h, s[3])
         end
         for sl in t.slots
-            h = _fp_mix(h, sl.l)
+            h = _fingerprint_mix(h, sl.l)
         end
         # The slot layout beyond the degrees — which site each axis reads, and its
         # channel — is mixed ONLY when the term is not the pure-spin identity layout
@@ -102,13 +102,13 @@ function _fingerprint(H::TiledHamiltonian)::UInt64
         # is unchanged by M4. See `_is_spin_identity` in hamiltonian.jl.
         if !_is_spin_identity(t.slots)
             for sl in t.slots
-                h = _fp_mix(h, sl.site)
-                h = _fp_mix(h, sl.row0)
-                h = _fp_mix(h, sl.spin ? 1 : 0)
+                h = _fingerprint_mix(h, sl.site)
+                h = _fingerprint_mix(h, sl.row0)
+                h = _fingerprint_mix(h, sl.spin ? 1 : 0)
             end
         end
         for v in t.folded
-            h = _fp_mix(h, v)
+            h = _fingerprint_mix(h, v)
         end
     end
     return h
@@ -133,30 +133,30 @@ model_fingerprint(H::TiledHamiltonian)::UInt64 = _fingerprint(H)
 # are reinstalled from the schedule the caller supplies.
 function _grid_fingerprint(sch::StrainSchedule)::UInt64
     h = 0xcbf29ce484222325
-    h = _fp_mix(h, length(sch.scales))
+    h = _fingerprint_mix(h, length(sch.scales))
     for s in sch.scales
-        h = _fp_mix(h, s)
+        h = _fingerprint_mix(h, s)
     end
     for c in codeunits(String(sch.abscissa))
-        h = _fp_mix(h, c)
+        h = _fingerprint_mix(h, c)
     end
-    h = _fp_mix(h, sch.x0)
-    h = _fp_mix(h, sch.xw)
+    h = _fingerprint_mix(h, sch.x0)
+    h = _fingerprint_mix(h, sch.xw)
     # shape prefixes: two grids differing only in interpolation degree must not rely
     # on coefficient VALUES to separate their flattened polynomials
-    h = _fp_mix(h, size(sch.coefpoly, 1))
-    h = _fp_mix(h, size(sch.coefpoly, 2))
+    h = _fingerprint_mix(h, size(sch.coefpoly, 1))
+    h = _fingerprint_mix(h, size(sch.coefpoly, 2))
     for v in sch.coefpoly
-        h = _fp_mix(h, v)
+        h = _fingerprint_mix(h, v)
     end
-    h = _fp_mix(h, sch.term_fp)
+    h = _fingerprint_mix(h, sch.term_fp)
     for v in sch.j0poly
-        h = _fp_mix(h, v)
+        h = _fingerprint_mix(h, v)
     end
-    h = _fp_mix(h, sch.v_train)
-    h = _fp_mix(h, sch.n_cells)
-    h = _fp_mix(h, sch.n_mobile)
-    h = _fp_mix(h, sch.d_dim)
+    h = _fingerprint_mix(h, sch.v_train)
+    h = _fingerprint_mix(h, sch.n_cells)
+    h = _fingerprint_mix(h, sch.n_mobile)
+    h = _fingerprint_mix(h, sch.d_dim)
     return h
 end
 
@@ -333,15 +333,15 @@ function _read_point(f, g::String)::TempResult
                       f["$g/escaped"])
 end
 
-function _write_header(f, ck::_Checkpointer)
+function _write_header(f, checkpointer::_Checkpointer)
     f["schema_version"] = _CKPT_SCHEMA_VERSION
-    f["kind"] = ck.kind
+    f["kind"] = checkpointer.kind
     f["julia_version"] = string(VERSION)
     f["package_version"] = string(pkgversion(SLCEMonteCarlo))
-    f["model_fingerprint"] = ck.fingerprint
-    f["checkpoint_interval"] = ck.interval
-    f["exchange_interval"] = ck.exchange_interval
-    p = ck.plan
+    f["model_fingerprint"] = checkpointer.fingerprint
+    f["checkpoint_interval"] = checkpointer.interval
+    f["exchange_interval"] = checkpointer.exchange_interval
+    p = checkpointer.plan
     f["plan/kts"] = p.kts
     f["plan/sweeps_therm"] = p.sweeps_therm
     f["plan/sweeps_measure"] = p.sweeps_measure
@@ -361,9 +361,9 @@ function _write_header(f, ck::_Checkpointer)
     f["plan/strain_proposal"] = String(p.strain_proposal)
     f["plan/strain_step"] = p.strain_step
     f["plan/pressure"] = p.pressure
-    f["grid_fingerprint"] = ck.grid_fp
-    f["plan/observable_names"] = ck.obs_names
-    f["plan/observable_ncomps"] = ck.obs_ncomps
+    f["grid_fingerprint"] = checkpointer.grid_fp
+    f["plan/observable_names"] = checkpointer.obs_names
+    f["plan/observable_ncomps"] = checkpointer.obs_ncomps
     return nothing
 end
 
@@ -390,12 +390,12 @@ end
 
 # --- writers (atomic: temp file + mv) ------------------------------------------------
 
-function _write_ckpt_mc(ck::_Checkpointer, H::TiledHamiltonian, st::ChainState,
+function _write_ckpt_mc(checkpointer::_Checkpointer, H::TiledHamiltonian, st::ChainState,
                         points::Vector{TempResult}, temp_index::Int, phase::Symbol,
                         sweep::Int, accs::Union{Nothing,Vector{ObsAccumulator}})
-    tmp = ck.path * ".tmp." * string(getpid())   # one writer per path assumed
+    tmp = checkpointer.path * ".tmp." * string(getpid())   # one writer per path assumed
     jldopen(tmp, "w") do f
-        _write_header(f, ck)
+        _write_header(f, checkpointer)
         f["progress/temp_index"] = temp_index
         f["progress/phase"] = String(phase)
         f["progress/sweep"] = sweep
@@ -407,31 +407,31 @@ function _write_ckpt_mc(ck::_Checkpointer, H::TiledHamiltonian, st::ChainState,
         f["has_accs"] = accs !== nothing
         accs === nothing || _write_accs(f, "accs", accs)
     end
-    mv(tmp, ck.path; force = true)
+    mv(tmp, checkpointer.path; force = true)
     return nothing
 end
 
 # Periodic-write tick for the MC drivers (one call per sweep; no-op without a
 # checkpointer or with the boundary-only interval 0).
-function _ck_mc!(ck, H::TiledHamiltonian, st::ChainState,
+function _checkpoint_mc!(checkpointer, H::TiledHamiltonian, st::ChainState,
                  points::Vector{TempResult}, temp_index::Int, phase::Symbol,
                  sweep::Int, accs::Union{Nothing,Vector{ObsAccumulator}})
-    ck === nothing && return nothing
-    ck.interval > 0 || return nothing
-    ck.since += 1
-    ck.since >= ck.interval || return nothing
-    ck.since = 0
-    _write_ckpt_mc(ck, H, st, points, temp_index, phase, sweep, accs)
+    checkpointer === nothing && return nothing
+    checkpointer.interval > 0 || return nothing
+    checkpointer.since += 1
+    checkpointer.since >= checkpointer.interval || return nothing
+    checkpointer.since = 0
+    _write_ckpt_mc(checkpointer, H, st, points, temp_index, phase, sweep, accs)
     return nothing
 end
 
-function _write_ckpt_pt(ck::_Checkpointer, lanes::Vector{_PTLane}, phase::Symbol,
+function _write_ckpt_pt(checkpointer::_Checkpointer, lanes::Vector{_PTLane}, phase::Symbol,
                         done::Int, parity::Int, exchange_rng::Xoshiro,
                         swap_att::Vector{Int}, swap_acc::Vector{Int})
-    tmp = ck.path * ".tmp." * string(getpid())
+    tmp = checkpointer.path * ".tmp." * string(getpid())
     measure = phase === :measure
     jldopen(tmp, "w") do f
-        _write_header(f, ck)
+        _write_header(f, checkpointer)
         f["progress/phase"] = String(phase)
         f["progress/done"] = done
         f["progress/parity"] = parity
@@ -444,21 +444,21 @@ function _write_ckpt_pt(ck::_Checkpointer, lanes::Vector{_PTLane}, phase::Symbol
             measure && _write_accs(f, "lane/$r/accs", lane.accs)
         end
     end
-    mv(tmp, ck.path; force = true)
+    mv(tmp, checkpointer.path; force = true)
     return nothing
 end
 
 # Periodic-write tick for the PT segment driver (one call per segment, `n` = the
 # segment's sweep count).
-function _ck_pt!(ck, n::Int, lanes::Vector{_PTLane}, phase::Symbol, done::Int,
+function _checkpoint_pt!(checkpointer, n::Int, lanes::Vector{_PTLane}, phase::Symbol, done::Int,
                  parity::Int, exchange_rng::Xoshiro, swap_att::Vector{Int},
                  swap_acc::Vector{Int})
-    ck === nothing && return nothing
-    ck.interval > 0 || return nothing
-    ck.since += n
-    ck.since >= ck.interval || return nothing
-    ck.since = 0
-    _write_ckpt_pt(ck, lanes, phase, done, parity, exchange_rng, swap_att,
+    checkpointer === nothing && return nothing
+    checkpointer.interval > 0 || return nothing
+    checkpointer.since += n
+    checkpointer.since >= checkpointer.interval || return nothing
+    checkpointer.since = 0
+    _write_ckpt_pt(checkpointer, lanes, phase, done, parity, exchange_rng, swap_att,
                    swap_acc)
     return nothing
 end
@@ -552,6 +552,10 @@ function resume(path::AbstractString, H::TiledHamiltonian;
          ncomps == [o.ncomp for o in observables]) || error(
             "the resumed observables (names/ncomps) do not match the checkpoint; " *
             "stored: $(names) with $(ncomps)")
+        # AFTER the checkpoint comparison: a resumed observable list that does not
+        # match the stored one is the more specific complaint, and a shortened list
+        # would otherwise be reported as a broken evaluable input.
+        _check_evaluables(observables, evaluables)
         kind = f["kind"]
         body = if kind == "mc"
             (; points = TempResult[_read_point(f, "points/$i")
@@ -594,7 +598,7 @@ function resume(path::AbstractString, H::TiledHamiltonian;
                Int(checkpoint_interval)
     # `H` still carries the reference coefficients here (installed above), so the
     # continued file's fingerprint is the same identity the original run wrote.
-    ck = _make_checkpointer(checkpoint, interval, H, data.plan, observables,
+    checkpointer = _make_checkpointer(checkpoint, interval, H, data.plan, observables,
                             data.kind, data.exch;
                             grid_fp = strain === nothing ? UInt64(0) :
                                       _grid_fingerprint(strain))
@@ -617,7 +621,7 @@ function resume(path::AbstractString, H::TiledHamiltonian;
             sctx = (strain, sc)
         end
         r = _mc_loop!(b.points, b.st, H, data.plan, observables, evaluables,
-                      b.temp_index, b.phase, b.sweep, b.accs, ck, sctx)
+                      b.temp_index, b.phase, b.sweep, b.accs, checkpointer, sctx)
         # hand `H` back at the reference, as `run_mc` does
         sctx === nothing ||
             set_coefficients!(H, strain_coefficients!(sctx[2].coef, sctx[1], 1.0);
@@ -638,5 +642,5 @@ function resume(path::AbstractString, H::TiledHamiltonian;
     nt = min(length(data.plan.kts), Threads.nthreads())
     return _pt_run!(b.lanes, data.plan, observables, evaluables, data.exch, nt,
                     b.exchange_rng, b.swap_att, b.swap_acc, b.phase, b.done,
-                    b.parity, ck)
+                    b.parity, checkpointer)
 end

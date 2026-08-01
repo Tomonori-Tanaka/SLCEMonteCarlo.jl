@@ -182,19 +182,19 @@ _ss_vk_mean(k, va, vb) =
 
         # THE CLAIM: installing the schedule's coefficients gives the Hamiltonian a fresh
         # build at that scale would have produced.
-        cfg = _ss_cfg(H.n_sites, 11)
+        config = _ss_cfg(H.n_sites, 11)
         u = _ss_disps(H.n_sites, 11)
         for s in (0.99, 1.02)
             fresh = TiledHamiltonian(SLCE.model_at(sm, s); dims = (2, 1, 1),
                                      keep_zero_terms = true)
             set_coefficients!(H, MCs.strain_coefficients(sch, s))
-            @test total_energy(H, cfg, u) ≈ total_energy(fresh, cfg, u) rtol = 1e-10
+            @test total_energy(H, config, u) ≈ total_energy(fresh, config, u) rtol = 1e-10
             @test [t.coef for t in H.terms] ≈ [t.coef for t in fresh.terms] rtol = 1e-10
         end
         # and back to the reference, exactly
         set_coefficients!(H, MCs.strain_coefficients(sch, 1.0))
         ref = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
-        @test total_energy(H, cfg, u) ≈ total_energy(ref, cfg, u) rtol = 1e-12
+        @test total_energy(H, config, u) ≈ total_energy(ref, config, u) rtol = 1e-12
     end
 
     @testset "n_cells counts atoms, D counts free directions" begin
@@ -271,27 +271,27 @@ _ss_vk_mean(k, va, vb) =
         @test length(a.terms) == length(b.terms) - nzero
         @test [t.coef for t in a.terms] ==
               [t.coef for t in b.terms if !iszero(t.coef)]
-        cfg = _ss_cfg(a.n_sites, 3)
+        config = _ss_cfg(a.n_sites, 3)
         u = _ss_disps(a.n_sites, 3)
         # exact zeros contribute an exact +0.0 per instance, so the accumulation is
         # bit-identical with them present
-        @test total_energy(a, cfg, u) === total_energy(b, cfg, u)
+        @test total_energy(a, config, u) === total_energy(b, config, u)
     end
 
     @testset "energy contract: ΔE ≡ from-scratch totals, j0 the single elastic source" begin
         sm, models = _ss_grid()
         H = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
         sch = StrainSchedule(sm, H)
-        cfg = _ss_cfg(H.n_sites, 21)
+        config = _ss_cfg(H.n_sites, 21)
         u = _ss_disps(H.n_sites, 21)
         s, sp = 1.0, 1.015
         up = [(sp / s) .* x for x in u]     # the affine rescale the move performs
         P = 0.013                            # model units — the P·ΔV term must fire
 
         set_coefficients!(H, MCs.strain_coefficients(sch, s))
-        e_old = total_energy(H, cfg, u)
+        e_old = total_energy(H, config, u)
         set_coefficients!(H, MCs.strain_coefficients(sch, sp))
-        e_new = total_energy(H, cfg, up)
+        e_new = total_energy(H, config, up)
         dE = MCs.strain_delta_energy(sch, e_old, e_new, s, sp; pressure = P)
 
         # gate (l), strain half: against from-scratch totals at BOTH scales — a fresh
@@ -300,7 +300,7 @@ _ss_vk_mean(k, va, vb) =
         etot = (scale, disp) -> begin
             Hf = TiledHamiltonian(SLCE.model_at(sm, scale); dims = (2, 1, 1),
                                   keep_zero_terms = true)
-            total_energy(Hf, cfg, disp) + sch.n_cells * MCs.strain_j0(sch, scale) +
+            total_energy(Hf, config, disp) + sch.n_cells * MCs.strain_j0(sch, scale) +
                 P * MCs.strain_volume(sch, scale)
         end
         @test dE ≈ etot(sp, up) - etot(s, u) rtol = 1e-10
@@ -864,9 +864,9 @@ _ss_vk_mean(k, va, vb) =
     @testset "MCView carries the strain, and refuses to invent one" begin
         _, models = _ss_grid()
         H = TiledHamiltonian(models[2]; dims = (1, 1, 1), keep_zero_terms = true)
-        cfg = _ss_cfg(H.n_sites, 5)
+        config = _ss_cfg(H.n_sites, 5)
         u = _ss_disps(H.n_sites, 5)
-        fixed = MCView(H, cfg, u, 1.5)
+        fixed = MCView(H, config, u, 1.5)
         @test !MCs.has_strain(fixed)
         @test fixed.strain === nothing
         # `nothing`, not 1.0: a fixed-cell run has no strain DoF, and a confident 1.0
@@ -880,18 +880,18 @@ _ss_vk_mean(k, va, vb) =
         @test err isa ArgumentError && occursin("no strain", err.msg)
         @test !occursin("strain", sprint(show, fixed))
 
-        strained = MCView(H, cfg, u, 1.5, 1.02)
+        strained = MCView(H, config, u, 1.5, 1.02)
         @test MCs.has_strain(strained)
         @test MCs.strain(strained) === 1.02
         @test occursin("strain", sprint(show, strained))
-        @test_throws ArgumentError MCView(H, cfg, u, 1.5, -1.0)
+        @test_throws ArgumentError MCView(H, config, u, 1.5, -1.0)
     end
 
     @testset "§8(ζ) dE/dV: exact vs finite differences, upstream, and purity" begin
         sm, models = _ss_grid()
         H = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
         sch = StrainSchedule(sm, H)
-        cfg = _ss_cfg(H.n_sites, 21)
+        config = _ss_cfg(H.n_sites, 21)
         w = _ss_disps(H.n_sites, 21)          # scaled coordinates, held fixed below
 
         # the fixture must exercise the k ≥ 1 half of the Euler degree (the |u|^{2k}
@@ -903,14 +903,14 @@ _ss_vk_mean(k, va, vb) =
         # central finite difference of the SAME interpolated family, at fixed scaled
         # coordinates: coefficients from the schedule, displacements affinely rescaled,
         # the elastic j0 included (dE_total/dV covers config + j0; P·V is separate).
-        # Parameterized over ALL THREE interpolation abscissas — `_sch_dz_ds`'s
+        # Parameterized over ALL THREE interpolation abscissas — `_schedule_dz_ds`'s
         # :volume and :logvolume chain-rule branches exist only here, and a fixture
         # family that never leaves the default :linear would leave them ungated (a
         # dropped `/xw` or a wrong dx/ds is a 1e6× FD discriminator on this fixture).
         Ht = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
         etot = function (scha, sp)
             set_coefficients!(Ht, MCs.strain_coefficients(scha, sp))
-            return total_energy(Ht, cfg, [sp .* x for x in w]) +
+            return total_energy(Ht, config, [sp .* x for x in w]) +
                    scha.n_cells * MCs.strain_j0(scha, sp)
         end
         h = 1e-5
@@ -919,7 +919,7 @@ _ss_vk_mean(k, va, vb) =
             scha = StrainSchedule(sma, H)
             for s in (0.985, 1.0, 1.013)
                 uphys = [s .* x for x in w]    # the state as sampled at scale s
-                dedv = MCs.energy_volume_derivative(scha, H, cfg, uphys, s)
+                dedv = MCs.energy_volume_derivative(scha, H, config, uphys, s)
                 dv_ds = 3 * scha.n_cells * scha.v_train * s^2
                 fd = (etot(scha, s + h) - etot(scha, s - h)) / (2h) / dv_ds
                 @test dedv ≈ fd rtol = 1e-6
@@ -930,9 +930,9 @@ _ss_vk_mean(k, va, vb) =
         # never read, so whatever the caller last installed cannot move the answer
         up1 = [1.0 .* x for x in w]
         set_coefficients!(H, MCs.strain_coefficients(sch, 0.99))
-        v1 = MCs.energy_volume_derivative(sch, H, cfg, up1, 1.0)
+        v1 = MCs.energy_volume_derivative(sch, H, config, up1, 1.0)
         set_coefficients!(H, MCs.strain_coefficients(sch, 1.02))
-        @test MCs.energy_volume_derivative(sch, H, cfg, up1, 1.0) === v1
+        @test MCs.energy_volume_derivative(sch, H, config, up1, 1.0) === v1
 
         # upstream cross-gate at u = 0 on the training cell: the grid derivative is
         # dE/dη = s·dE/ds per CELL, and ours is dE/dV. Both sides build the same
@@ -979,8 +979,8 @@ _ss_vk_mean(k, va, vb) =
               (3 * schp.n_cells * schp.v_train * sps^2) rtol = 1e-6
 
         # refusals: out-of-domain scale, and a schedule paired with a different H
-        @test_throws ArgumentError MCs.energy_volume_derivative(sch, H, cfg, up1, 0.5)
-        @test_throws ArgumentError MCs.energy_volume_derivative(sch1, H, cfg, up1, 1.0)
+        @test_throws ArgumentError MCs.energy_volume_derivative(sch, H, config, up1, 0.5)
+        @test_throws ArgumentError MCs.energy_volume_derivative(sch1, H, config, up1, 1.0)
 
         # gauge invariance under re-centring: on a translation-flat model a rigid
         # shift of one whole displacement component along a free direction must not
@@ -1050,13 +1050,13 @@ _ss_vk_mean(k, va, vb) =
         @test ideal > P / 5
 
         # view-level refusals: a different Hamiltonian, and a fixed-cell view
-        cfg = _ss_cfg(H.n_sites, 5)
+        config = _ss_cfg(H.n_sites, 5)
         u0 = zeros(SVector{3,Float64}, H.n_sites)
         Hother = TiledHamiltonian(zmodels[2]; dims = (2, 1, 1), keep_zero_terms = true,
                                   fixed_reference = true)
-        vother = MCView(Hother, cfg, u0, 0.0, 1.0)
+        vother = MCView(Hother, config, u0, 0.0, 1.0)
         @test_throws ArgumentError pd.observables[1].f(vother)
-        vfixed = MCView(H, cfg, u0, 0.0)
+        vfixed = MCView(H, config, u0, 0.0)
         @test_throws ArgumentError pd.observables[1].f(vfixed)
         @test_throws ArgumentError pd.observables[2].f(vfixed)
 
@@ -1084,7 +1084,7 @@ _ss_vk_mean(k, va, vb) =
         # (the n_cells placement on j0, the supercell V, the s³, the pressure-unit
         # conversion): every dropped/misplaced-term mutation dies here at machine
         # precision, which the statistical FDT gate below cannot resolve.
-        cfg = _ss_cfg(H.n_sites, 21)
+        config = _ss_cfg(H.n_sites, 21)
         us = _ss_disps(H.n_sites, 22)
         E = -0.375
         for s in (0.93, 1.0, 1.045)
@@ -1093,19 +1093,19 @@ _ss_vk_mean(k, va, vb) =
             # atoms on dims = (2, 1, 1)) so the anchor is independent of
             # `sch.n_cells` too
             Wref = E + 2 * 40.0 * η^2 + P * 2 * 27.0 * s^3
-            v = MCView(H, cfg, us, E, s)
+            v = MCView(H, config, us, E, s)
             @test nw.observables[1].f(v) ≈ Wref rtol = 1e-12
             @test nw.observables[2].f(v) ≈ Wref^2 rtol = 1e-12
         end
         # the GPa arm resolves through the same conversion the run keywords use
         nwg = MCs.npt_observables(sch, H; pressure_GPa = P * MCs.GPA_PER_EV_A3)
-        vg = MCView(H, cfg, us, E, 0.97)
+        vg = MCView(H, config, us, E, 0.97)
         @test nwg.observables[1].f(vg) ≈ nw.observables[1].f(vg) rtol = 1e-14
         # a per-lane coefficient clone's view is as good as the parent's (what makes
         # these usable under a strained run_pt, unlike pressure_diagnostics)
         Hc = MCs._coefficient_clone(H)
-        @test nw.observables[1].f(MCView(Hc, cfg, us, E, 1.02)) ==
-              nw.observables[1].f(MCView(H, cfg, us, E, 1.02))
+        @test nw.observables[1].f(MCView(Hc, config, us, E, 1.02)) ==
+              nw.observables[1].f(MCView(H, config, us, E, 1.02))
 
         # Fluctuation–response: the sampled measure is p ∝ V^{N_mob}·e^{−βW} with a
         # β-independent Jacobian AND a β-independent (truncated) volume domain, so
@@ -1171,13 +1171,13 @@ _ss_vk_mean(k, va, vb) =
         # own energy (the `_check_strain_pairing` hazard at measurement time)
         Hforeign = TiledHamiltonian(zmodels[1]; dims = (2, 1, 1),
                                     keep_zero_terms = true, fixed_reference = true)
-        @test_throws ArgumentError nw.observables[1].f(MCView(Hforeign, cfg, us,
+        @test_throws ArgumentError nw.observables[1].f(MCView(Hforeign, config, us,
                                                               E, 1.0))
-        vfixed = MCView(H, cfg, us, 0.0)
+        vfixed = MCView(H, config, us, 0.0)
         @test_throws ArgumentError nw.observables[1].f(vfixed)
         @test_throws ArgumentError nw.observables[2].f(vfixed)
         lo, hi = MCs.strain_domain(sch)
-        @test_throws ArgumentError nw.observables[1].f(MCView(H, cfg, us, E,
+        @test_throws ArgumentError nw.observables[1].f(MCView(H, config, us, E,
                                                               hi + 0.05))
         # ...and a FIXED-CELL run refuses the observables by name at ENTRY, in both
         # drivers, rather than throwing after a spent thermalization phase
@@ -1230,11 +1230,11 @@ _ss_vk_mean(k, va, vb) =
                           recheck_translation = false)
         @test H.progs.term_coef == before
         @test MCs._fingerprint(H) == fp0
-        cfg = _ss_cfg(H.n_sites, 3)
+        config = _ss_cfg(H.n_sites, 3)
         us = _ss_disps(H.n_sites, 4)
         set_coefficients!(H, MCs.strain_coefficients(sch, 1.015);
                           recheck_translation = false)
-        @test total_energy(Hc, cfg, us) === total_energy(H, cfg, us)
+        @test total_energy(Hc, config, us) === total_energy(H, config, us)
         set_coefficients!(H, MCs.strain_coefficients(sch, 1.0);
                           recheck_translation = false)
 
@@ -2051,6 +2051,43 @@ end
         # the same grid against a Hamiltonian that does NOT re-centre is accepted
         @test MCs.StrainSchedule(zsm, Hgrid) isa MCs.StrainSchedule
     end
+
+    @testset "strain_move! asks the same question, at its own door" begin
+        # `strain_move!` is a public entry point, and it installs coefficients through
+        # `set_coefficients!`, which validates only the term COUNT. A schedule converted
+        # against a different model of the same shape would therefore write each
+        # interpolated coefficient onto another model's cluster — silently. Every other
+        # public consumer of a schedule already calls `_check_strain_pairing`; this one
+        # did not, so the fingerprint that exists for exactly this case was never
+        # consulted on the move path.
+        sch = MCs.StrainSchedule(zsm, Hgrid)
+        st = MCs.ChainState(Hgrid, _ss_cfg(Hgrid.n_sites, 71), Xoshiro(0x71), 0.3;
+                            disps = zeros(SVector{3,Float64}, Hgrid.n_sites),
+                            step_u = 0.01)
+        sc = MCs.StrainScratch(Hgrid)
+        # a same-shape, different-model Hamiltonian: the term counts agree, so only the
+        # fingerprint can tell them apart
+        Hother = TiledHamiltonian(first(_joint_model()); dims = (2, 1, 1),
+                                  keep_zero_terms = true)
+        @test Hother.n_input_terms == Hgrid.n_input_terms          # the premise
+        stother = MCs.ChainState(Hother, _ss_cfg(Hother.n_sites, 72), Xoshiro(0x72),
+                                 0.3; disps = zeros(SVector{3,Float64}, Hother.n_sites),
+                                 step_u = 0.01)
+        scother = MCs.StrainScratch(Hother)
+        err = try
+            MCs.strain_move!(stother, Hother, sch, scother, 0.05;
+                             pressure = 0.0, step = 0.01)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        # the correctly paired call still works, and so does the drivers' opt-out
+        @test MCs.strain_move!(st, Hgrid, sch, sc, 0.05;
+                               pressure = 0.0, step = 0.01) isa Bool
+        @test MCs.strain_move!(st, Hgrid, sch, sc, 0.05; pressure = 0.0, step = 0.01,
+                               check_pairing = false) isa Bool
+    end
 end
 
 # ======================================================================================
@@ -2092,12 +2129,12 @@ function _npt_uhess(H)
     n = H.n_sites
     h = 1e-3
     K = zeros(3n, 3n)
-    cfg = MCs.SpinConfig([SVector(0.0, 0.0, 1.0) for _ = 1:n])
+    config = MCs.SpinConfig([SVector(0.0, 0.0, 1.0) for _ = 1:n])
     z = zero(SVector{3,Float64})
     unit(a) = (i = fld1(a, 3); c = mod1(a, 3);
                [k == i ? SVector{3,Float64}(ntuple(q -> q == c ? h : 0.0, 3)) : z
                 for k = 1:n])
-    E(v) = total_energy(H, cfg, v)
+    E(v) = total_energy(H, config, v)
     e0 = E([z for _ = 1:n])
     ea = [E(unit(a)) for a = 1:3n]
     for a = 1:3n
@@ -2157,8 +2194,8 @@ end
 function _npt_chain(f; kt, nstrain, ndisp, therm, seed, step = 0.05)
     H, sch = f.H, f.sch
     set_coefficients!(H, MCs.strain_coefficients(sch, 1.0))
-    cfg = MCs.SpinConfig([SVector(0.0, 0.0, 1.0) for _ = 1:H.n_sites])
-    st = MCs.ChainState(H, cfg, Xoshiro(seed), 0.3;
+    config = MCs.SpinConfig([SVector(0.0, 0.0, 1.0) for _ = 1:H.n_sites])
+    st = MCs.ChainState(H, config, Xoshiro(seed), 0.3;
                         disps = zeros(SVector{3,Float64}, H.n_sites), step_u = 0.05)
     ssw = MCs.SweepScratch(H)
     sst = MCs.StrainScratch(H)
@@ -2213,7 +2250,7 @@ end
     # settings are ≤ 1.0σ, so a 4σ bound carries ≈ 4× headroom — while the rival
     # countings sit 3 whole powers away, i.e. ≳ 30σ.
     seeds = (0x11, 0x22, 0x33, 0x44)
-    est(f; ndisp, nstrain, therm) = begin
+    estimator(f; ndisp, nstrain, therm) = begin
         ps = [_npt_peff(_npt_chain(f; kt = 0.05, nstrain = nstrain, ndisp = ndisp,
                                    therm = therm, seed = sd), a, b) for sd in seeds]
         m = sum(ps) / length(ps)
@@ -2222,8 +2259,8 @@ end
     end
 
     @testset "u sampled: the exponent is the gauge count, not N_mob and not d_dim" begin
-        pS, eS = est(fS; ndisp = 1, nstrain = 400_000, therm = 20_000)
-        pS0, eS0 = est(fS0; ndisp = 1, nstrain = 400_000, therm = 20_000)
+        pS, eS = estimator(fS; ndisp = 1, nstrain = 400_000, therm = 20_000)
+        pS0, eS0 = estimator(fS0; ndisp = 1, nstrain = 400_000, therm = 20_000)
         @test abs(pS - 5.0) < 4 * eS                 # count(comp_free) + 2 = 3 + 2
         @test abs(pS0 - 2.0) < 4 * eS0               # count(comp_free) + 2 = 0 + 2
         # the differential kills the COM-reduced (`d_dim`) counting outright: under it
@@ -2240,7 +2277,7 @@ end
         # With `u ≡ 0` there is no displacement integral to cancel anything, so the full
         # `3·N_mob + 2 = 29` appears — on the very model that gives 5 when `u` is
         # sampled. That contrast IS the cancellation, measured rather than argued.
-        pf, ef = est(fS; ndisp = 0, nstrain = 200_000, therm = 5_000)
+        pf, ef = estimator(fS; ndisp = 0, nstrain = 200_000, therm = 5_000)
         @test abs(pf - 29.0) < 4 * ef
         @test ef < 1.0
         @test pf > 20.0                              # nowhere near the sampled regime's 5

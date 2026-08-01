@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `strain_move!` did not check that the schedule describes this Hamiltonian
+
+`strain_move!` is a public entry point and installs coefficients through
+`set_coefficients!`, which validates only the term **count**. A schedule converted
+against a different model of the same shape would therefore write each interpolated
+coefficient onto another model's cluster — silently, with every other diagnostic green.
+That is exactly the hazard `_schedule_term_fp` exists for, and every other public
+consumer of a schedule (the drivers, `resume`, `energy_volume_derivative`,
+`pressure_diagnostics`, `npt_observables`) already called `_check_strain_pairing`; the
+move path never did. It does now, before the first write to `H`, with a
+`check_pairing = false` opt-out the in-package drivers use because they check once at
+entry and the fingerprint walks every tiled term.
+
+### Fixed — an evaluable's inputs are validated at entry, not after the run
+
+`_finalize_stats` raises three errors on a malformed `Evaluable` — an input that is not
+measured, a non-scalar input, a name that collides — but it runs *after* the measurement
+phase, so a mistyped input name cost the entire run's samples (and a resume re-threw at
+the same place: the accumulators are checkpointed, the finalized result is not). The
+collision was the quiet one: raw stats and evaluables share one `Dict`, so an evaluable
+named after a measured observable silently **replaced** that observable's binning result
+and everything downstream reported the substitute. `run_mc`, `run_pt` and `resume` now
+check all four conditions up front (`resume` after its own observable comparison, which
+is the more specific complaint).
+
+### Fixed — `pressure_diagnostics` observables are refused on a fixed-cell run
+
+`_refuse_npt_observables` turned away `:enthalpy` / `:enthalpy2` at entry on exactly the
+argument that the per-view `strain(v)` throw fires only after the thermalization phase is
+already spent. `:strain_dEdV` / `:strain_invV` read the cell scale the same way and are
+constructible without a run, but were only refused inside `run_pt`'s strained branch —
+so a fixed-cell `run_mc` thermalized first and died at the first measurement. They are
+now refused by the same screen.
+
 ### Fixed — the reported displacement r.m.s. was biased by the final cell scale
 
 `_rescale_escape!` multiplied the phase's **reporting** accumulators

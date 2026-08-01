@@ -142,7 +142,8 @@ function _lane_segment!(lane::_PTLane, plan::UpdatePlan, n::Int, measure::Bool)
         lane.sctx !== nothing && lane.phase_sweeps % plan.strain_interval == 0 &&
             strain_move!(st, lane.H, lane.sctx[1], lane.sctx[2], lane.kt;
                          pressure = plan.pressure, step = plan.strain_step,
-                         proposal = plan.strain_proposal)
+                         proposal = plan.strain_proposal,
+                         check_pairing = false)       # checked once, at driver entry
         measure || (lane.phase_sweeps % plan.adapt_interval == 0 &&
                     _adapt_step!(st, plan.adapt_target))
         lane.phase_sweeps % plan.renorm_interval == 0 &&
@@ -321,10 +322,10 @@ end
 
 # Sweeps until the next global sync point (checkpoint write or phase end): the
 # smallest whole number of segments after which the checkpointer's `since`
-# arithmetic (`_ck_pt!`) triggers a write, capped at the rest of the phase.
-function _pt_block_sweeps(ck, left::Int, seglen::Int)::Int
-    (ck === nothing || ck.interval <= 0) && return left
-    return min(left, max(1, cld(ck.interval - ck.since, seglen)) * seglen)
+# arithmetic (`_checkpoint_pt!`) triggers a write, capped at the rest of the phase.
+function _pt_block_sweeps(checkpointer, left::Int, seglen::Int)::Int
+    (checkpointer === nothing || checkpointer.interval <= 0) && return left
+    return min(left, max(1, cld(checkpointer.interval - checkpointer.since, seglen)) * seglen)
 end
 
 # Run all lanes for one phase (`total` sweeps each) in segments of `seglen` sweeps,
@@ -334,12 +335,12 @@ end
 # boundary handshakes, globally re-syncing only at checkpoint writes and phase ends
 # — bit-identical to serial (the uniforms are pre-drawn in the serial order and the
 # boundary energies are chain-determined). `done0` resumes the phase mid-flight
-# from a checkpoint; `ck` writes periodic checkpoints at segment boundaries.
+# from a checkpoint; `checkpointer` writes periodic checkpoints at segment boundaries.
 # Returns the exchange parity to carry into the next phase.
 function _run_pt_phase!(lanes::Vector{_PTLane}, plan::UpdatePlan, total::Int,
                         seglen::Int, measure::Bool, exchange_rng::Xoshiro,
                         swap_att::Vector{Int}, swap_acc::Vector{Int}, ntasks::Int,
-                        parity::Int; done0::Int = 0, ck = nothing)::Int
+                        parity::Int; done0::Int = 0, checkpointer = nothing)::Int
     R = length(lanes)
     done = done0
     while done < total
@@ -357,10 +358,10 @@ function _run_pt_phase!(lanes::Vector{_PTLane}, plan::UpdatePlan, total::Int,
                 end
                 parity = 1 - parity
             end
-            _ck_pt!(ck, n, lanes, measure ? :measure : :therm, done, parity,
+            _checkpoint_pt!(checkpointer, n, lanes, measure ? :measure : :therm, done, parity,
                     exchange_rng, swap_att, swap_acc)
         else
-            blk = _pt_block_sweeps(ck, total - done, seglen)
+            blk = _pt_block_sweeps(checkpointer, total - done, seglen)
             nbound = cld(blk, seglen) - (blk == total - done ? 1 : 0)
             # pre-draw the uniforms in the serial consumption order (boundary-
             # major, attempted pairs ascending) — the async schedule never
@@ -372,7 +373,7 @@ function _run_pt_phase!(lanes::Vector{_PTLane}, plan::UpdatePlan, total::Int,
                              parity, swap_att, swap_acc)
             done += blk
             parity = (parity + nbound) % 2
-            _ck_pt!(ck, blk, lanes, measure ? :measure : :therm, done, parity,
+            _checkpoint_pt!(checkpointer, blk, lanes, measure ? :measure : :therm, done, parity,
                     exchange_rng, swap_att, swap_acc)
         end
     end
@@ -384,13 +385,13 @@ function _pt_run!(lanes::Vector{_PTLane}, plan::UpdatePlan,
                   observables::Vector{Observable}, evaluables::Vector{Evaluable},
                   exchange_interval::Int, nt::Int, exchange_rng::Xoshiro,
                   swap_att::Vector{Int}, swap_acc::Vector{Int}, phase0::Symbol,
-                  done0::Int, parity0::Int, ck)::PTResult
+                  done0::Int, parity0::Int, checkpointer)::PTResult
     parity = parity0
     mdone0 = 0
     if phase0 === :therm
         parity = _run_pt_phase!(lanes, plan, plan.sweeps_therm,
                                 exchange_interval, false, exchange_rng, swap_att,
-                                swap_acc, nt, parity; done0 = done0, ck = ck)
+                                swap_acc, nt, parity; done0 = done0, checkpointer = checkpointer)
         planned = fld(plan.sweeps_measure, plan.measure_interval)
         for lane in lanes
             _renormalize!(lane.st, lane.H, lane.scs[1])
@@ -401,15 +402,15 @@ function _pt_run!(lanes::Vector{_PTLane}, plan::UpdatePlan,
             lane.phase_sweeps = 0
         end
         # boundary checkpoint: the measurement phase starts fresh from this state
-        ck === nothing ||
-            _write_ckpt_pt(ck, lanes, :measure, 0, parity, exchange_rng,
+        checkpointer === nothing ||
+            _write_ckpt_pt(checkpointer, lanes, :measure, 0, parity, exchange_rng,
                            swap_att, swap_acc)
     else
         mdone0 = done0
     end
     _run_pt_phase!(lanes, plan, plan.sweeps_measure, exchange_interval, true,
                    exchange_rng, swap_att, swap_acc, nt, parity; done0 = mdone0,
-                   ck = ck)
+                   checkpointer = checkpointer)
     R = length(lanes)
     joint = has_disp(lanes[1].H)
     points = [let st = lane.st, s = _chain_summary(st, joint)
@@ -556,6 +557,7 @@ function run_pt(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                       strain_interval = nstrain, strain_proposal = strain_proposal,
                       strain_step = sstep, pressure = p_model)
     _check_observables(observables)
+    _check_evaluables(observables, evaluables)
     strain === nothing && _refuse_npt_observables(observables)
     _warn_escape_cadence(H, plan)
     nt * sweep_tasks > Threads.nthreads() && @warn(
@@ -583,7 +585,7 @@ function run_pt(H::TiledHamiltonian; temperature = nothing, kT = nothing,
         # the state `run_mc` hands back.
         set_coefficients!(H, strain_coefficients(strain, 1.0))
     end
-    ck = _make_checkpointer(checkpoint, checkpoint_interval, H, plan, observables,
+    checkpointer = _make_checkpointer(checkpoint, checkpoint_interval, H, plan, observables,
                             "pt", Int(exchange_interval);
                             grid_fp = strain === nothing ? UInt64(0) :
                                       _grid_fingerprint(strain))
@@ -617,5 +619,5 @@ function run_pt(H::TiledHamiltonian; temperature = nothing, kT = nothing,
     swap_acc = zeros(Int, R - 1)
     return _pt_run!(lanes, plan, observables, evaluables,
                     Int(exchange_interval), nt, exchange_rng, swap_att, swap_acc,
-                    :therm, 0, 0, ck)
+                    :therm, 0, 0, checkpointer)
 end

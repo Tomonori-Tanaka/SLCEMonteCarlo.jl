@@ -34,12 +34,12 @@
         rng = MersenneTwister(21)
         planned = 512
         accs = [MC.ObsAccumulator(o, planned, 32) for o in standard_observables(H)]
-        cfg = _rand_config(rng, H)
+        config = _rand_config(rng, H)
         for _ = 1:planned
-            cfg = _rand_config(rng, H)
-            E = total_energy(H, cfg)
+            config = _rand_config(rng, H)
+            E = total_energy(H, config)
             for acc in accs
-                MC._measure!(acc, _view(H, cfg, E))
+                MC._measure!(acc, _view(H, config, E))
             end
         end
         kT = 0.05
@@ -149,4 +149,35 @@ end
         # the error bars themselves must be small enough for the above to mean anything
         @test chi.err[1] < 0.1 * chi.mean[1] && U.err[1] < 0.1 * U.mean[1]
     end
+end
+
+# The evaluable half of the entry validation. `_finalize_stats` raises the same three
+# errors, but it runs AFTER the measurement phase, so before this check a mistyped
+# input name cost the whole run's samples (and a resume re-threw at the same place —
+# the accumulators are checkpointed, the finalized result is not). The name collision
+# is the quiet one: raw stats and evaluables share one `Dict`, so an evaluable named
+# after an observable silently REPLACED that observable's binning result.
+@testset "evaluables are validated at entry, not after the run" begin
+    Hs = TiledHamiltonian(_dimer_model(); dims = (2, 1, 1))
+    obs = standard_observables(Hs)
+    run_short(; kw...) = run_mc(Hs; kT = 0.05, sweeps_therm = 2, sweeps_measure = 4,
+                                measure_interval = 1, nbins = 2, seed = 1, kw...)
+    # (a) an input that is not measured
+    missing_input = Evaluable(:my_ratio, [:not_measured], (m, kT, n) -> 1.0)
+    @test_throws ArgumentError run_short(observables = obs,
+                                         evaluables = [missing_input])
+    # (b) a non-scalar input (`:m` has three components)
+    vector_input = Evaluable(:my_m, [:m], (m, kT, n) -> 1.0)
+    @test_throws ArgumentError run_short(observables = obs, evaluables = [vector_input])
+    # (c) the collision: an evaluable named after a measured observable
+    shadowing = Evaluable(:energy, [:energy], (m, kT, n) -> m.energy / n)
+    @test_throws ArgumentError run_short(observables = obs, evaluables = [shadowing])
+    # (d) two evaluables of the same name
+    dup = Evaluable(:dup, [:energy], (m, kT, n) -> m.energy)
+    @test_throws ArgumentError run_short(observables = obs, evaluables = [dup, dup])
+    # and the valid combination still runs
+    ok = Evaluable(:e_per_site, [:energy], (m, kT, n) -> m.energy / n)
+    r = run_short(observables = obs, evaluables = [ok])
+    @test haskey(r.points[1].stats, :e_per_site)
+    @test haskey(r.points[1].stats, :energy)          # the raw observable survives
 end

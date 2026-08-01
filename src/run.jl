@@ -307,14 +307,14 @@ end
 
 # Run the chain at one temperature: thermalize (with step adaptation), freeze, then
 # measure. Returns the TempResult. `phase0`/`sweep0`/`accs0` resume mid-temperature
-# from a checkpoint (fresh entry: `:therm`, 0, `nothing`); `ck` writes periodic
+# from a checkpoint (fresh entry: `:therm`, 0, `nothing`); `checkpointer` writes periodic
 # checkpoints with the completed `points` so far.
 function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
                            plan::UpdatePlan, observables::Vector{Observable},
                            evaluables::Vector{Evaluable};
                            phase0::Symbol = :therm, sweep0::Int = 0,
                            accs0::Union{Nothing,Vector{ObsAccumulator}} = nothing,
-                           ck = nothing, temp_index::Int = 1,
+                           checkpointer = nothing, temp_index::Int = 1,
                            points::Vector{TempResult} = TempResult[],
                            sctx::Union{Nothing,
                                        Tuple{StrainSchedule,StrainScratch}} = nothing,
@@ -338,10 +338,11 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
             # width shows in `acceptance_strain` rather than a wrong ensemble).
             sctx !== nothing && sweep % plan.strain_interval == 0 &&
                 strain_move!(st, H, sctx[1], sctx[2], kt; pressure = plan.pressure,
-                             step = plan.strain_step, proposal = plan.strain_proposal)
+                             step = plan.strain_step, proposal = plan.strain_proposal,
+                             check_pairing = false)   # checked once, at driver entry
             sweep % plan.adapt_interval == 0 && _adapt_step!(st, plan.adapt_target)
             sweep % plan.renorm_interval == 0 && _renormalize!(st, H, scs[1])
-            _ck_mc!(ck, H, st, points, temp_index, :therm, sweep, nothing)
+            _checkpoint_mc!(checkpointer, H, st, points, temp_index, :therm, sweep, nothing)
         end
         _renormalize!(st, H, scs[1])
         _warn_step_u_saturated(st, H, plan)
@@ -358,7 +359,8 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
         _compound_sweep!(st, H, β, scs, plan)
         sctx !== nothing && sweep % plan.strain_interval == 0 &&
             strain_move!(st, H, sctx[1], sctx[2], kt; pressure = plan.pressure,
-                         step = plan.strain_step, proposal = plan.strain_proposal)
+                         step = plan.strain_step, proposal = plan.strain_proposal,
+                         check_pairing = false)       # checked once, at driver entry
         sweep % plan.renorm_interval == 0 && _renormalize!(st, H, scs[1])
         if sweep % plan.measure_interval == 0
             # a strained run's view carries the cell scale; a fixed cell has no
@@ -369,7 +371,7 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
                 _measure!(acc, view)
             end
         end
-        _ck_mc!(ck, H, st, points, temp_index, :measure, sweep, accs)
+        _checkpoint_mc!(checkpointer, H, st, points, temp_index, :measure, sweep, accs)
     end
     s = _chain_summary(st, has_disp(H))
     stats = _finalize_stats(accs, evaluables, kt, H.n_spin_active, H.n_active)
@@ -386,7 +388,7 @@ function _mc_loop!(points::Vector{TempResult}, st::ChainState, H::TiledHamiltoni
                    plan::UpdatePlan, observables::Vector{Observable},
                    evaluables::Vector{Evaluable}, start_index::Int, phase0::Symbol,
                    sweep0::Int, accs0::Union{Nothing,Vector{ObsAccumulator}},
-                   ck,
+                   checkpointer,
                    sctx::Union{Nothing,Tuple{StrainSchedule,StrainScratch}} = nothing,
                    )::MCResult
     for i = start_index:length(plan.kts)
@@ -410,12 +412,12 @@ function _mc_loop!(points::Vector{TempResult}, st::ChainState, H::TiledHamiltoni
         p = _run_temperature!(st, H, plan.kts[i], plan, observables, evaluables;
                               phase0 = resuming ? phase0 : :therm,
                               sweep0 = resuming ? sweep0 : 0,
-                              accs0 = resuming ? accs0 : nothing, ck = ck,
+                              accs0 = resuming ? accs0 : nothing, checkpointer = checkpointer,
                               temp_index = i, points = points, sctx = sctx)
         push!(points, p)
         # boundary checkpoint: the next temperature starts fresh from this state
-        ck === nothing ||
-            _write_ckpt_mc(ck, H, st, points, i + 1, :therm, 0, nothing)
+        checkpointer === nothing ||
+            _write_ckpt_mc(checkpointer, H, st, points, i + 1, :therm, 0, nothing)
     end
     _warn_strain_boundary(points, sctx === nothing ? nothing : sctx[1], plan)
     return MCResult(points, copy(st.config), _final_disps(H, st),
@@ -569,6 +571,7 @@ function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                       strain_proposal = strain_proposal, strain_step = sstep,
                       pressure = p_model)
     _check_observables(observables)
+    _check_evaluables(observables, evaluables)
     strain === nothing && _refuse_npt_observables(observables)
     _warn_escape_cadence(H, plan)
     sweep_tasks > Threads.nthreads() && @warn(
@@ -586,7 +589,7 @@ function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
     end
     # the checkpointer captures the model fingerprint HERE, while `H` carries the
     # reference coefficients — the identity a strained run's file must store
-    ck = _make_checkpointer(checkpoint, checkpoint_interval, H, plan, observables,
+    checkpointer = _make_checkpointer(checkpoint, checkpoint_interval, H, plan, observables,
                             "mc", 0;
                             grid_fp = strain === nothing ? UInt64(0) :
                                       _grid_fingerprint(strain))
@@ -605,7 +608,7 @@ function run_mc(H::TiledHamiltonian; temperature = nothing, kT = nothing,
                     disps = disps, step_u = plan.step_u0)
     s0 === nothing || (st.strain = s0)
     r = _mc_loop!(TempResult[], st, H, plan, observables, evaluables, 1, :therm,
-                  0, nothing, ck, sctx)
+                  0, nothing, checkpointer, sctx)
     # hand `H` back at the REFERENCE scale, not wherever the chain ended: the caller's
     # next `model_fingerprint` / `total_energy` / fixed-cell run would otherwise see
     # a silently rescaled model (checkpoint writes are unaffected — the checkpointer
@@ -623,6 +626,35 @@ function _check_observables(observables::Vector{Observable})
     return nothing
 end
 
+# The evaluables' half of the same entry check, and it is worth as much as the
+# observables' half: `_finalize_stats` raises exactly these three errors, but it runs
+# AFTER the measurement phase, so a mistyped input name costs the whole run's samples
+# (a resume re-throws at the same place — the accumulators are checkpointed, the
+# finalized result is not). The name collision is the quiet one: `_finalize_stats`
+# writes raw stats and evaluables into one `Dict`, so an evaluable named after an
+# observable silently REPLACES that observable's binning result, and everything
+# downstream — the printed table, the stored `TempResult` — reports the substitute.
+function _check_evaluables(observables::Vector{Observable}, evaluables::Vector{Evaluable})
+    isempty(evaluables) && return nothing
+    byname = Dict(o.name => o for o in observables)
+    allunique(e.name for e in evaluables) ||
+        throw(ArgumentError("evaluable names must be unique"))
+    for ev in evaluables
+        haskey(byname, ev.name) && throw(ArgumentError(
+            "evaluable :$(ev.name) has the same name as a measured observable; it " *
+            "would replace that observable's statistics in the result. Rename one."))
+        for name in ev.inputs
+            obs = get(byname, name, nothing)
+            obs === nothing && throw(ArgumentError(
+                "evaluable :$(ev.name) needs observable :$name, which is not measured"))
+            obs.ncomp == 1 || throw(ArgumentError(
+                "evaluable :$(ev.name) input :$name is not a scalar observable " *
+                "(ncomp = $(obs.ncomp))"))
+        end
+    end
+    return nothing
+end
+
 # Refuse `npt_observables` on a FIXED-CELL run at entry, by observable name (the
 # run_pt/pressure_diagnostics precedent): the per-view `strain(v)` throw is loud but
 # fires only at the first measurement — after the whole thermalization phase is spent.
@@ -634,6 +666,14 @@ function _refuse_npt_observables(observables::Vector{Observable})
             "measure — its `:energy` / `:specific_heat` are already the ensemble's " *
             "conjugate pair. Pass the run's `strain` schedule, or rename a " *
             "same-named observable of your own."))
+        # `pressure_diagnostics` reads the cell scale through `strain(v)` too, and it
+        # is constructible without a run (it needs only a paired schedule and `H`), so
+        # the same late-throw hazard applies: without this it thermalizes first and
+        # dies at the first measurement.
+        o.name in (:strain_dEdV, :strain_invV) && throw(ArgumentError(
+            "pressure_diagnostics (`:$(o.name)`) needs a strained run: a fixed-cell " *
+            "run has no volume to differentiate with respect to. Pass the run's " *
+            "`strain` schedule, or rename a same-named observable of your own."))
     end
     return nothing
 end
