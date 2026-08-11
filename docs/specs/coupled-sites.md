@@ -369,6 +369,32 @@ them by that phrase.
   The public `model_fingerprint` facade over `_fingerprint` is pinned by dependent
   packages' checkpoint formats (SLCEDynamics) — changing the mixing changes
   every stored fingerprint (schema-version territory there too).
+- **Spin-state doors ↔ SLCE's unit-direction rule ↔ checkpoint restore**
+  (`state.jl` `_unit_column`/`_initial_config`, `geometry.jl` `from_matrix`,
+  `checkpoint.jl` `_config_from_matrix` ↔ SLCE `direction.jl` `UnitVector3`):
+  every place a caller hands this package a spin state funnels through ONE
+  projecting door — validate (finite, `1e-6` band, component bound of the
+  projected value), then project exactly onto the sphere. A moment-scaled
+  column is refused, never silently normalized: until 2026-08 `_unit_or_throw`
+  normalized anything nonzero, so `‖e‖ = 1.7` was refused at SLCE's doors and
+  laundered at this package's (audit 2026-08-01 #1 rank 3). Every column is
+  validated regardless of `site_has_spin`/`site_active` — `_zlm_row!` evaluates
+  the tesseral row at EVERY site on any rebuild, so even a never-read
+  placeholder must stay inside the Legendre domain (`dnPl` needs `|z| ≤ 1`);
+  this is deliberately stricter than SLCEDynamics' entry door, whose inactive
+  placeholders are never evaluated. The checkpoint restore is the
+  NON-projecting half: `_config_from_matrix` validates each stored column with
+  `UnitVector3(…, Trusted())` and keeps the bits — resume must be bit-identical,
+  and its refusal cannot fork a viable chain because the rebuild would have
+  thrown from the Legendre recursion anyway. The two doors must never be
+  swapped (SLCEDynamics' `_config_projected`/`_config_verbatim` are the same
+  pair; the mutation evidence for the restore side lives there). For accepted
+  input the projection is the identical `v/‖v‖` arithmetic the old door
+  applied, so legal-init trajectories are byte-identical across the change.
+  Gates: `test_geometry.jl` "to_matrix / from_matrix round-trip" (refusal +
+  near-pole projection), `test_metropolis.jl` "init forms and guards" (the
+  `‖e‖ = 2` refusal — it pinned silent normalization until 2026-08), and the
+  corruption refusal in `test_checkpoint.jl` "schema and mismatch guards".
 - **`MCView` ↔ every observable ↔ SLCEDynamics' `_measure!`** (`observables.jl`,
   `SLCEDynamics/src/run.jl`): an observable receives ONE argument, a view of the
   sampled state, precisely so that adding a channel does not break every definition

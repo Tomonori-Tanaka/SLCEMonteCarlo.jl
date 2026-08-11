@@ -137,6 +137,13 @@ adding a coupling means writing the entry there and the index line here.
   tests in `test_gradient.jl` / `test_minimize.jl`.
 - **Checkpoint writer ↔ reader ↔ schema doc** — plain-data JLD2, schema v6. Gate:
   bit-identical resume (`test_checkpoint.jl`).
+- **Spin-state doors ↔ SLCE's unit-direction rule ↔ checkpoint restore** —
+  `from_matrix`/`_initial_config` validate-then-project every column through
+  `SLCE.UnitVector3` (a scaled column is refused, never normalized; ALL columns,
+  since `_zlm_row!` reads every site); `_config_from_matrix` validates with
+  `Trusted()` and never projects (bit-identical resume). Gates: `test_geometry.jl`
+  round-trip testset, `test_metropolis.jl` "init forms and guards",
+  `test_checkpoint.jl` corruption refusal.
 - **`MCView` ↔ every observable ↔ SLCEDynamics' `_measure!`** — an observable takes ONE
   argument so a new channel does not break every definition ever written; the view
   EMPTIES `disps` on a model with no displacement channel.

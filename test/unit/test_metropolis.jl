@@ -119,11 +119,18 @@
 
     @testset "init forms and guards" begin
         H = TiledHamiltonian(_dimer_model())
-        up = SVector(0.0, 0.0, 2.0)                       # normalized on input
+        up = SVector(0.0, 0.0, 1.0)
         r = run_mc(H; kT = 1e-3, sweeps_therm = 0, sweeps_measure = 2,
                    init = [up for _ = 1:4], nbins = 2, evaluables = Evaluable[],
                    seed = 1)
         @test r isa MCResult
+        # a moment-scaled init is refused, never silently normalized (the
+        # family's unit-direction door; ‖e‖ = 2 pinned the opposite until 2026-08)
+        @test_throws ArgumentError run_mc(H; kT = 1e-3, sweeps_therm = 0,
+                                          sweeps_measure = 2, nbins = 2,
+                                          evaluables = Evaluable[], seed = 1,
+                                          init = [SVector(0.0, 0.0, 2.0)
+                                                  for _ = 1:4])
         m = zeros(3, 4)
         m[3, :] .= 1.0
         r2 = run_mc(H; kT = 1e-3, sweeps_therm = 0, sweeps_measure = 2, init = m,

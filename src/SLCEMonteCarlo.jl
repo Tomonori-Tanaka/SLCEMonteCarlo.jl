@@ -41,6 +41,7 @@ using SLCE: SLCE, SLCEModel, SpinMultipoleTerm, spin_multipole_terms, intercept,
                   DecoratedTerm, decorated_terms, restrict,
                   RowLayout, row_layout, row_index,
                   Lattice, Crystal, cartesian_positions
+using SLCE: UnitVector3, Trusted    # the family's unit-direction doors (validate/project)
 # Extended here rather than redefined: `n_atoms` for `ReducedCell`, `has_disp` for
 # `TiledHamiltonian`. Both ask the core's question at this package's granularity — a
 # second generic of the same name would make `SLCE.has_disp` and

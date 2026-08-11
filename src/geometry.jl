@@ -45,12 +45,16 @@ to_matrix(config::SpinConfig)::Matrix{Float64} = _config_matrix(config)
 """
     from_matrix(m::AbstractMatrix{<:Real}) -> SpinConfig
 
-A [`SpinConfig`](@ref) from a `3 × n` matrix of spin vectors (columns normalized;
-a (near-)zero column throws).
+A [`SpinConfig`](@ref) from a `3 × n` matrix of unit spin directions. Each column
+passes the family's unit-direction door (`SLCE.UnitVector3`): it must be finite
+and within `1e-6` of unit norm, and is then projected exactly onto the sphere —
+float noise is repaired, but a column that is not a direction (a moment-scaled
+vector, `‖e‖ = 1.7`) is refused rather than silently normalized. Normalize
+deliberately in your own code if that is what you mean.
 """
 function from_matrix(m::AbstractMatrix{<:Real})::SpinConfig
     size(m, 1) == 3 || throw(DimensionMismatch(
         "expected a 3 × n matrix; got $(size(m, 1)) × $(size(m, 2))"))
-    return SpinConfig([_unit_or_throw(SVector{3,Float64}(m[1, s], m[2, s], m[3, s]))
+    return SpinConfig([_unit_column(SVector{3,Float64}(m[1, s], m[2, s], m[3, s]), s)
                        for s = 1:size(m, 2)])
 end

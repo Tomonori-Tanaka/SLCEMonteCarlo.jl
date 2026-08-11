@@ -176,9 +176,21 @@ end
 _config_matrix(config::SpinConfig)::Matrix{Float64} =
     [config[s][row] for row = 1:3, s = 1:length(config)]
 
-_config_from_matrix(m::Matrix{Float64})::SpinConfig =
-    SpinConfig([SVector{3,Float64}(m[1, s], m[2, s], m[3, s])
-                for s = 1:size(m, 2)])
+# Bitwise restore with the family's NON-projecting door: every stored column is
+# validated through `UnitVector3(…, Trusted())` (finite, 1e-6 band, component
+# bound) and kept bit-exact — resume must be bit-identical, and a projection
+# here would ULP-perturb the chain (`SLCEDynamics._config_verbatim` precedent).
+# A refusal cannot fork a viable chain: every column reaches `_zlm_row!` on
+# restore, so a column the door rejects is one the rebuild would have killed
+# with a bare `DomainError` anyway — this door just names the site instead.
+function _config_from_matrix(m::Matrix{Float64})::SpinConfig
+    config = SpinConfig([SVector{3,Float64}(m[1, s], m[2, s], m[3, s])
+                         for s = 1:size(m, 2)])
+    for s in eachindex(config)
+        UnitVector3(config[s], Trusted(); what = "checkpoint config, site $s")
+    end
+    return config
+end
 
 # A `Vector{SVector{3,Float64}}` as a plain 3 × n matrix (and back). Written for
 # `n == 0` too — a pure-spin chain has no displacement components, and a 3×0 array is

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — spin-state doors use the family unit-direction rule
+
+**Breaking for callers who passed scaled spin vectors.** `from_matrix` and the
+drivers' `init` (via `_initial_config`) no longer normalize anything nonzero:
+each column passes `SLCE.UnitVector3` — finite, `|‖e‖ − 1| ≤ 1e-6`, component
+bound of the projected value — and is projected exactly onto the sphere. Float
+noise (a rounded file, a near-pole column `5e-9` off unit that would raw reach
+the Legendre recursion at `|z| > 1`) is repaired at the door; a moment-scaled
+column (`‖e‖ = 1.7`) is **refused** with a message telling the caller to
+normalize deliberately. This closes the audit 2026-08-01 #1 rank-3
+inconsistency: the same matrix was refused at SLCE's doors and silently
+laundered at this package's. Every column is validated, spin-active or not —
+`_zlm_row!` evaluates the tesseral row at every site's spin, so even a
+never-read placeholder must stay inside the Legendre domain.
+
+Checkpoint restore (`_config_from_matrix`) is the non-projecting half: every
+stored column is validated through `UnitVector3(…, Trusted())` and kept
+bit-exact, so a corrupted `chain/config` is refused loudly while resume stays
+bit-identical. Trajectories are unchanged for any input the old door accepted
+as already-unit-to-rounding: the door's projection `v/‖v‖` is the identical
+arithmetic the old normalization applied, so `run_mc`/`run_pt`/`minimize_energy`
+from a legal `init` are byte-identical to before.
+
 ### Fixed — `e_s · G[s] == 0` "exactly" is now true for a drifted configuration
 
 `_grad_zlm_device` mirrors `SLCE.Harmonics._grad_zlm_assemble`, whose radial removal

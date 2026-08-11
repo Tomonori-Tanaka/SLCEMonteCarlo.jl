@@ -29,9 +29,20 @@
         config = MC.SpinConfig([_rand_spin(rng) for _ = 1:6])
         m = MC.to_matrix(config)
         @test size(m) == (3, 6)
-        @test MC.from_matrix(m) ≈ config atol = 1e-14   # re-normalization roundoff
-        m2 = 2.5 .* m                              # normalized on the way in
-        @test MC.from_matrix(m2) ≈ config atol = 1e-14
+        @test MC.from_matrix(m) ≈ config atol = 1e-14   # door-projection roundoff
+        # a moment-scaled matrix is REFUSED, never silently normalized (the
+        # family's unit-direction door; this pinned the opposite until 2026-08)
+        m2 = 2.5 .* m
+        @test_throws ArgumentError MC.from_matrix(m2)
+        # inside the 1e-6 band: accepted and projected exactly onto the sphere
+        m3 = (1.0 + 1.0e-7) .* m
+        @test all(abs(norm(e) - 1) < 4 * eps() for e in MC.from_matrix(m3))
+        # the near-pole case the band alone cannot fix: 5e-9 off unit at the
+        # pole has |z| > 1 raw; the door projects instead of letting it reach
+        # the Legendre recursion
+        mp = copy(m)
+        mp[:, 1] = [0.0, 0.0, 1.0 + 5.0e-9]
+        @test MC.from_matrix(mp)[1][3] <= 1.0
         @test_throws DimensionMismatch MC.from_matrix(zeros(2, 4))
         @test_throws ArgumentError MC.from_matrix(zeros(3, 4))
     end

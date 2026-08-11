@@ -159,26 +159,37 @@ function _random_unit(rng::AbstractRNG)::SVector{3,Float64}
 end
 
 # Resolve a chain start: `nothing` → uniform random from `rng`; a `3 × n_sites`
-# matrix or a vector of 3-vectors → normalized copy.
+# matrix or a vector of 3-vectors → validated-then-projected copy (`_unit_column`).
 function _initial_config(H::TiledHamiltonian, init, rng::AbstractRNG)::SpinConfig
     init === nothing &&
         return SpinConfig([_random_unit(rng) for _ = 1:H.n_sites])
     if init isa AbstractMatrix
         size(init) == (3, H.n_sites) || throw(DimensionMismatch(
             "init is $(size(init, 1))×$(size(init, 2)); expected 3×$(H.n_sites)"))
-        return SpinConfig([_unit_or_throw(SVector{3,Float64}(init[1, s], init[2, s],
-                                                             init[3, s]))
+        return SpinConfig([_unit_column(SVector{3,Float64}(init[1, s], init[2, s],
+                                                           init[3, s]), s)
                            for s = 1:H.n_sites])
     end
     length(init) == H.n_sites || throw(DimensionMismatch(
         "init has $(length(init)) sites; expected $(H.n_sites)"))
-    return SpinConfig([_unit_or_throw(SVector{3,Float64}(e)) for e in init])
+    return SpinConfig([_unit_column(SVector{3,Float64}(e), s)
+                       for (s, e) in enumerate(init)])
 end
 
-function _unit_or_throw(e::SVector{3,Float64})::SVector{3,Float64}
-    n = norm(e)
-    n > 1e-12 || throw(ArgumentError("init contains a (near-)zero spin vector"))
-    return e / n
+# The family's projecting unit-direction door (SLCE's ONE rule: finite,
+# `|‖e‖ − 1| ≤ 1e-6`, component bound of the projected value), applied per column
+# wherever a caller hands this package a spin state — `from_matrix` and the
+# drivers' `init`. A wildly-scaled column (a moment vector, `‖e‖ = 1.7`) is
+# REFUSED, never silently normalized: past the band the input is a different
+# physical quantity wearing the wrong units, and the caller should normalize
+# deliberately where the decision is visible. (Until 2026-08 this door
+# normalized anything nonzero — accepting here exactly what SLCE's doors
+# refuse.) Every column is validated, spin-active or not: `_zlm_row!` evaluates
+# the tesseral row at EVERY site's spin, so even a never-read placeholder must
+# stay inside the Legendre domain.
+function _unit_column(e::SVector{3,Float64}, s::Int)::SVector{3,Float64}
+    u = UnitVector3(e; what = "spin column $s")
+    return SVector{3,Float64}(u[1], u[2], u[3])
 end
 
 # Resolve a chain's initial displacements: `nothing` → the clamped-ion start `u = 0`

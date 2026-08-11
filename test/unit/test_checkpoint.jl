@@ -284,6 +284,17 @@ end
         # negative interval guard
         @test_throws ArgumentError run_mc(H; kT = 0.5, checkpoint = path,
                                           checkpoint_interval = -1)
+        # a corrupted stored configuration is refused by the non-projecting
+        # door (validated without projecting — restore must stay bit-exact)
+        cpath = joinpath(dir, "corrupt.jld2")
+        cp(path, cpath)
+        MC.jldopen(cpath, "r+") do f
+            m = f["chain/config"]
+            delete!(f, "chain/config")
+            m[:, 1] .*= 2.5
+            f["chain/config"] = m
+        end
+        @test_throws ArgumentError resume(cpath, H)
     end
 end
 
