@@ -91,6 +91,25 @@
         wrong = Observable(:oops, 2, v -> 1.0)
         wacc = MC.ObsAccumulator(wrong, 8, 4)
         @test_throws DimensionMismatch MC._measure!(wacc, _view(H, config))
+
+        # ragged input columns (accumulators out of lockstep — unreachable through
+        # the run drivers, reachable by hand) are refused, never silently truncated
+        # to the shortest column: `jackknife` requires equal lengths (audit #4)
+        ra = MC.ObsAccumulator(Observable(:ragA, 1, v -> 1.0), 64, 8)
+        rb = MC.ObsAccumulator(Observable(:ragB, 1, v -> 2.0), 64, 8)
+        for k = 1:64
+            MC._measure!(ra, _view(H, config))
+            k <= 32 && MC._measure!(rb, _view(H, config))   # 8 vs 4 filled bins
+        end
+        rag = Evaluable(:rag, [:ragA, :ragB], (m, kT, n) -> 0.0)
+        err = try
+            MC._finalize_stats([ra, rb], [rag], 1.0, 8, 8)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("lockstep", err.msg)
     end
 
     @testset "fewer planned measurements than nbins degrades, not NaNs" begin

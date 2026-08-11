@@ -428,7 +428,7 @@ function _pt_run!(lanes::Vector{_PTLane}, plan::UpdatePlan,
     # to narrow the second from the first's `=== nothing` check, and JET calls the
     # indexing a possible `getindex(::Nothing, ::Int)`
     sctx1 = first(lanes).sctx
-    _warn_strain_boundary(points, sctx1 === nothing ? nothing : sctx1[1], plan)
+    _warn_strain_boundary(points, sctx1 === nothing ? nothing : sctx1[1])
     return PTResult(points, swaps, [copy(lane.st.config) for lane in lanes],
                     [_final_disps(lane.H, lane.st) for lane in lanes],
                     first(lanes).sctx === nothing ? nothing :

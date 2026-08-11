@@ -1814,7 +1814,7 @@ end
                               seed = 1, strain_interval = 1, strain_step = 0.05)
         fires(p) = !isempty(filter(l -> pinned(string(l.message)),
                                    first(Test.collect_test_logs() do
-                                             MCs._warn_strain_boundary([p], sch, plan)
+                                             MCs._warn_strain_boundary([p], sch)
                                          end)))
         @test fires(pt(lo + 5 * margin, near, hot))     # at the edge AND refused a lot
         @test !fires(pt(lo + 5 * margin, near, cold))   # at the edge, but not refused

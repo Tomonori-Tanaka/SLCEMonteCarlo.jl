@@ -342,7 +342,7 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
                              check_pairing = false)   # checked once, at driver entry
             sweep % plan.adapt_interval == 0 && _adapt_step!(st, plan.adapt_target)
             sweep % plan.renorm_interval == 0 && _renormalize!(st, H, scs[1])
-            _checkpoint_mc!(checkpointer, H, st, points, temp_index, :therm, sweep, nothing)
+            _checkpoint_mc!(checkpointer, st, points, temp_index, :therm, sweep, nothing)
         end
         _renormalize!(st, H, scs[1])
         _warn_step_u_saturated(st, H, plan)
@@ -371,7 +371,7 @@ function _run_temperature!(st::ChainState, H::TiledHamiltonian, kt::Float64,
                 _measure!(acc, view)
             end
         end
-        _checkpoint_mc!(checkpointer, H, st, points, temp_index, :measure, sweep, accs)
+        _checkpoint_mc!(checkpointer, st, points, temp_index, :measure, sweep, accs)
     end
     s = _chain_summary(st, has_disp(H))
     stats = _finalize_stats(accs, evaluables, kt, H.n_spin_active, H.n_active)
@@ -417,9 +417,9 @@ function _mc_loop!(points::Vector{TempResult}, st::ChainState, H::TiledHamiltoni
         push!(points, p)
         # boundary checkpoint: the next temperature starts fresh from this state
         checkpointer === nothing ||
-            _write_ckpt_mc(checkpointer, H, st, points, i + 1, :therm, 0, nothing)
+            _write_ckpt_mc(checkpointer, st, points, i + 1, :therm, 0, nothing)
     end
-    _warn_strain_boundary(points, sctx === nothing ? nothing : sctx[1], plan)
+    _warn_strain_boundary(points, sctx === nothing ? nothing : sctx[1])
     return MCResult(points, copy(st.config), _final_disps(H, st),
                     sctx === nothing ? nothing : st.strain, plan.seed)
 end
@@ -781,7 +781,7 @@ const _STRAIN_OUTSIDE_WARN = 0.05
 const _STRAIN_EDGE_WARN = 0.05
 
 function _warn_strain_boundary(points::Vector{TempResult},
-                               sch::Union{Nothing,StrainSchedule}, plan::UpdatePlan)
+                               sch::Union{Nothing,StrainSchedule})
     sch === nothing && return nothing
     lo, hi = strain_domain(sch)
     margin = _STRAIN_EDGE_WARN * (hi - lo)

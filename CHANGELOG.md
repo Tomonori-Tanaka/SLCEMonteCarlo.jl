@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `_finalize_stats` refuses ragged evaluable inputs instead of implying it truncates
+
+The `nb = min(length…)` computation read as if it guarded unequal-length bin
+columns, but the full columns were then passed to `jackknife`, which requires
+equal lengths (audit 2026-08-01 #4 — unreachable through the run drivers, whose
+accumulators are built alike and measured in lockstep). The guard now says what
+it does: equal lengths are asserted with a named error ("the accumulators'
+lockstep is broken") rather than silently truncating to the shortest column,
+which would hide a broken accumulation path behind a slightly-wrong error bar.
+Gate: a hand-built ragged pair (8 vs 4 filled bins) is refused.
+
+### Chore — dead arguments removed (audit #5)
+
+`_warn_strain_boundary` no longer takes the `UpdatePlan` it never read;
+`_write_ckpt_mc` / `_checkpoint_mc!` no longer take the `TiledHamiltonian` they
+never used (the checkpoint stores the chain, not the Hamiltonian — the reader
+reconstructs against the caller's `H` and verifies via the fingerprint).
+Internal-only signatures; no behavior change.
+
 ### Changed — spin-state doors use the family unit-direction rule
 
 **Breaking for callers who passed scaled spin vectors.** `from_matrix` and the

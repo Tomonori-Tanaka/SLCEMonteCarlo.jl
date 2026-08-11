@@ -402,7 +402,7 @@ end
 
 # --- writers (atomic: temp file + mv) ------------------------------------------------
 
-function _write_ckpt_mc(checkpointer::_Checkpointer, H::TiledHamiltonian, st::ChainState,
+function _write_ckpt_mc(checkpointer::_Checkpointer, st::ChainState,
                         points::Vector{TempResult}, temp_index::Int, phase::Symbol,
                         sweep::Int, accs::Union{Nothing,Vector{ObsAccumulator}})
     tmp = checkpointer.path * ".tmp." * string(getpid())   # one writer per path assumed
@@ -425,7 +425,7 @@ end
 
 # Periodic-write tick for the MC drivers (one call per sweep; no-op without a
 # checkpointer or with the boundary-only interval 0).
-function _checkpoint_mc!(checkpointer, H::TiledHamiltonian, st::ChainState,
+function _checkpoint_mc!(checkpointer, st::ChainState,
                  points::Vector{TempResult}, temp_index::Int, phase::Symbol,
                  sweep::Int, accs::Union{Nothing,Vector{ObsAccumulator}})
     checkpointer === nothing && return nothing
@@ -433,7 +433,7 @@ function _checkpoint_mc!(checkpointer, H::TiledHamiltonian, st::ChainState,
     checkpointer.since += 1
     checkpointer.since >= checkpointer.interval || return nothing
     checkpointer.since = 0
-    _write_ckpt_mc(checkpointer, H, st, points, temp_index, phase, sweep, accs)
+    _write_ckpt_mc(checkpointer, st, points, temp_index, phase, sweep, accs)
     return nothing
 end
 

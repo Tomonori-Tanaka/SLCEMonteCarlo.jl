@@ -520,6 +520,14 @@ function _finalize_stats(accs::Vector{ObsAccumulator}, evals::Vector{Evaluable},
             stats[ev.name] = ObservableStat(ev.name, [NaN], [NaN], [NaN], 0)
             continue
         end
+        # One temperature's accumulators are built alike and receive the same
+        # `_measure!` calls, so the input columns are equal-length by construction —
+        # and `jackknife` requires it. Assert rather than truncate to `nb`: a ragged
+        # set here means a new accumulation path broke that lockstep, and silent
+        # truncation would hide it behind a slightly-wrong error bar.
+        all(length(c) == nb for c in cols) || throw(ArgumentError(
+            "evaluable $(ev.name): input bin columns have unequal lengths " *
+            "$(map(length, cols)) — the accumulators' lockstep is broken"))
         keys_tuple = Tuple(ev.inputs)
         # The count the evaluable declared it needs — the two coincide on every
         # pure-spin model and diverge exactly where a joint model's energy carries a
