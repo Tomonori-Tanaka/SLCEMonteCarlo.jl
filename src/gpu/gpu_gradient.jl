@@ -256,8 +256,9 @@ function _gpu_gradient_rows!(dG, gH::GPUTiledHamiltonian, dconfig, zrows;
                              synchronize::Bool = true)
     H = gH.host
     # The one gradient entry point that takes no `GPUGradientScratch` (the chain-state
-    # overload reads the sweep's own row matrix), so the spin-only guard has to sit
-    # here too.
+    # overload reads the sweep's own row matrix), so the epoch and spin-only guards
+    # have to sit here too — the scratch-form method's guards do not cover this path.
+    _check_synced(gH)
     _require_spin_only(H, "the GPU gradient path")
     ws = Int(workgroupsize)
     ispow2(ws) || throw(ArgumentError("workgroupsize must be a power of two (got $ws)"))

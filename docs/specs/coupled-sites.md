@@ -150,6 +150,18 @@ them by that phrase.
   `3·n_disp_active − count(comp_free)`, not `3(N−1)`, because re-centring is per
   (direction, component) and there are `n_disp_comps` independent centres of mass.
   Gates: `test_strainschedule.jl`.
+- **`_schedule_abscissa` ↔ SLCE's private `_grid_abscissa`** (`strain.jl`, SLCE
+  `slce/strainedmodels.jl`): the schedule reproduces upstream's interpolation
+  abscissa branch-for-branch — `:linear` = `s`, `:volume` = `V0·s³`,
+  `:logvolume` = `log(V0·s³)`, with the same reference volume
+  `V0 = |det A₁|/s₁³` (read here through the public `volumes`, and cross-checked
+  at construction by the per-point `|det Aᵢ| ≈ V0·sᵢ³` assert — the outer
+  `StrainedModels` constructor guarantees the similarity family, the inner one
+  is field-wise). They must agree exactly: the abscissa feeds the Vandermonde
+  fit that `strain_volume`, `P·V` and `dv_ds` all consume, so a one-sided
+  upstream change silently rescales the elastic channel. Gate: the
+  three-abscissa sweep against `SLCE.grid_strain_derivative` in
+  `test_strainschedule.jl`.
 - **The NPT strain move: `strain_move!` ↔ `strain_delta_energy`/`_strain_log_weight` ↔
   `ChainState.strain` ↔ the run drivers ↔ the checkpoint schema ↔ `sync_coefficients!`**
   (`strain.jl`, `run.jl`, `pt.jl`, `checkpoint.jl`, `gpu/gpu_hamiltonian.jl`,

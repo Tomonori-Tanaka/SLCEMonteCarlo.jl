@@ -279,8 +279,21 @@ function StrainSchedule(sm::SLCE.StrainedModels, H::TiledHamiltonian)
                 "with `fixed_reference = true` if the absolute frame is physical."))
         end
     end
-    v_train = abs(det(ms[1].basis.crystal.lattice.vectors)) / scales[1]^3
-    natom = SLCE.n_atoms(ms[1].basis.crystal)
+    # Public surface only (`volumes` / `n_atoms(model)`), per this package's own
+    # introspection rule — never `model.basis.crystal`.
+    vols = SLCE.volumes(sm)
+    v_train = vols[1] / scales[1]^3
+    # `StrainedModels`' OUTER constructor validates `A_i = s_i·A₀`, but its inner
+    # constructor is field-wise; `v_train` feeds `strain_volume`, the `:volume`/
+    # `:logvolume` abscissa, `P·V` and `dv_ds`, so a grid that is not a pure
+    # similarity family would corrupt all four silently. One pass makes it loud.
+    for i = 2:npt
+        isapprox(vols[i], v_train * scales[i]^3; rtol = 1e-10) || throw(ArgumentError(
+            "grid point $i has cell volume $(vols[i]) but scale $(scales[i]) of the " *
+            "reference volume $v_train predicts $(v_train * scales[i]^3); the grid " *
+            "is not a pure scaling family of one reference cell"))
+    end
+    natom = SLCE.n_atoms(ms[1])
     ncell_f = H.n_sites / natom
     isinteger(ncell_f) || throw(ArgumentError(
         "the Hamiltonian has $(H.n_sites) sites, which is not a whole number of the " *
@@ -294,6 +307,11 @@ function StrainSchedule(sm::SLCE.StrainedModels, H::TiledHamiltonian)
     xw = xw == 0 ? 1.0 : xw
     z = (x .- x0) ./ xw
     deg = sm.degree
+    # Unreachable through `StrainedModels`' public constructor (it bounds
+    # `degree <= npt - 1`), but an underdetermined Vandermonde below would return a
+    # smooth-looking minimum-norm J(s) with every downstream gate green.
+    deg + 1 <= npt || throw(ArgumentError(
+        "interpolation degree $deg needs $(deg + 1) grid points; the grid has $npt"))
     V = [z[i]^(j - 1) for i = 1:npt, j = 1:(deg + 1)]
     B = Matrix{Float64}(undef, npt, nterm + 1)
     for i = 1:npt

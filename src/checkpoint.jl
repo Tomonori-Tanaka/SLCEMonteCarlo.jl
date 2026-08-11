@@ -405,6 +405,11 @@ end
 function _write_ckpt_mc(checkpointer::_Checkpointer, st::ChainState,
                         points::Vector{TempResult}, temp_index::Int, phase::Symbol,
                         sweep::Int, accs::Union{Nothing,Vector{ObsAccumulator}})
+    # EVERY write resets the periodic clock, boundary writes included — otherwise a
+    # stale `since` carried across a temperature/phase boundary makes the next
+    # segment's first periodic write fire early, drifting the "sweeps between
+    # writes" cadence the docstrings promise.
+    checkpointer.since = 0
     tmp = checkpointer.path * ".tmp." * string(getpid())   # one writer per path assumed
     jldopen(tmp, "w") do f
         _write_header(f, checkpointer)
@@ -432,14 +437,14 @@ function _checkpoint_mc!(checkpointer, st::ChainState,
     checkpointer.interval > 0 || return nothing
     checkpointer.since += 1
     checkpointer.since >= checkpointer.interval || return nothing
-    checkpointer.since = 0
-    _write_ckpt_mc(checkpointer, st, points, temp_index, phase, sweep, accs)
+    _write_ckpt_mc(checkpointer, st, points, temp_index, phase, sweep, accs)   # resets `since`
     return nothing
 end
 
 function _write_ckpt_pt(checkpointer::_Checkpointer, lanes::Vector{_PTLane}, phase::Symbol,
                         done::Int, parity::Int, exchange_rng::Xoshiro,
                         swap_att::Vector{Int}, swap_acc::Vector{Int})
+    checkpointer.since = 0                     # every write resets the periodic clock
     tmp = checkpointer.path * ".tmp." * string(getpid())
     measure = phase === :measure
     jldopen(tmp, "w") do f
@@ -469,9 +474,8 @@ function _checkpoint_pt!(checkpointer, n::Int, lanes::Vector{_PTLane}, phase::Sy
     checkpointer.interval > 0 || return nothing
     checkpointer.since += n
     checkpointer.since >= checkpointer.interval || return nothing
-    checkpointer.since = 0
     _write_ckpt_pt(checkpointer, lanes, phase, done, parity, exchange_rng, swap_att,
-                   swap_acc)
+                   swap_acc)                                       # resets `since`
     return nothing
 end
 

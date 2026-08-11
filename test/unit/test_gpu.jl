@@ -427,18 +427,40 @@ end
     end
     @test err isa ArgumentError
     @test occursin("stale", err.msg)
-    # the gradient entry refuses the same wrapper
+    # BOTH gradient entries refuse the same wrapper — the chain-state convenience
+    # overload skips the row rebuild and must carry its own guard (the hole the
+    # first audit-#3 fix left open: it silently returned the pre-swap field)
     gsc = MC.GPUGradientScratch(gH)
     dG = zeros(SVector{3,Float64}, H.n_sites)
     @test_throws ArgumentError MC.gpu_energy_gradient!(dG, gH, st.config, gsc)
+    @test_throws ArgumentError MC.gpu_energy_gradient!(dG, gst, gH, gsc)
     # the sync clears it
     MC.sync_coefficients!(gH)
     @test MC.gpu_metropolis_sweep!(gst, gH, β; workgroupsize = 32) isa Int
+    @test MC.gpu_energy_gradient!(dG, gst, gH, gsc) === dG
     # value-blind on purpose: reinstalling the SAME numbers still requires a sync
     MC.set_coefficients!(H, coefs)
     @test_throws ArgumentError MC.gpu_metropolis_sweep!(gst, gH, β; workgroupsize = 32)
     MC.sync_coefficients!(gH)
     @test MC.gpu_metropolis_sweep!(gst, gH, β; workgroupsize = 32) isa Int
+
+    # the displacement sweep refuses a stale wrapper too (needs the joint fixture)
+    mj, _ = _joint_model(5)
+    Hj = TiledHamiltonian(mj; dims = (2, 2, 2))
+    stj, gHj, gstj = _gpu_setup(Hj; with_disps = true)
+    @test MC.gpu_displacement_sweep!(gstj, gHj, β; workgroupsize = 32) isa Int
+    MC.set_coefficients!(Hj, [1.1 * t.coef for t in SLCE.decorated_terms(mj)];
+                         recheck_translation = false)
+    errd = try
+        MC.gpu_displacement_sweep!(gstj, gHj, β; workgroupsize = 32)
+        nothing
+    catch e
+        e
+    end
+    @test errd isa ArgumentError
+    @test occursin("stale", errd.msg)
+    MC.sync_coefficients!(gHj)
+    @test MC.gpu_displacement_sweep!(gstj, gHj, β; workgroupsize = 32) isa Int
 end
 
 @testset "gpu: repeated-run identity" begin
@@ -858,9 +880,11 @@ end
 @testset "gpu: the device kernel rejects a padded spin block" begin
     # The kernel derives the SPIN block width from `lmax` (`@localmem` trial row, ΔE
     # row range, write-back extent) where the host reads `H.nlm`. `row_layout` makes
-    # them equal, but `TiledHamiltonian` takes a caller-supplied `RowLayout` and only
-    # checks `disp_offset` against the slot rows — a padded one would truncate the
-    # device ΔE and write partially into the displacement block.
+    # them equal, but `TiledHamiltonian` takes a caller-supplied `RowLayout` — a
+    # padded one would truncate the device ΔE and write partially into the
+    # displacement block. Since the 2026-08-11 review, the HOST constructor already
+    # refuses the padded spin block (its own `_zrows` would leave the padding as
+    # `undef` memory), so the refusal fires one door earlier.
     sp(site) = SLCE.Slot(site, SLCE.SiteFactor(SLCE.SPIN, 0, 1))
     z = SVector(0, 0, 0)
     x = SVector(1, 0, 0)
@@ -869,9 +893,14 @@ end
     # lmax = 1 needs 4 spin rows; this layout reserves 6 and starts the (0,1) block at 6
     padded = SLCE.RowLayout(9, 1, 6, [(0, 1)], [6])
     terms = [DecoratedTerm(-0.03, (4π)^1, 2, [1, 1], [z, x], [sp(1), sp(2)], pair)]
-    Hp = MC.TiledHamiltonian(1, terms, padded; dims = (4, 1, 1), fixed_reference = true)
-    @test Hp.nlm == 6 && Hp.lmax == 1          # the host is fine with it
-    @test_throws ArgumentError MC.GPUTiledHamiltonian(CPU(), Hp)
+    errp = try
+        MC.TiledHamiltonian(1, terms, padded; dims = (4, 1, 1), fixed_reference = true)
+        nothing
+    catch e
+        e
+    end
+    @test errp isa ArgumentError
+    @test occursin("padded", errp.msg)
 
     # The mirror on the other side: the displacement sweep writes `nlm+1:nrows` back
     # wholesale while `_disp_rows_device!` fills only the declared `(k, l)` blocks, so
@@ -881,6 +910,13 @@ end
     Hg = MC.TiledHamiltonian(1, terms, gappy; dims = (4, 1, 1), fixed_reference = true)
     @test Hg.nrows == 8 && Hg.layout.disp_starts[end] + 3 == 7   # ... 8 is unclaimed
     @test_throws ArgumentError MC.GPUTiledHamiltonian(CPU(), Hg)
+
+    # A gap BEFORE the first displacement block (or between blocks) is as fatal as
+    # one after the last — the end-only check the guard first shipped with missed it.
+    front_gap = SLCE.RowLayout(8, 1, 4, [(0, 1)], [5])
+    Hf = MC.TiledHamiltonian(1, terms, front_gap; dims = (4, 1, 1),
+                             fixed_reference = true)
+    @test_throws ArgumentError MC.GPUTiledHamiltonian(CPU(), Hf)
     # and the well-formed layout of the same shape is accepted
     tight = SLCE.RowLayout(7, 1, 4, [(0, 1)], [4])
     Ht = MC.TiledHamiltonian(1, terms, tight; dims = (4, 1, 1), fixed_reference = true)

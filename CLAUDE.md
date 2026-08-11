@@ -115,6 +115,10 @@ adding a coupling means writing the entry there and the index line here.
 - **`StrainSchedule` ↔ `keep_zero_terms` ↔ upstream `decorated_terms(; keep_zero)` ↔
   `set_coefficients!`** — both halves of the support freeze are required. Gates:
   `test_strainschedule.jl`.
+- **`_schedule_abscissa` ↔ SLCE's private `_grid_abscissa`** — a branch-for-branch
+  replica (same `V0 = |det A₁|/s₁³` derivation, via the public `volumes`); an
+  upstream abscissa change must be mirrored here. Gate: the three-abscissa sweep
+  against `SLCE.grid_strain_derivative` in `test_strainschedule.jl`.
 - **The NPT strain move: `strain_move!` ↔ `strain_delta_energy`/`_strain_log_weight` ↔
   `ChainState.strain` ↔ the run drivers ↔ the checkpoint schema ↔
   `sync_coefficients!`** — the longest entry: one elastic-energy source, the

@@ -703,7 +703,12 @@ end
 # Warn once, up front, when the planned check count cannot support the block test —
 # early enough that the user can lower `renorm_interval` before spending the run.
 function _warn_escape_cadence(H::TiledHamiltonian, plan::UpdatePlan)
-    (has_disp(H) && plan.disp_per_metropolis > 0) || return nothing
+    # Displacements evolve through displacement passes AND through accepted strain
+    # moves (`strain_move!` rescales `st.disps` in place), and `_check_escape!` is
+    # live whenever `has_disp(H)` — so a "rigid sublattice, flexible volume" NPT run
+    # (`disp_per_metropolis = 0`, `strain_interval > 0`) needs this advisory too.
+    (has_disp(H) && (plan.disp_per_metropolis > 0 || plan.strain_interval > 0)) ||
+        return nothing
     need = _escape_min_checks()
     checks = fld(plan.sweeps_measure, plan.renorm_interval)
     checks >= need && return nothing

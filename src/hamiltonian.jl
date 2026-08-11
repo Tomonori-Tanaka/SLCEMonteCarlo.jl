@@ -510,6 +510,16 @@ struct TiledHamiltonian
 
         lmax = layout.spin_lmax
         nlm = layout.disp_offset
+        # `_zrows` fills spin rows `1:(lmax+1)²` and `_zlm_row!` derives its extent
+        # from `lmax`, so a padded SPIN block (`disp_offset > (lmax+1)²`, reachable
+        # only through a caller-supplied `RowLayout` on the raw-terms path) would
+        # leave rows `(lmax+1)²+1 : disp_offset` of every `zrows` column as `undef`
+        # memory read through `@inbounds`. The GPU wrapper asserts the same identity
+        # at its own door; refuse it at the host door too.
+        nlm == (lmax + 1)^2 || throw(ArgumentError(
+            "this layout's SPIN block is $nlm rows but spin_lmax = $lmax, i.e. " *
+            "$((lmax + 1)^2) tesseral rows; the row builders derive the block " *
+            "extent from lmax and cannot address a padded layout"))
         disp_lmax = isempty(layout.disp_factors) ? -1 :
                     maximum(l for (_, l) in layout.disp_factors)
         ncells = prod(d)

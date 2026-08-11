@@ -146,15 +146,28 @@ struct GPUTiledHamiltonian{B<:Backend,D<:_GPUTables}
         # The mirror on the other side. The displacement kernel writes back
         # `nlm+1:nrows` wholesale while `_disp_rows_device!` fills only the declared
         # `(k, l)` blocks, so a layout whose blocks do not TILE that range would copy
-        # uninitialized local memory into the row table. `row_layout` always tiles it.
+        # uninitialized local memory into the row table. `row_layout` always tiles
+        # it; a hand-built layout is the hazard, so assert the FULL tiling — a gap
+        # before the first block or between blocks is as fatal as one after the
+        # last, and the end-only form this guard first shipped with missed both.
         L = H.layout
-        isempty(L.disp_factors) || L.disp_starts[end] + 2 * L.disp_factors[end][2] +
-            1 == H.nrows || throw(ArgumentError(
-            "this Hamiltonian's layout leaves rows between its last displacement " *
-            "block (starts at $(L.disp_starts[end]), (k, l) = " *
-            "$(L.disp_factors[end])) and nrows = $(H.nrows); the device " *
-            "displacement sweep writes the whole block back and cannot address a " *
-            "layout whose blocks do not tile it"))
+        if !isempty(L.disp_factors)
+            prev = H.nlm
+            for (i, (_, l)) in enumerate(L.disp_factors)
+                L.disp_starts[i] == prev || throw(ArgumentError(
+                    "this Hamiltonian's layout leaves rows before its displacement " *
+                    "block $i ((k, l) = $(L.disp_factors[i]) starts at row offset " *
+                    "$(L.disp_starts[i]), expected $prev); the device displacement " *
+                    "sweep writes rows $(H.nlm + 1):$(H.nrows) back wholesale and " *
+                    "cannot address a layout whose blocks do not tile that range"))
+                prev += 2 * l + 1
+            end
+            prev == H.nrows || throw(ArgumentError(
+                "this Hamiltonian's layout leaves rows between its last " *
+                "displacement block (ends at row offset $prev) and nrows = " *
+                "$(H.nrows); the device displacement sweep writes the whole block " *
+                "back and cannot address a layout whose blocks do not tile it"))
+        end
         arrays, spin_ptr, disp_ptr = _table_arrays(H)
         dev = _GPUTables(map(a -> _to_device(backend, a), arrays)...)
         return new{typeof(backend),typeof(dev)}(backend, H, dev, spin_ptr, disp_ptr,

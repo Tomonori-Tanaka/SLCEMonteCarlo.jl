@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — the chain-state GPU gradient entry now carries the epoch guard (review 2026-08-11 B1)
+
+`gpu_energy_gradient!(dG, gst::GPUChainState, gH, gsc)` routed through
+`_gpu_gradient_rows!`, which carried `_require_spin_only` but not
+`_check_synced` — the one device entry the audit-#3 epoch guard missed. A host
+`set_coefficients!` (strain move, hot-swap) followed by this convenience
+gradient silently returned the field of the pre-swap Hamiltonian, bit-identical
+to the old coefficients. The guard now sits in `_gpu_gradient_rows!` itself, and
+the epoch testset exercises BOTH gradient overloads and
+`gpu_displacement_sweep!` (previously only the scratch form and the Metropolis
+sweep were covered).
+
+### Fixed — layout guards close the two hand-built-`RowLayout` gaps (review 2026-08-11)
+
+- The device write-back guard asserted only that the LAST displacement block
+  ends at `nrows`; a hand-built layout with a gap before or between blocks
+  passed and would have copied uninitialized `@localmem` into the row table.
+  The guard now asserts the full tiling (first block at `nlm`, contiguous
+  blocks, last at `nrows`).
+- The host `TiledHamiltonian` constructor now refuses a padded SPIN block
+  (`disp_offset > (spin_lmax + 1)²`) the way the GPU wrapper always has —
+  `_zrows` fills `1:(lmax+1)²` and would have left the padding as `undef`
+  memory read through `@inbounds`.
+
+### Fixed — `StrainSchedule` construction hardened (review 2026-08-11)
+
+- Reads the grid through the public surface (`SLCE.volumes(sm)`,
+  `SLCE.n_atoms(model)`) instead of `model.basis.crystal` — this package's own
+  introspection rule forbade the private reach it was doing.
+- Asserts `|det Aᵢ| ≈ v_train·sᵢ³` (rtol 1e-10) for every grid point: the outer
+  `StrainedModels` constructor guarantees the similarity family but the inner
+  one is field-wise, and `v_train` feeds `strain_volume`, the volume abscissas,
+  `P·V` and `dv_ds` — a non-scaling grid would have corrupted all four silently.
+- Asserts `degree + 1 ≤ npt` before the Vandermonde solve (unreachable through
+  the public path; an underdetermined `V \ B` would return a smooth-looking
+  minimum-norm J(s) with every downstream gate green).
+
+### Fixed — NPT bookkeeping details (review 2026-08-11)
+
+- The escape-detector cadence advisory now also fires for a
+  "rigid sublattice, flexible volume" run (`disp_per_metropolis = 0`,
+  `strain_interval > 0`): accepted strain moves rescale `st.disps` too, and
+  `_check_escape!` is live whenever the Hamiltonian has displacement rows.
+- Every checkpoint write resets the periodic clock (`since = 0` moved into
+  `_write_ckpt_mc`/`_write_ckpt_pt`), so a temperature/phase boundary write no
+  longer lets a stale tick count make the next segment's first periodic write
+  fire early.
+
 ### Added — the NPT strain move reaches the GPU path; stale device coefficients are refused
 
 Audit 2026-08-01 #3. `strain_move!` rewrites the host coefficients twice per
