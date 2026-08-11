@@ -145,9 +145,15 @@ fixed-cell run.
 GPU: `sync_coefficients!(gH)` re-uploads the ONE device array a host coefficient
 swap moves (`sent_w`; every structural table is coefficient-independent because
 the site-program skip tests `folded`, never `coef·folded`). Gated bitwise
-against the keyed reference on the new weights. The per-move device cost has NOT
-been measured on real hardware yet — measure on the next kugui A100 session
-before production NPT+GPU runs; the refusal is held in reserve if it disappoints.
+against the keyed reference on the new weights. Audit 2026-08-01 #3 closed the
+composition hole: `strain_move!(...; gpu = gH)` syncs inside the move on every
+path that rewrote `H` (identity-checked — a wrapper of a coefficient clone would
+upload the wrong lane's weights), and a value-blind coefficient epoch
+(`progs.coef_epoch`, bumped by every `set_coefficients!`, recorded by the wrapper
+at upload/sync) makes a forgotten sync a refusal at the next device sweep /
+gradient entry instead of a silent two-Hamiltonians chain. The per-move device
+cost has NOT been measured on real hardware yet — measure on the next kugui A100
+session before production NPT+GPU runs.
 
 Fixed-cell byte-neutrality is pinned, not assumed: a short fixed-cell `run_mc`
 trajectory captured at commit `d038b86` (pre-wiring) is asserted bit-identical

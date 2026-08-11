@@ -19,6 +19,7 @@ using SLCE
 using LinearAlgebra
 using Random
 using StaticArrays
+using KernelAbstractions: CPU
 
 const MCs = SLCEMonteCarlo
 
@@ -1216,7 +1217,7 @@ _ss_vk_mean(k, va, vb) =
                if getfield(H, f) !== getfield(Hc, f)] == [:terms, :progs]
         @test [f for f in fieldnames(MCs._ContractionPrograms)
                if getfield(H.progs, f) !== getfield(Hc.progs, f)] ==
-              [:sent_w, :term_coef]
+              [:sent_w, :term_coef, :coef_epoch]   # epoch: fresh Ref per channel
         @test Hc.progs.term_coef == H.progs.term_coef &&
               Hc.progs.sent_w == H.progs.sent_w && Hc.terms == H.terms
         # rewriting the clone leaves the parent untouched — checked on BOTH
@@ -2282,4 +2283,47 @@ end
         @test ef < 1.0
         @test pf > 20.0                              # nowhere near the sampled regime's 5
     end
+end
+
+@testset "strain_move! keeps a device wrapper in step (audit #3)" begin
+    # The GPU-path hole the audit named: strain_move! rewrites H's coefficients and
+    # never touched a device wrapper, so a hand-composed gpu_run_sweeps! ⇄ strain_move!
+    # loop sampled the reference-scale coefficients on the device while the host's
+    # accept decisions used the proposed ones. With `gpu = gH` the move's exit
+    # contract extends to the device tables on every path that rewrote H.
+    sm, _ = _ss_grid()
+    H = TiledHamiltonian(sm.models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+    sch = StrainSchedule(sm, H)
+    set_coefficients!(H, MCs.strain_coefficients(sch, 1.0))
+    gH = MCs.GPUTiledHamiltonian(CPU(), H)
+    MCs.sync_coefficients!(gH)                      # epoch of the install above
+    st = MCs.ChainState(H, _ss_cfg(H.n_sites, 11), Xoshiro(11), 0.3;
+                        disps = zeros(SVector{3,Float64}, H.n_sites))
+    sc = MCs.StrainScratch(H)
+    nacc = 0
+    for _ = 1:40
+        nacc += MCs.strain_move!(st, H, sch, sc, 0.05; pressure = 0.01, step = 0.02,
+                                 proposal = :scale, gpu = gH)
+        # in step after EVERY attempt — accepted or rejected, the epoch matches and
+        # the one array a rewrite moves is byte-identical on both sides
+        @test gH.synced_epoch[] == H.progs.coef_epoch[]
+        @test gH.dev.sent_w == H.progs.sent_w
+    end
+    @test 0 < nacc < 40                             # both paths actually exercised
+
+    # a wrapper of a DIFFERENT Hamiltonian is refused before any state changes
+    H2 = TiledHamiltonian(sm.models[2]; dims = (2, 1, 1), keep_zero_terms = true)
+    set_coefficients!(H2, MCs.strain_coefficients(sch, 1.0))
+    gH2 = MCs.GPUTiledHamiltonian(CPU(), H2)
+    s_before = st.strain
+    err = try
+        MCs.strain_move!(st, H, sch, sc, 0.05; pressure = 0.01, step = 0.02,
+                         proposal = :scale, gpu = gH2)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    @test occursin("different TiledHamiltonian", err.msg)
+    @test st.strain == s_before
 end

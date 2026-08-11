@@ -143,6 +143,13 @@ struct _ContractionPrograms
                                #   term this is 1, 2, … (axis ≡ site) and the kernel
                                #   reduces to the pre-M4 `off + m` indexing
     term_coef::Vector{Float64} # scaled template coef (== terms[k].coef)
+    # Coefficient epoch: bumped by every `set_coefficients!`, recorded by a
+    # `GPUTiledHamiltonian` at upload/sync — the device sweep entries refuse on a
+    # mismatch, which is what makes a forgotten `sync_coefficients!` LOUD (audit
+    # 2026-08-01 #3). Value-blind on purpose: a rejected strain move reinstalls the
+    # identical numbers and still bumps twice, and the documented rule is already
+    # "sync after every rewrite" — the sync is one contiguous copy.
+    coef_epoch::Base.RefValue{Int}
 end
 
 # One template flattened into the program arrays (rank-specialized barrier —
@@ -253,7 +260,7 @@ function _build_programs(terms::Vector{ScaledTerm}, inst_term::Vector{Int32},
                               Vector{Int32}(undef, length(site_inst)),
                               Int32[], Int32[],
                               Int32[1], Float64[], Int32[1], Int32[], Int8[],
-                              [t.coef for t in terms])
+                              [t.coef for t in terms], Ref(0))
     # program id of (template k, member site position q) = pbase[k] + q;
     # pslot1/pslot2[pid] = the fast paths' hoisted factor SITE POSITIONS — for a rank-2
     # or rank-3 template, the positions of the axes other than the one being targeted,

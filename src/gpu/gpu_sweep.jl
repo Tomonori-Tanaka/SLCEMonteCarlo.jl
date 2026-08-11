@@ -287,6 +287,7 @@ visited at all. Pair it with [`gpu_displacement_sweep!`](@ref) — or let
 function gpu_metropolis_sweep!(gst::GPUChainState, gH::GPUTiledHamiltonian,
                                β::Float64; workgroupsize::Integer = 128)::Int
     H = gH.host
+    _check_synced(gH)
     _require_spin_sites(H, "gpu_metropolis_sweep!")
     ws = Int(workgroupsize)
     ispow2(ws) || throw(ArgumentError("workgroupsize must be a power of two (got $ws)"))
@@ -343,6 +344,7 @@ identical shift.
 function gpu_displacement_sweep!(gst::GPUChainState, gH::GPUTiledHamiltonian,
                                  β::Float64; workgroupsize::Integer = 128)::Int
     H = gH.host
+    _check_synced(gH)
     _require_disp(H, "gpu_displacement_sweep!")
     ws = Int(workgroupsize)
     ispow2(ws) || throw(ArgumentError("workgroupsize must be a power of two (got $ws)"))

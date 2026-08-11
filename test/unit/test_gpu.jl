@@ -408,6 +408,39 @@ end
     @test gHj.dev.sent_w == gHj.host.progs.sent_w
 end
 
+@testset "gpu: stale coefficients are refused at every device entry (audit #3)" begin
+    # Before the epoch guard, an unsynced rewrite sampled the OLD Hamiltonian on the
+    # device while the host bookkeeping assumed the new one — type-correct,
+    # bit-stable, silent until the renorm-interval drift check.
+    m = _biquadratic_model(3)
+    H = TiledHamiltonian(m; dims = (2, 2, 2))
+    st, gH, gst = _gpu_setup(H)
+    β = 1 / 0.05
+    @test MC.gpu_metropolis_sweep!(gst, gH, β; workgroupsize = 32) isa Int   # in sync
+    coefs = [1.1 * t.coef for t in SLCE.spin_multipole_terms(m)]
+    MC.set_coefficients!(H, coefs)
+    err = try
+        MC.gpu_metropolis_sweep!(gst, gH, β; workgroupsize = 32)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    @test occursin("stale", err.msg)
+    # the gradient entry refuses the same wrapper
+    gsc = MC.GPUGradientScratch(gH)
+    dG = zeros(SVector{3,Float64}, H.n_sites)
+    @test_throws ArgumentError MC.gpu_energy_gradient!(dG, gH, st.config, gsc)
+    # the sync clears it
+    MC.sync_coefficients!(gH)
+    @test MC.gpu_metropolis_sweep!(gst, gH, β; workgroupsize = 32) isa Int
+    # value-blind on purpose: reinstalling the SAME numbers still requires a sync
+    MC.set_coefficients!(H, coefs)
+    @test_throws ArgumentError MC.gpu_metropolis_sweep!(gst, gH, β; workgroupsize = 32)
+    MC.sync_coefficients!(gH)
+    @test MC.gpu_metropolis_sweep!(gst, gH, β; workgroupsize = 32) isa Int
+end
+
 @testset "gpu: repeated-run identity" begin
     H = TiledHamiltonian(_biquadratic_model(3); dims = (2, 2, 2))
     β = 1 / 0.05

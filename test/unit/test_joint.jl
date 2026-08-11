@@ -452,9 +452,11 @@ end
         @test [t.slots for t in Ha.terms] == [t.slots for t in Hb.terms]
         @test Ha.site_has_l1 == Hb.site_has_l1
         @test Ha.site_active == Hb.site_active && Ha.n_colors == Hb.n_colors
-        # every precompiled program array, byte for byte
+        # every precompiled program array, byte for byte (the epoch is a Ref —
+        # compare the value; two builds each start at 0)
         for f in fieldnames(MC._ContractionPrograms)
-            @test getfield(Ha.progs, f) == getfield(Hb.progs, f)
+            a, b = getfield(Ha.progs, f), getfield(Hb.progs, f)
+            @test (a isa Base.RefValue ? a[] == b[] : a == b)
         end
         @test MC.model_fingerprint(Ha) == MC.model_fingerprint(Hb)
 

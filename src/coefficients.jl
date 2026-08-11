@@ -71,7 +71,11 @@ Two things become stale elsewhere and are the caller's responsibility:
 
 - a `GPUTiledHamiltonian` uploaded from `H` keeps the old device weights — call
   [`sync_coefficients!`](@ref) on it (a `sent_w`-only copy; the structural tables
-  are coefficient-independent and stay valid);
+  are coefficient-independent and stay valid). Forgetting is LOUD: every rewrite
+  bumps a coefficient epoch, and the device sweep/gradient entries refuse a
+  wrapper whose last sync predates it (audit #3). In a strain-move loop, pass
+  the wrapper to [`strain_move!`](@ref)`(...; gpu = gH)` and the move syncs
+  itself;
 - the checkpoint fingerprint changes with the coefficients (by design), so a file
   written before the swap will correctly refuse to resume after it.
 
@@ -117,6 +121,9 @@ function set_coefficients!(H::TiledHamiltonian, coefs::AbstractVector{<:Real};
     @inbounds for i in eachindex(pr.sent_w)
         pr.sent_w[i] = pr.term_coef[pr.sent_term[i]] * pr.sent_base[i]
     end
+    # Bumped BEFORE the recheck below can throw: on that path the Hamiltonian holds the
+    # new coefficients (the message says so), so any device wrapper is already stale.
+    pr.coef_epoch[] += 1
 
     if recheck_translation && H.n_disp_comps > 0
         new_free = _translation_residuals(H) .<= _TRANSLATION_TOL
@@ -154,6 +161,7 @@ function _coefficient_clone(H::TiledHamiltonian)::TiledHamiltonian
                                  pr.sfac_ptr, pr.sfac_row, pr.sfac_slot,
                                  pr.site_col, pr.site_col2, pr.pent_row,
                                  pr.pent_row2, pr.eprog_ptr, pr.eent_w, pr.efac_ptr,
-                                 pr.efac_row, pr.efac_site, copy(pr.term_coef))
+                                 pr.efac_row, pr.efac_site, copy(pr.term_coef),
+                                 Ref(0))     # fresh epoch — the clone's own channel
     return TiledHamiltonian(H, copy(H.terms), progs)
 end

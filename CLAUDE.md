@@ -107,7 +107,11 @@ adding a coupling means writing the entry there and the index line here.
 - **Coefficient hot-swap: `_push_term_programs!`'s skip ↔ `sent_base`/`sent_term` ↔
   `set_coefficients!` ↔ `keep_zero_terms` ↔ the GPU tables and the checkpoint
   fingerprint** — the site-program skip tests `folded[idx]`, never `coef · folded[idx]`.
-  Gates: `test_coefficients.jl`.
+  Since audit #3 the GPU side is epoch-guarded: `set_coefficients!` bumps
+  `progs.coef_epoch` (value-blind), the wrapper records it at upload/sync, and
+  `_check_synced` refuses a stale wrapper at both device sweeps and the gradient
+  entry; `_coefficient_clone` gives each PT lane a FRESH epoch `Ref`.
+  Gates: `test_coefficients.jl`, the epoch testset in `test_gpu.jl`.
 - **`StrainSchedule` ↔ `keep_zero_terms` ↔ upstream `decorated_terms(; keep_zero)` ↔
   `set_coefficients!`** — both halves of the support freeze are required. Gates:
   `test_strainschedule.jl`.
@@ -116,7 +120,9 @@ adding a coupling means writing the entry there and the index line here.
   `sync_coefficients!`** — the longest entry: one elastic-energy source, the
   proposal/exponent branch pair, the `(H, chain)` contract, the reference-scale
   fingerprint, `_rescale_escape!`'s detector-vs-reporting split, the volume-grid
-  boundary screen, the GPU sync, PT lane clones and the exchange weight, the
+  boundary screen, the GPU sync (`strain_move!(...; gpu = gH)` syncs inside the move,
+  identity-checked; a `gpu`-less rewrite is refused at the next device entry by the
+  coefficient epoch — audit #3), PT lane clones and the exchange weight, the
   three-place NPT target, and the warm start. Gates: `test_strainschedule.jl`.
 - **The §8(ζ) pressure diagnostic: `_energy_with_coefs` ↔ `_total_energy`, and the
   exact-derivative trio ↔ their Horner sources**. Gates: the two §8(ζ) testsets in

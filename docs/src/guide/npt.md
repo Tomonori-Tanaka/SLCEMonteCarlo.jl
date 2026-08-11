@@ -204,8 +204,11 @@ Checkpoints work as usual, with three additions (schema v5,
 ## The GPU path does not move the cell
 
 There is no device strain move: the sweep tier samples spins and displacements at
-whatever coefficients the device tables hold. A host-side strain move therefore
-has to be followed by [`sync_coefficients!`](@ref) on every live
-[`GPUTiledHamiltonian`](@ref) wrapper — a stale device weight table is not
-detectable from the device side, since the sweep stays type-correct and
-bit-stable against it. See the [GPU guide](gpu.md).
+whatever coefficients the device tables hold. Pass the live
+[`GPUTiledHamiltonian`](@ref) wrapper to the move — `strain_move!(...; gpu = gH)`
+— and it runs [`sync_coefficients!`](@ref) itself on every path that rewrote the
+host coefficients. Forgetting is loud: every `set_coefficients!` bumps a
+coefficient epoch, and the device sweep entries refuse a wrapper whose last sync
+predates it (the sweep itself would stay type-correct and bit-stable against the
+stale weights — sampling a different Hamiltonian than the host's accept decisions
+assumed). See the [GPU guide](gpu.md).

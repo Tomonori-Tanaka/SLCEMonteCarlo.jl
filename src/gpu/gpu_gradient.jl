@@ -211,6 +211,7 @@ function gpu_energy_gradient!(dG::AbstractVector{SVector{3,Float64}},
                               refresh_zrows::Bool = true,
                               synchronize::Bool = true)
     H = gH.host
+    _check_synced(gH)
     # Unconditionally, NOT via the `gpu_zlm_rows!` call below: that one is skipped on
     # the documented `refresh_zrows = false` fast path, and `gsc` cannot carry the
     # guard either (a scratch built from the spin restriction of this very model has

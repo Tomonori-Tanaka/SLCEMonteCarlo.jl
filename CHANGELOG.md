@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — the NPT strain move reaches the GPU path; stale device coefficients are refused
+
+Audit 2026-08-01 #3. `strain_move!` rewrites the host coefficients twice per
+attempt and never touched a device wrapper, so the obvious
+`gpu_run_sweeps!` ⇄ `strain_move!` interleave sampled the reference-scale
+coefficients on the device while the host's accept decisions used the proposed
+ones — two Hamiltonians in one chain, silent until the `renorm_interval` drift
+check. Two halves land together (chosen over a blanket GPU × strain refusal,
+which would forfeit exactly the big-cell NPT workflow the GPU exists for):
+
+- `strain_move!(...; gpu = gH)` extends the move's exit contract to the device
+  tables — `sync_coefficients!` runs on every path that rewrote `H`, and the
+  wrapper's identity is checked (`gpu.host === H`; syncing a coefficient clone's
+  wrapper would upload the wrong lane's weights with every shape matching).
+- A **coefficient epoch** (`progs.coef_epoch`, bumped by every
+  `set_coefficients!`; value-blind — a rejected move reinstalls identical
+  numbers and still counts) is recorded by `GPUTiledHamiltonian` at upload/sync,
+  and `_check_synced` refuses a stale wrapper at both device sweeps and the
+  gradient entry. This makes ANY forgotten sync loud — the active-learning
+  hot-swap path had the same silent hole, and `sync_coefficients!`'s own
+  docstring used to say forgetting it "is not detectable from the device side".
+  `_coefficient_clone` gives each PT lane a fresh epoch `Ref` (the epoch is per
+  coefficient channel).
+
+Gates: the epoch refusal at all three device entries incl. the value-blind
+rewrite (`test_gpu.jl`), and the strain-side in-step-after-every-attempt claim —
+epoch AND `sent_w` byte-equality after each of 40 accepted/rejected moves, plus
+the mismatched-wrapper refusal (`test_strainschedule.jl`).
+
 ### Fixed — `_finalize_stats` refuses ragged evaluable inputs instead of implying it truncates
 
 The `nb = min(length…)` computation read as if it guarded unequal-length bin

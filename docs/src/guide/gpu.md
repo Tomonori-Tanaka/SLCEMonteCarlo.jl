@@ -46,9 +46,11 @@ underneath them, and it is deliberately narrow:
 - **No cell move.** There is no device strain move: the sweep runs at whatever
   coefficients the device tables hold. Every host-side
   [`set_coefficients!`](@ref) — a strain move, an active-learning hot-swap —
-  must be followed by [`sync_coefficients!`](@ref) on the live wrapper, since a
-  stale weight table is undetectable from the device side (the sweep stays
-  type-correct and bit-stable against it).
+  must be followed by [`sync_coefficients!`](@ref) on the live wrapper; in a
+  strain loop, `strain_move!(...; gpu = gH)` does it for you. Forgetting is
+  refused at the next device sweep (a coefficient-epoch guard — the sweep itself
+  would stay type-correct and bit-stable against the stale weights, silently
+  sampling a different Hamiltonian than the host's bookkeeping assumes).
 - Temperature schedules, annealing ladders, and checkpointing are the caller's
   loop.
 

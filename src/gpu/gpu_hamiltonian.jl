@@ -122,6 +122,7 @@ struct GPUTiledHamiltonian{B<:Backend,D<:_GPUTables}
     dev::D
     spin_ptr::Vector{Int32}          # color c: dev.spin_sites[ptr[c]:ptr[c+1]-1]
     disp_ptr::Vector{Int32}          # color c: dev.disp_sites[ptr[c]:ptr[c+1]-1]
+    synced_epoch::Base.RefValue{Int} # host coef_epoch at upload / last sync (audit #3)
 
     function GPUTiledHamiltonian(backend::Backend, H::TiledHamiltonian)
         H.lmax <= 6 || throw(ArgumentError(
@@ -156,7 +157,8 @@ struct GPUTiledHamiltonian{B<:Backend,D<:_GPUTables}
             "layout whose blocks do not tile it"))
         arrays, spin_ptr, disp_ptr = _table_arrays(H)
         dev = _GPUTables(map(a -> _to_device(backend, a), arrays)...)
-        return new{typeof(backend),typeof(dev)}(backend, H, dev, spin_ptr, disp_ptr)
+        return new{typeof(backend),typeof(dev)}(backend, H, dev, spin_ptr, disp_ptr,
+                                                Ref(H.progs.coef_epoch[]))
     end
 end
 
@@ -180,10 +182,31 @@ tests `folded`, never `coef · folded`), which is exactly what makes the sync a
 single `copyto!` instead of a rebuild.
 
 Call it after **every** `set_coefficients!` whose Hamiltonian has a live device
-wrapper. Forgetting it is not detectable from the device side — the sweep stays
-type-correct and bit-stable against the stale weights.
+wrapper. Forgetting it is loud (audit #3): every rewrite bumps the host's
+coefficient epoch, and the device sweep / gradient entries refuse a wrapper whose
+last sync predates it — the sweep itself would stay type-correct and bit-stable
+against the stale weights, silently sampling a different Hamiltonian than the
+host's bookkeeping assumes. In a strain-move loop, pass the wrapper to
+[`strain_move!`](@ref)`(...; gpu = gH)` and the move syncs itself.
 """
 function sync_coefficients!(gH::GPUTiledHamiltonian)
     copyto!(gH.dev.sent_w, gH.host.progs.sent_w)
+    gH.synced_epoch[] = gH.host.progs.coef_epoch[]
     return gH
+end
+
+# The stale-coefficient refusal (audit 2026-08-01 #3), asked at every device entry
+# that reads `dev.sent_w` (both sweeps, the gradient). An Int compare — nothing per
+# ndrange — so it belongs on the per-call path. Value-blind by design: a rejected
+# strain move reinstalls identical numbers and still reads as stale, and the remedy
+# is the same one copy the documented contract already requires.
+function _check_synced(gH::GPUTiledHamiltonian)
+    gH.synced_epoch[] == gH.host.progs.coef_epoch[] || throw(ArgumentError(
+        "the device coefficient tables are stale: `set_coefficients!` has rewritten " *
+        "the host Hamiltonian (a strain move, a coefficient hot-swap) since this " *
+        "wrapper's last upload, so the device would sweep a different Hamiltonian " *
+        "than the host's bookkeeping assumes. Call `sync_coefficients!` on the " *
+        "wrapper after every host rewrite — or pass it to `strain_move!(...; " *
+        "gpu = ...)`, which syncs inside the move."))
+    return nothing
 end

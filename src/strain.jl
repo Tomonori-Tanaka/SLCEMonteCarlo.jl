@@ -460,6 +460,15 @@ asymmetric proposal and biases the chain toward the boundary). Draws come from t
 chain-level `st.rng` only — one normal per attempt, plus one uniform when the
 proposal lands inside the domain.
 
+When the chain sweeps on a device, pass its wrapper as `gpu = gH`
+(a `GPUTiledHamiltonian` over this same `H` — identity is checked): the move then
+extends the exit contract to the device tables with a [`sync_coefficients!`](@ref)
+on every path that rewrote `H` (audit #3 — without it the device keeps sweeping the
+reference-scale coefficients while the host's accept decisions use the proposed
+ones, two Hamiltonians in one chain, and only the `renorm_interval` drift check
+would notice). Interleaving `gpu_run_sweeps!` with a `gpu`-less `strain_move!` is
+refused at the next device sweep by the coefficient-epoch guard.
+
 `pressure` is hydrostatic, in the model's units (eV/Å³, **never GPa** — the driver
 keyword `pressure_GPa` converts once, at resolution): `P·V(ε)` is a state function
 with no strain-measure ambiguity, which is why v0 is hydrostatic-only — a general
@@ -479,7 +488,15 @@ they stay absolute time-averages comparable with the `:u2` observable; see
 """
 function strain_move!(st::ChainState, H::TiledHamiltonian, sch::StrainSchedule,
                       sc::StrainScratch, kt::Real; pressure::Real, step::Real,
-                      proposal::Symbol = :logvolume, check_pairing::Bool = true)::Bool
+                      proposal::Symbol = :logvolume, check_pairing::Bool = true,
+                      gpu = nothing)::Bool
+    # `gpu` is a GPUTiledHamiltonian; untyped because the GPU layer is included after
+    # this file. Identity, not equality: syncing a wrapper of a coefficient CLONE
+    # would upload the wrong lane's weights with every array shape matching.
+    gpu === nothing || gpu.host === H || throw(ArgumentError(
+        "the `gpu` wrapper wraps a different TiledHamiltonian than `H`: " *
+        "`strain_move!` rewrites `H`'s coefficients, so syncing that wrapper would " *
+        "upload another Hamiltonian's weights"))
     # The schedule↔Hamiltonian pairing, checked here because this is a PUBLIC entry
     # point: `set_coefficients!` below validates only the term COUNT, so a schedule
     # converted against a different model of the same shape would write each
@@ -554,12 +571,16 @@ function strain_move!(st::ChainState, H::TiledHamiltonian, sch::StrainSchedule,
         end
         st.acc_strain += 1
         _rescale_escape!(st, lam)
+        gpu === nothing || sync_coefficients!(gpu)
         return true
     end
     # Reject: reinstall the CURRENT scale's coefficients. The Horner pass is
     # deterministic, so the restore is bit-identical — no rollback buffer needed.
     strain_coefficients!(sc.coef, sch, s)
     set_coefficients!(H, sc.coef; recheck_translation = false)
+    # Synced on the reject path too: the values are bit-identical, but the epoch is
+    # value-blind and both `set_coefficients!` calls above bumped it.
+    gpu === nothing || sync_coefficients!(gpu)
     return false
 end
 

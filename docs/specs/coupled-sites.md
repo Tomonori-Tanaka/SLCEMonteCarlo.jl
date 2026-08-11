@@ -217,11 +217,17 @@ them by that phrase.
   v6) so a resumed run's screen does not see only its final segment.
   (6) a host `set_coefficients!` under a live
   `GPUTiledHamiltonian` needs `sync_coefficients!` — `sent_w` is the ONE
-  coefficient-dependent device array, and forgetting the call is undetectable from
-  the device side (the bitwise gate in `test_gpu.jl` holds the contract). (7) On a
+  coefficient-dependent device array. Forgetting the call is LOUD since audit #3:
+  `set_coefficients!` bumps `progs.coef_epoch`, the wrapper records the epoch at
+  upload/sync, and `_check_synced` refuses a stale wrapper at both device sweeps
+  and the gradient entry; `strain_move!(...; gpu = gH)` syncs inside the move
+  (the bitwise gate in `test_gpu.jl` holds the value contract, the epoch testset
+  the refusal, and the strain-side testset in `test_strainschedule.jl` the
+  in-step-after-every-attempt claim). (7) On a
   strained `run_pt` (strain-move.md S10), each lane sweeps its own
   `_coefficient_clone` of `H` — the clone copies EXACTLY the fields
-  `set_coefficients!` writes (`terms`, `progs.term_coef`, `progs.sent_w`) and
+  `set_coefficients!` writes (`terms`, `progs.term_coef`, `progs.sent_w`, and a
+  fresh `progs.coef_epoch` `Ref` — the epoch is per coefficient channel) and
   shares every other array by reference, so a new coefficient-carrying array in
   the programs must join the clone or every PT lane silently shares it; the
   lane's `H` reference is exchange PAYLOAD (swapped with the state in
