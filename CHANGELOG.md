@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation — the cubic-Heisenberg tutorial states the tiling-template contract (2026-08-24)
+
+Its one-atom `AllImages` basis is a template, not a model of the reference cell: both
+ends of a self-image pair carry the same spin there, so the single column is the
+constant `e1.e1 = 1` and becomes the nearest-neighbor bond only once
+`TiledHamiltonian` expands the images into distinct sites. That is why the coefficient
+is set by hand rather than fitted — SLCE now refuses such a basis at the `SLCEDataset`
+door (and `asr = false` never helped: it drops the translation constraint, not the
+degeneracy). The note gives the fitting route (a supercell with `MinimumImage`; 3x3x3
+yields the same single isotropic SALC) and says why the one-atom cell is still the
+right choice here: it lets `dims` take any L, which the finite-size sweep needs.
+
 ### Fixed — the chain-state GPU gradient entry now carries the epoch guard (review 2026-08-11 B1)
 
 `gpu_energy_gradient!(dG, gst::GPUChainState, gH, gsc)` routed through

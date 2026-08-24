@@ -20,7 +20,7 @@ they cannot drift from the code.
 
 One atom in a cubic cell; the six nearest neighbors are **periodic images** of that
 atom, so the pair needs `images = AllImages()` (a minimum-image basis drops
-self-image pairs). Cubic symmetry folds all six directed bonds into a single
+self-image pairs — from one atom they are not resolvable). Cubic symmetry folds all six directed bonds into a single
 isotropic SALC — one coefficient, our ``J``.
 
 ```@example heis3d
@@ -36,6 +36,20 @@ model = SLCEModel(basis, 0.0, [-0.01])          # one SALC; < 0 ⇒ ferromagneti
 
 (space_group = basis.spacegroup.symbol, n_salc = n_salcs(basis))
 ```
+
+!!! note "This basis is a tiling template, not a model of the one-atom cell"
+    On the reference cell both ends of a self-image pair carry the *same* spin, so
+    that single column is the constant ``\mathbf{e}_1\cdot\mathbf{e}_1 \equiv 1``
+    and says nothing about the configuration. It becomes the nearest-neighbor bond
+    only once [`TiledHamiltonian`](@ref) expands the images into distinct supercell
+    sites — which is why the coefficient is set by hand here instead of being fitted.
+    `SLCE.SLCEDataset` refuses a basis with self-image members for exactly that reason
+    (and `asr = false` never helped: it drops the translation constraint, not the
+    degeneracy). To fit this same model from data, build the basis on a **supercell
+    with `MinimumImage`**, where the neighbors are distinct atoms: a 3×3×3 cell with
+    this spec yields the same single isotropic nearest-neighbor SALC. The one-atom
+    cell is used here because it lets `dims` take any ``L`` — the finite-size sweep
+    below needs 4, 6 and 8.
 
 The physical coupling ``J`` (in ``E = J\sum_{\langle ij \rangle} \mathbf{e}_i \cdot
 \mathbf{e}_j``, three bonds per site) is read off the tiled Hamiltonian itself, from
