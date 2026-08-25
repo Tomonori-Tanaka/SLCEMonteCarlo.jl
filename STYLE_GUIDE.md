@@ -5,16 +5,23 @@
 > The shared Julia style lives in `~/Packages/CLAUDE.md` ("Julia style"): official
 > Julia + DFTK guides, `for i = 1:n` vs `for x in xs`, explicit named tuples,
 > ≤ 92 columns, hot-path `SVector`/`MVector`/`@views`/`@inbounds`. Section 1
-> below is the SLCE-family **naming contract** and is identical in all five
+> below is the suite's **naming contract** and is identical in all seven
 > packages; the sections after it are this package's own deltas.
 
 ## 1. Suite-wide naming
 
-> **This section is mirrored verbatim in `SLCE.jl`, `SLCEMonteCarlo.jl`,
-> `SLCEDynamics.jl`, `SLCETools.jl` and `SphericalTensorFC.jl`.** The canonical
-> copy is `SLCE.jl/STYLE_GUIDE.md`: change it there and propagate to the other
-> four in the same session. A copy that has drifted is a defect, not a local
-> preference.
+> **This section is mirrored verbatim in all seven packages** — the joint
+> spin–lattice line `SLCE.jl`, `SLCEMonteCarlo.jl`, `SLCEDynamics.jl`,
+> `SLCETools.jl`, the lattice-only carve-out `SphericalTensorFC.jl`, and the
+> pure-spin carve-outs `SCEFitting.jl` and `SCEMonteCarlo.jl`. The canonical copy
+> is `SLCE.jl/STYLE_GUIDE.md`: change it there and propagate to the other six in
+> the same session. A copy that has drifted is a defect, not a local preference.
+>
+> The two carve-outs are separate packages, not forks, but their ported files are
+> deliberately kept diffable against the originals, so a name that differs between
+> `SLCE.jl` and `SCEFitting.jl` costs a reader twice. Where they do differ today it
+> is recorded — in §1.9 below when it is debt, and in `SCEFitting.jl/CLAUDE.md`'s
+> divergence ledger when the difference is deliberate.
 
 ### 1.1 The rule
 
@@ -94,7 +101,7 @@ boundary must not change its name on the way. The canonical spellings:
 
 | Concept | Canonical | Also seen (debt, §1.9) |
 |---|---|---|
-| Fitted coefficient vector of a model | `coefficients` | `jphi` (SLCE), `coeffs` (SphericalTensorFC) |
+| Fitted coefficient vector of a model | `coefficients` | `jphi` (SLCE, SCEFitting), `coeffs` (the moment fits of SLCE and SCEFitting; SphericalTensorFC) |
 | Constant/intercept term of the expansion | `j0` field, `intercept(model)` accessor | — |
 | Per-term scalar prefactor | `coefficient`; `scaled_coefficient` when a scale is folded in | `coef`, `scaled_coef` |
 | Atoms in the reference cell | `n_atoms` | `nat`, `natoms` |
@@ -105,7 +112,7 @@ boundary must not change its name on the way. The canonical spellings:
 | Which training datum a design row came from | `<channel>_datum` | `torque_config`, `force_config`, `energy_structure` |
 | Resolved truncation rows on a spec | `sector_rules` | `sectors` |
 | Species labels on a spec | `species_labels` | `labels` |
-| Thermal energy, model units | `kT` (and `kTs`, `resolve_kT`) | `kt`, `kts`, `resolve_kt` |
+| Thermal energy, model units | `kT` (and `kTs`, `resolve_kT`) | `kt`, `kts`, `resolve_kt` (SLCEDynamics, SLCE, SCEMonteCarlo) |
 | Absolute temperature, kelvin | `temperature` | — |
 | Supercell repeat counts | `dims` | `dim` |
 | Per-atom magnetic moments | `magmoms` | `magmom` |
@@ -134,10 +141,10 @@ whole suite**:
 
 | Name | Means | Owner |
 |---|---|---|
-| `H` | `TiledHamiltonian` | SLCEMonteCarlo (and its consumers) |
-| `st` | `ChainState` | SLCEMonteCarlo (and its consumers) |
-| `sc` | `SweepScratch` | SLCEMonteCarlo |
-| `spec` | `BasisSpec` | SLCE, SphericalTensorFC |
+| `H` | `TiledHamiltonian` | SLCEMonteCarlo, SCEMonteCarlo (and their consumers) |
+| `st` | `ChainState` | SLCEMonteCarlo, SCEMonteCarlo (and their consumers) |
+| `sc` | `SweepScratch` | SLCEMonteCarlo, SCEMonteCarlo |
+| `spec` | `BasisSpec` (and `MomentSpec`) | SLCE, SCEFitting, SphericalTensorFC |
 
 Do not reuse them for anything else: a reader who works across two packages in
 one sitting should not have to re-learn a two-letter name. A supercell is
@@ -186,7 +193,10 @@ Renaming any of these is a compatibility break, not a style improvement:
 - **Persisted document keys** — SLCE's TOML model schema (`jphi`, `j0`, `ls`,
   `nbody`, `sectors`, `folded`, `shifts`, `pair_cutoff`, `isotropy`, …), the JLD2
   checkpoint keys of SLCEMonteCarlo (schema v6) and SLCEDynamics (schema v3),
-  including the integrator names persisted as strings.
+  including the integrator names persisted as strings. The carve-outs have their
+  own: SCEFitting's TOML model schema v6 (`jphi`, `decors`, `folded`, `shifts`,
+  `lsum`, `lmax`, `spec`, `salcs`, `isotropy`, `tol`, …) and SCEMonteCarlo's JLD2
+  checkpoint schema v3.
 - **External format tokens** — ALAMODE (`NAT`, `NKD`, `NORDER`, `DFSET`,
   `FORCE_CONSTANTS`), phonopy, VASP (`MAGMOM`, `SAXIS`, `M_CONSTR`, `POSCAR`),
   Sunny's field spellings.
@@ -196,7 +206,11 @@ Renaming any of these is a compatibility break, not a style improvement:
   `resolve_kt` are SLCE's generics, extended downstream and never re-defined; a
   rename is a five-repository change. `SLCEMonteCarlo._gradient_lane_ref!` is
   `_`-prefixed but called by qualified name from SLCEDynamics, so it is public in
-  practice.
+  practice. The pure-spin pair has the same relation on a shorter list:
+  SCEMonteCarlo imports `SCEPredictor`, `MultipoleTerm`, `multipole_terms`,
+  `intercept`, `Lattice`, `Crystal`, `cartesian_positions` and `Harmonics` from
+  SCEFitting and extends `n_atoms`, so those eight names and `MultipoleTerm`'s
+  fields (`ls` above all) are a two-repository contract.
 - **The `:spins` observable name and its component layout** in SLCEDynamics —
   validated by name when a checkpoint resumes.
 
@@ -222,12 +236,29 @@ disagreeing with the source:
 | `nat`, `nkd` outside the I/O adapters | SphericalTensorFC | `SuperCell.nat` is a field of an exported type |
 | `midx`, `cidx`, `colidx`, `idxp`, `idxm` | SLCE | each needs its own word, not a mechanical expansion |
 | `iw`, `crow`, `qsv`, `ns_t`, `dtf`, `dtm` | SLCEDynamics | formula-local; each needs reading before it can be named |
+| the whole 2026-08-01 sweep, un-applied | SCEFitting, SCEMonteCarlo | see the paragraph below |
+| `_wig`, `_frob`, `_tclose`, `_jnum`, `_mat3`, `_ge0`, `_mfslice` | SCEFitting | the one-word helpers, still in their pre-sweep spelling |
+| `_det3`, `_adj3`, `_fp_mix`, `_ck_*` | SCEMonteCarlo | same |
+| `_gar_weights!`, `_edof` / `_edof_free`, `theta`, `groups` | SCEFitting | listed in that package's divergence ledger against SLCE's `_group_adaptive_weights!` / `_effective_dof_*` / `cost_exponent` / `row_groups` |
+| `est` (112), `idx` (69), `sel` (27), `tr` (11), `res` (5) | SCEFitting | internal locals the sweep would have renamed |
+| `est`, `idx`, `cfg`, `kt`, `nacc`, `natt` | SCEMonteCarlo | same, plus `nacc`/`natt` which are checkpoint keys |
+| `nat` (147), `nkd` (81), `nfolds`, `nlambda`, `nbins` | SCEFitting | `nat`/`nkd` reach well past the I/O adapters here |
+| `nbins`, `nlm`, `nat`, `nterms` | SCEMonteCarlo | public keywords and hot-path locals |
 
 Fixing one of these is a deliberate, separately reviewed change — never a
 drive-by edit inside an unrelated commit, and never a partial sweep that leaves
 two spellings where there was one.
 
-**Already done (2026-08-01), so do not "restore" the short form**: the
+**The 2026-08-01 sweep did not reach `SCEFitting.jl` or `SCEMonteCarlo.jl`.**
+Those two are revivals of a pre-sweep cross-section of the same lineage, and the
+spin-relevant fixes were backported one by one without the rename pass. So every
+short spelling the paragraph below says was removed is still live there — that is
+debt, not a local dialect, and a sweep in those two packages would move them
+*toward* their SLCE counterparts, improving the file-level diffability the
+carve-outs depend on. Until then, match the surrounding file.
+
+**Already done (2026-08-01) in the five SLCE-line packages, so do not "restore"
+the short form there**: the
 internal-only sweep renamed `est` → `estimator`, `idx` → `index`, `cfg`/`cfgs` →
 `config`/`configs`, `res` → `result`, `sel` → `selection` / `selector`,
 `ck` → `checkpointer`, `tr` → `trace`, `sc` → `scratch` (SLCEDynamics) /
