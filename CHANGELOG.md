@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the displacement rows refuse `disp_scale ≠ 1`; two notes on known asymmetries (2026-11-15)
+
+- `TiledHamiltonian(model)` and `reduce_cell(crystal, model, …)` now check the model's
+  `BasisSpec.disp_scale` and refuse anything but 1 (`_require_unit_disp_scale`). The
+  displacement rows assume it, and neither `row_layout` nor `decorated_terms` carries
+  it, so the only protection used to be upstream refusing `disp_scale ≠ 1` when a spec
+  is built. Nothing changes today (no model can carry another value); the day upstream
+  implements the scale, this package fails loudly instead of sampling at the wrong
+  amplitude. (OPEN-WORK M-6.)
+- Comments only: the replica-exchange weight uses each lane's incrementally accumulated
+  energy while `strain_move!` recomputes `e_old`, and why that asymmetry is sound
+  (M-4); the affine rescale of an accepted strain move also rescales the `u` of
+  displacement-inactive sites, which no term reads (M-5).
+
 ### Tests — fixtures defined by the sum rule's null space; neutrality pins at rtol 1e-10 (2026-11-15)
 
 No change to the package. SLCE `2f7d2d5` stopped normalizing the sum-rule constraint

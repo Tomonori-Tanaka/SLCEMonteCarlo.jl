@@ -561,6 +561,11 @@ function strain_move!(st::ChainState, H::TiledHamiltonian, sch::StrainSchedule,
     # scale's coefficients. Spin rows are untouched by a cell rescale, so the copy
     # carries them and only the displacement blocks are refilled — the same fill
     # `_zrows` runs, so the proposed table is bit-identical to a fresh build.
+    # Every site is rescaled, displacement-inactive ones (`!H.site_has_disp[i]`)
+    # included: no term reads their `u`, so the energy and the rows are unaffected,
+    # and an affine map moves every atom anyway. Their `u` is zero unless a caller
+    # passed nonzero values in at initialization, so this is invisible in practice; it
+    # only means such a value is not bitwise frozen across an accepted strain move.
     @inbounds for i in eachindex(st.disps)
         sc.unew[i] = lam * st.disps[i]
     end

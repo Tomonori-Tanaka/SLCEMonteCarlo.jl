@@ -32,6 +32,14 @@ using Test
         return col
     end
 
+    @testset "the displacement rows assume disp_scale = 1 and say so" begin
+        # Upstream refuses disp_scale ≠ 1 when a BasisSpec is built, so no model can
+        # reach the door with another value today; the guard is for the day it can.
+        @test SLCEMonteCarlo._require_unit_disp_scale(1.0) === nothing
+        err = try; SLCEMonteCarlo._require_unit_disp_scale(0.5); nothing; catch e; e; end
+        @test err isa ArgumentError && occursin("disp_scale", err.msg)
+    end
+
     @testset "the fixture actually exercises the channel cases" begin
         @test MC.has_disp(H)
         @test H.nrows > H.nlm

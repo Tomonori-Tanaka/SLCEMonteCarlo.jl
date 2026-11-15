@@ -51,8 +51,11 @@ them by that phrase.
   sector's `(0,1),(1,1)` do, so two models differing only by a factor `|u|²` would
   collide);
   (5) `disp_scale` (a `BasisSpec` field upstream currently refuses unless `== 1.0`) is
-  carried by neither `RowLayout` nor `DecoratedTerm`, so this package cannot see it —
-  the day upstream implements it, `_disp_rows!` must move with `predict_energy`.
+  carried by neither `RowLayout` nor `DecoratedTerm`, so the rows cannot apply it —
+  the day upstream implements it, `_disp_rows!` must move with `predict_energy`. Until
+  then `_require_unit_disp_scale` reads it off the model's spec at both `SLCEModel`
+  doors (`TiledHamiltonian(model)`, `reduce_cell(crystal, model, …)`) and refuses any
+  other value, so the dependency fails loudly rather than sampling at the wrong scale.
   The ctor enforces **at most one axis per `(site, channel)`** (upstream's `SiteDecor`
   rule): two axes of the SAME channel on one site would make even a single-channel move
   drop a cross term, and such a term has a pure-spin layout so `_require_spin_only`

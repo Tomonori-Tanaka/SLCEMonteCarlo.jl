@@ -179,6 +179,7 @@ function reduce_cell(model::SLCEModel, crystal::Crystal,
     n_atoms(model) == n_atoms(crystal) || throw(ArgumentError(
         "crystal has $(n_atoms(crystal)) atoms but the model was fitted on " *
         "$(n_atoms(model)) — pass the training-cell Crystal"))
+    _require_unit_disp_scale(model.basis.spec.disp_scale)
     layout = row_layout(model)
     # The same branch `TiledHamiltonian(model)` takes, for the same reason: a model
     # with no displacement rows goes down the frozen pure-spin path byte for byte,

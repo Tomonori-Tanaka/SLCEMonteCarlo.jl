@@ -174,6 +174,16 @@ end
 # Jacobian does NOT appear: it is a β-independent property of the bundle itself, so
 # it cancels exactly between the swapped and unswapped assignments — only
 # β-conjugate content survives in `(β_a − β_b)·(W_a − W_b)`.
+#
+# `st.energy` here is the INCREMENTALLY accumulated energy, not a fresh total, and
+# that is deliberately unlike `strain_move!`, which recomputes `e_old` from scratch.
+# The asymmetry is sound: a strain move compares a from-scratch `e_new` with `e_old`,
+# so both sides must come from the same estimator, whereas a swap compares two lanes'
+# accumulated values — each off by its own drift (~1e-13 relative between the
+# `renorm_interval` resyncs), which enters `logw` at that size and is never
+# accumulated, and the drift moves with the payload it belongs to (`_swap_payload!`),
+# so `_renormalize!`'s `max_drift` accounting still sees it on the new lane.
+# Recomputing here would cost two full energy evaluations per attempted swap.
 @inline function _swap_dweight(a::_PTLane, b::_PTLane, pressure::Float64)::Float64
     de = a.st.energy - b.st.energy
     a.sctx === nothing && return de

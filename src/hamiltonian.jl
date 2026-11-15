@@ -943,9 +943,24 @@ function TiledHamiltonian(n_cell_atoms::Integer, dterms::Vector{DecoratedTerm},
                             term_scale = scales, n_input_terms = n_in)
 end
 
+# The displacement rows this package builds (`_disp_rows!`) assume upstream's fixed
+# displacement scale is 1 Å: neither `RowLayout` nor `DecoratedTerm` carries
+# `BasisSpec.disp_scale`, so a model with another scale would be sampled at the wrong
+# amplitude without any other check noticing. Upstream refuses `disp_scale ≠ 1` when
+# the spec is built today; this makes the dependency visible at the MC's own door, so
+# the day upstream implements it this package fails loudly instead of silently.
+function _require_unit_disp_scale(disp_scale::Real)
+    disp_scale == 1.0 || throw(ArgumentError(
+        "the model's BasisSpec has disp_scale = $disp_scale; SLCEMonteCarlo's " *
+        "displacement rows assume disp_scale = 1 (the scale is carried by neither " *
+        "row_layout nor decorated_terms, so it cannot be applied here)"))
+    return nothing
+end
+
 function TiledHamiltonian(model::SLCEModel; dims::NTuple{3,Integer} = (1, 1, 1),
                           fixed_reference::Bool = false,
                           keep_zero_terms::Bool = false)
+    _require_unit_disp_scale(model.basis.spec.disp_scale)
     layout = row_layout(model)
     # A model with no displacement rows goes down the frozen pure-spin path, byte for
     # byte as before M4. `restrict` is a no-op on a genuinely pure-spin basis and the
