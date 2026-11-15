@@ -46,14 +46,16 @@ function _ss_grid(; scales = [0.98, 1.0, 1.02], zero_key = 0)
     b1 = _ss_basis(1.0)
     Z = (@test_logs (:warn,) match_mode = :any SLCE.build_asr(b1)).Z
     rng = MersenneTwister(0x5511)
-    g0 = randn(rng, size(Z, 2))
-    g1 = 0.3 .* randn(rng, size(Z, 2))
-    g2 = 0.1 .* randn(rng, size(Z, 2))
+    # coefficient-space draws projected onto the null space (`_asr_project`): the
+    # projector is linear, so the family stays exactly quadratic in η to round-off
+    g0 = randn(rng, size(Z, 1))
+    g1 = 0.3 .* randn(rng, size(Z, 1))
+    g2 = 0.1 .* randn(rng, size(Z, 1))
     models = SLCEModel[]
     for s in scales
         b = _ss_basis(s)
         η = s - 1
-        jphi = 0.4 .* (Z * (g0 .+ η .* g1 .+ η^2 .* g2))
+        jphi = 0.4 .* _asr_project(Z, g0 .+ η .* g1 .+ η^2 .* g2)
         zero_key > 0 && (jphi[zero_key] = 0.0)
         push!(models, SLCEModel(b, 0.37 + 1.5η + 2.0η^2, jphi))
     end
@@ -127,7 +129,7 @@ function _ss_toy_grid(; pinned::Bool, scales = [0.85, 1.0, 1.15])
         randn(rng, n_salcs(b1))
     else
         Z = (@test_logs (:warn,) match_mode = :any SLCE.build_asr(b1)).Z
-        Z * randn(rng, size(Z, 2))
+        _asr_project(Z, randn(rng, size(Z, 1)))
     end
     models = [SLCEModel(_ss_toy_basis(s, pinned), 0.0, copy(jphi)) for s in scales]
     return SLCE.StrainedModels(models, collect(Float64, scales))
@@ -258,12 +260,12 @@ _ss_vk_mean(k, va, vb) =
     @testset "the default term list is unchanged" begin
         # `keep_zero_terms` reaching the emission must not move anything beyond the
         # exact zeros themselves — every existing consumer and byte comparison
-        # depends on it. The zero count is MEASURED, not assumed zero: the fixture
-        # inherits `build_asr`'s SVD null-space BASIS, and LAPACK's choice inside
-        # that subspace is platform-dependent — ubuntu x64 CI's rotated basis lands
-        # one coefficient on exact 0.0 (218 vs 219 was the failure this wording
-        # replaces), and the default prune must drop exactly those terms and
-        # nothing else.
+        # depends on it. The zero count is MEASURED, not assumed zero: the fixture's
+        # coefficients on the sum rule's dead directions are exact 0.0
+        # (`_asr_project`), and the default prune must drop exactly those terms and
+        # nothing else. (Before 2026-11-15 the fixture was `Z * γ`, whose dead
+        # entries were ~1e-17 or exact 0.0 depending on the LAPACK — 218 vs 219
+        # terms on ubuntu x64 vs macOS.)
         _, models = _ss_grid()
         a = TiledHamiltonian(models[2]; dims = (2, 1, 1))
         b = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
@@ -518,29 +520,23 @@ _ss_vk_mean(k, va, vb) =
         H = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
         sch = StrainSchedule(sm, H)
 
-        # THE BYTE-NEUTRALITY PIN: this fixed-cell trajectory was captured before the
-        # strain wiring landed (at commit d038b86) and must stay bit-identical — the
-        # strain channel consumes no randomness and changes no code path when absent.
-        # If an intentional sampler change moves it, recapture; anything else moving
-        # it is the regression this pin exists to catch.
-        # The pin's PRECONDITION is asserted, not assumed: the fixture inherits
-        # `build_asr`'s SVD null-space basis, and LAPACK's choice inside that
-        # subspace is platform-dependent — a rotated basis (ubuntu x64 CI) is a
-        # genuinely different model, where the captured values do not apply. The
-        # pin fires exactly where the model matches its capture (the fingerprint
-        # below, taken together with the pins on macOS aarch64), and the capture
-        # platform asserts it DID fire so the detector cannot die silently.
-        pin_live = MCs._fingerprint(H) == 0x3020f63b138861f4
-        if Sys.isapple() && Sys.ARCH === :aarch64
-            @test pin_live
-        end
+        # THE NEUTRALITY PIN (a change detector, not a correctness oracle): this
+        # fixed-cell trajectory must not move when the strain channel is absent — the
+        # strain channel consumes no randomness and changes no code path then. Such a
+        # change moves the trajectory as a whole (energies by O(1)); round-off in the
+        # model does not, so the values are compared at rtol 1e-10, not bitwise, and
+        # on every platform. Captured 2026-11-15 on macOS aarch64 against SLCE
+        # 2f7d2d5 (first captured at d038b86, then bitwise and gated on a fingerprint
+        # of the coefficients, which moved whenever SLCE's sum-rule null-space basis
+        # rotated). The fixture is defined by the null SPACE (`_asr_project`), so a
+        # rotated basis now moves it at round-off only: 7e-15 measured across SLCE
+        # eea5c16 → 2f7d2d5, against the 1e-10 band. If an intentional sampler change
+        # moves it, recapture; anything else moving it is the regression it catches.
         r0 = run_mc(H; kT = 0.05, sweeps_therm = 50, sweeps_measure = 100,
                     seed = 0x5150, renorm_interval = 25)
-        if pin_live
-            @test r0.points[1].stats[:energy].mean[1] === -12.866452813199738
-            @test sum(sum, r0.final_config) === -0.17069256709356861
-            @test sum(x -> sum(abs, x), r0.final_disps) === 1.4251564417024021
-        end
+        @test r0.points[1].stats[:energy].mean[1] ≈ -14.231447169557912 rtol = 1e-10
+        @test sum(sum, r0.final_config) ≈ -0.17190878805807563 rtol = 1e-10
+        @test sum(x -> sum(abs, x), r0.final_disps) ≈ 1.7837878104625033 rtol = 1e-10
         @test isnan(r0.points[1].acceptance_strain)
 
         # the NPT run: moves fire, the measurement view carries the scale (checked
@@ -1298,37 +1294,27 @@ _ss_vk_mean(k, va, vb) =
         @test att[1] == 2 && acc[1] == 1  # just above: rejected, payload untouched
         @test a.st.energy == ea && a.st.strain == sa && a.H === Ha
 
-        # THE BYTE-NEUTRALITY PIN (fixed cell): this run_pt trajectory was captured
-        # before the PT + strain wiring landed (at commit 67d9363) and must stay
-        # bit-identical — without a schedule every lane holds the caller's H, the
+        # THE NEUTRALITY PIN (fixed cell; a change detector): this run_pt trajectory
+        # must not move — without a schedule every lane holds the caller's H, the
         # swap weight reduces to the chain-energy difference, and no code path
-        # consumes different randomness. On a FRESHLY BUILT Hamiltonian, so the
-        # pin is independent of the `set_coefficients!` installs above (a one-ULP
-        # shift in the schedule's Horner restore must not trip a fixed-cell pin).
-        # If an intentional sampler change moves it, recapture; anything else
-        # moving it is the regression this pin catches.
-        # Platform scope, as on the run_mc pin: the fixture inherits LAPACK's ASR
-        # null-space basis, so the pin fires exactly where the model matches its
-        # capture, and the capture platform (macOS aarch64) asserts that it fired.
+        # consumes different randomness. On a FRESHLY BUILT Hamiltonian, so the pin is
+        # independent of the `set_coefficients!` installs above. Compared at rtol
+        # 1e-10 on every platform, for the reasons and with the provenance of the
+        # run_mc pin (captured 2026-11-15, SLCE 2f7d2d5; first at 67d9363). The swap
+        # count is an integer ratio of the trajectory, compared exactly. If an
+        # intentional sampler change moves it, recapture; anything else moving it is
+        # the regression this pin catches.
         Hpin = TiledHamiltonian(models[2]; dims = (2, 1, 1), keep_zero_terms = true)
-        pin_live = MCs._fingerprint(Hpin) == 0x3020f63b138861f4
-        if Sys.isapple() && Sys.ARCH === :aarch64
-            @test pin_live
-        end
         r0 = run_pt(Hpin; kT = [0.05, 0.07], sweeps_therm = 50,
                     sweeps_measure = 100, seed = 0x5150, renorm_interval = 25,
                     exchange_interval = 5, ntasks = 1)
-        if pin_live
-            @test [p.stats[:energy].mean[1] for p in r0.points] ==
-                  [-13.060570421931075, -12.657092511551113]
-            @test [sum(sum, c) for c in r0.final_configs] ==
-                  [0.7053385500370698, 0.8192785243733386]
-            @test [sum(x -> sum(abs, x), d) for d in r0.final_disps] ==
-                  [1.7833703780033128, 1.2819181240379507]
-            # a trajectory quantity too (it merely happened to agree across
-            # platforms at these counts), so it stays under the same scope
-            @test r0.swap_acceptance == [0.21428571428571427]
-        end
+        @test [p.stats[:energy].mean[1] for p in r0.points] ≈
+              [-13.627328421983357, -13.223340022539935] rtol = 1e-10
+        @test [sum(sum, c) for c in r0.final_configs] ≈
+              [-0.29242964259509785, -0.6756800504955693] rtol = 1e-10
+        @test [sum(x -> sum(abs, x), d) for d in r0.final_disps] ≈
+              [1.0784448332322076, 0.427251605493423] rtol = 1e-10
+        @test r0.swap_acceptance == [0.14285714285714285]
     end
 
     @testset "PT + strain: run_pt wiring, determinism, and rung marginals" begin
@@ -2029,13 +2015,12 @@ end
         # Same spec, same term list, same clusters — only the frames disagree.
         # `keep_zero_terms = true` is load-bearing, and for exactly the reason the
         # term-count refusal above names: `_joint_model` projects onto the ASR null
-        # space, so seven of its 219 coefficients are the numerical zeros of that
-        # projection (|jϕ| down to 7e-18 here). Whether such an entry lands on
-        # EXACTLY 0.0 is a property of the LAPACK the null-space basis came from —
-        # macOS keeps all 219 after the default prune, ubuntu's CI zeroed one and
-        # dropped to 218, which made the schedule refuse on the term count and never
-        # reach the gate under test. Freezing the support on the basis rather than
-        # on the fit is what makes the premise platform-independent.
+        # space, and its coefficients on the dead directions of that projection are
+        # exact zeros (`_asr_project`, since 2026-11-15; before, they were ~1e-17 or
+        # exact 0.0 depending on the LAPACK — ubuntu's CI dropped to 218 terms where
+        # macOS kept 219, so the schedule refused on the term count and never reached
+        # the gate under test). Freezing the support on the basis rather than on the
+        # fit keeps the premise independent of which coefficients are zero.
         Hflat = TiledHamiltonian(first(_joint_model()); dims = (2, 1, 1),
                                  keep_zero_terms = true)
         @test Hflat.n_input_terms == Hgrid.n_input_terms        # the term checks pass…

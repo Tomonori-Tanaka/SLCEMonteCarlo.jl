@@ -133,6 +133,24 @@ end
 
 # --- joint (spin + displacement) fixture --------------------------------------------
 
+# Random coefficients that obey the acoustic sum rule, defined by the null SPACE and
+# not by one basis of it. `Z * γ` with a seeded γ fixes a GAUGE: `Z` is the orthonormal
+# basis the SVD happens to return, and the platform's LAPACK or a change to SLCE's
+# constraint rows (SLCE 2f7d2d5 stopped normalizing them one by one) rotates it, which
+# turns the same seed into a different model. `Z * (Z' * v)` projects a seeded
+# coefficient-space vector onto the null space: the same model in every gauge, to
+# round-off (1.3e-15 measured between SLCE eea5c16 and 2f7d2d5), with the same
+# distribution N(0, ZZ') as `Z * γ`. Rows of `Z` that are numerically dead
+# (‖Z[j, :]‖ < 1e-12, SLCE's `_ASR_DEAD_ROW`) carry exactly 0.0, as SLCE's
+# `_lift_gamma` gives a fit.
+function _asr_project(Z::AbstractMatrix, v::AbstractVector)
+    beta = Z * (Z' * v)
+    for j in axes(Z, 1)
+        norm(@view Z[j, :]) < 1e-12 && (beta[j] = 0.0)
+    end
+    return beta
+end
+
 # A genuine joint spin–lattice model on a 2-atom cell: a pure-spin sector, a coupled
 # sector (spin × displacement), and a lattice-only sector. The three together are what
 # make the channel gates non-vacuous:
@@ -162,7 +180,7 @@ function _joint_model(seed = 5; asr::Bool = true)
         # the warning about structurally-zeroed columns is expected on a fixture this
         # small (a few displacement partners fall outside the cutoff)
         Z = (@test_logs (:warn,) match_mode = :any SLCE.build_asr(b)).Z
-        0.4 .* (Z * randn(rng, size(Z, 2)))
+        0.4 .* _asr_project(Z, randn(rng, size(Z, 1)))
     else
         0.05 .* randn(rng, n_salcs(b))
     end
@@ -186,7 +204,8 @@ function _stacked_joint_model(seed = 7)
     # same expected warning as `_joint_model`: a few displacement partners of this
     # small cell fall outside the cutoff, so their columns are structurally zeroed
     Z = (@test_logs (:warn,) match_mode = :any SLCE.build_asr(b)).Z
-    return SLCEModel(b, 0.0, 0.4 .* (Z * randn(MersenneTwister(seed), size(Z, 2)))), cr
+    return SLCEModel(b, 0.0, 0.4 .* _asr_project(Z, randn(MersenneTwister(seed),
+                                                         size(Z, 1)))), cr
 end
 
 # The general (channel-decorated) counterpart of `_chain_terms`, hand-built on a 1-atom

@@ -155,18 +155,19 @@ gradient entry instead of a silent two-Hamiltonians chain. The per-move device
 cost has NOT been measured on real hardware yet — measure on the next kugui A100
 session before production NPT+GPU runs.
 
-Fixed-cell byte-neutrality is pinned, not assumed: a short fixed-cell `run_mc`
-trajectory captured at commit `d038b86` (pre-wiring) is asserted bit-identical
-in the driver testset. If an intentional sampler change moves it, recapture; any
-other movement is the regression the pin exists to catch. Both trajectory pins
-(this one and S10's `run_pt` twin) are **capture-platform-scoped**: the `_ss_grid`
-fixture inherits `build_asr`'s SVD null-space basis, and LAPACK's choice inside
-that subspace is platform-dependent — ubuntu x64 CI gets a rotated basis, i.e. a
-genuinely different model (it also lands one coefficient on exact 0.0, which the
-default-term-list testset measures rather than assumes). The pins therefore fire
-where the model fingerprint matches its capture, and macOS aarch64 (the capture
-platform, dev machine and mac CI runner alike) asserts that they fired, so the
-detector cannot die silently.
+Fixed-cell neutrality is pinned, not assumed: a short fixed-cell `run_mc`
+trajectory (first captured at commit `d038b86`, pre-wiring; recaptured 2026-11-15
+against SLCE `2f7d2d5`) is asserted to rtol 1e-10 in the driver testset. If an
+intentional sampler change moves it, recapture; any other movement is the regression the pin exists to catch. Both trajectory pins
+(this one and S10's `run_pt` twin) run on every platform and compare at rtol 1e-10,
+not bitwise: a change to the sampler moves the trajectory as a whole, round-off in
+the model does not. Until 2026-11-15 they were bitwise and gated on a fingerprint of
+the coefficients, because the `_ss_grid` fixture was `Z * γ` — one SVD basis of
+`build_asr`'s null space with a seeded γ, a different model under every rotation of
+that basis (ubuntu x64's LAPACK, and SLCE `2f7d2d5`'s change to the constraint
+rows). The fixture is now the projection `Z * (Z' * v)` (`_asr_project` in
+`test/unit/fixtures.jl`), the same model in every basis to round-off (7e-15 on the
+pinned energies across that SLCE change).
 
 ## S7 — checkpoint schema v4
 
@@ -299,8 +300,9 @@ moves it.
 travel with it, and the (H, chain) contract of S4 holds through every exchange
 with no reinstall (no Horner pass at a swap, nothing to forget on the reject
 path). On a fixed-cell run every lane holds the same object and the swap is a
-same-reference no-op, which is why the fixed-cell trajectory is byte-neutral
-(pinned: a pre-wiring `run_pt` trajectory captured at `67d9363`, asserted `==`).
+same-reference no-op, which is why the fixed-cell trajectory is neutral (pinned: a
+`run_pt` trajectory first captured pre-wiring at `67d9363`, asserted to rtol 1e-10
+since 2026-11-15).
 
 **The swap rule keeps only β-conjugate content.** For bundles at a common
 pressure the exchange ratio is `(β_a−β_b)(W_a−W_b)` with

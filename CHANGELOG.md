@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Tests — fixtures defined by the sum rule's null space; neutrality pins at rtol 1e-10 (2026-11-15)
+
+No change to the package. SLCE `2f7d2d5` stopped normalizing the sum-rule constraint
+rows one by one (the rank depended on how a crystal was turned), and with it the SVD
+returns another orthonormal basis `Z` of the same null space. The joint fixtures were
+`Z * γ` with a seeded γ — a pin on that basis — so the same seed became a different
+model, the coefficient fingerprint moved, and the two fixed-cell neutrality pins
+(`run_mc`, `run_pt` in `test_strainschedule.jl`) failed on macOS aarch64. The same
+mechanism had already made ubuntu x64 CI test a different model than macOS.
+
+- **Fixtures** (`_joint_model`, `_stacked_joint_model`, `_ss_grid`, `_ss_toy_grid`):
+  `Z * (Z' * v)` with a seeded coefficient-space `v` (`_asr_project`,
+  `test/unit/fixtures.jl`) — the projection onto the null space, the same model in
+  every basis to round-off (1.3e-15 in the coefficients across SLCE `eea5c16` →
+  `2f7d2d5`), same distribution N(0, ZZᵀ) as before. Coefficients on the sum rule's
+  dead directions are exact 0.0, as SLCE's `_lift_gamma` gives a fit, so the
+  zero-term counts no longer depend on the platform's LAPACK.
+- **Pins**: the fingerprint precondition is gone; the trajectory values are compared at
+  rtol 1e-10 on every platform (the swap acceptance, an integer ratio, exactly).
+  Recaptured 2026-11-15 on macOS aarch64 against SLCE `2f7d2d5`. The pins catch a
+  changed sampler, not round-off: with the new fixtures the suite is green on SLCE
+  `eea5c16` and `2f7d2d5` alike (the pinned energies move by 7e-15 between them),
+  while one extra random draw in `run_mc` / `run_pt` fails all seven pin assertions.
+- Docs: `docs/specs/strain-move.md` S6/S10 and `docs/specs/coupled-sites.md` describe
+  the new scope.
+
 ### Documentation — the cubic-Heisenberg tutorial states the tiling-template contract (2026-08-24)
 
 Its one-atom `AllImages` basis is a template, not a model of the reference cell: both

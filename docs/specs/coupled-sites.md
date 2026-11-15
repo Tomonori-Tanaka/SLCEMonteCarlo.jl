@@ -256,12 +256,10 @@ them by that phrase.
   caught only by the bracket gate in `test_strainschedule.jl` ("PT + strain"
   testsets) — the statistical rung-marginal gate measured ≤ 0.6σ under the NVT
   mutation, so do not lean on it for the rule. The two
-  fixed-cell byte-neutrality pins (pre-wiring `run_mc` and `run_pt` trajectories
-  asserted bit-identical in
-  `test_strainschedule.jl`) catch any of these leaking into unstrained runs —
-  they are capture-platform-scoped (the `_ss_grid` fixture inherits LAPACK's
-  ASR null-space basis, so the pins fire on a model-fingerprint match and
-  macOS aarch64 asserts they fired; strain-move.md S6).
+  fixed-cell neutrality pins (`run_mc` and `run_pt` trajectories asserted to rtol
+  1e-10 in `test_strainschedule.jl`, on every platform) catch any of these leaking
+  into unstrained runs — the `_ss_grid` fixture is defined by the null space of the
+  sum rule, not by one basis of it (`_asr_project`; strain-move.md S6).
   (8) The NPT target's `W = E_config + n_cells·j0(s) + P·V(s)` now lives in
   THREE places — the strain move's acceptance pieces (`strain_delta_energy` +
   `_strain_log_weight`), the exchange weight (`_swap_dweight`), and
