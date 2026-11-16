@@ -1955,6 +1955,11 @@ end
         MCs.metropolis_sweep!(st, H, 20.0, ssc)
         MCs.displacement_sweep!(st, H, 20.0, ssc)
     end
+    # Whether 400 sweeps leave round-off drift depends on the coefficients and the
+    # platform's BLAS (a basis-gauge change made it exactly 0 on Linux once). Add a
+    # known drift of round-off size on top, so the chain always HAS drift to carry and
+    # the test cannot turn vacuous.
+    st.energy += 0x1p-40
     drift0 = st.energy - MCs._total_energy(H, st.zrows)
     @test drift0 != 0.0                       # non-vacuity: there IS drift to carry
     @test abs(drift0) < 1e-9                  # …and it is roundoff, not a bug
